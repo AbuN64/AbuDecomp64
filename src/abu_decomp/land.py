@@ -968,7 +968,7 @@ class Landing:
         self.base, self.patches = base, list(patches)
         self.invoke, self.run, self.build, self.append, self.clock = invoke, run, build, append, clock
         self.messages = dict(messages or {})
-        self.pin = pin or (lambda: tools.pins()["unbake"].commit)
+        self.pin = pin or (lambda: tools.commits()["unbake"])
         self.gates: list[dict[str, Any]] = []
         self.findings: list[dict[str, Any]] = []
         self.lanes: list[dict[str, Any]] = []

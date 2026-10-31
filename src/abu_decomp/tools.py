@@ -1,8 +1,8 @@
-"""The pinned decomp tools: pin verification and isolated calls to each public CLI.
+"""The decomp tools: provenance verification and isolated calls to each public CLI.
 
-The pins are the direct requirements of this installed distribution (pyproject.toml), read back from its
-metadata, so no pin is written twice. A tool is accepted only when its installed direct_url.json names the
-same repository and commit.
+A tool decomp pins by commit (the direct requirements of this installed distribution, pyproject.toml, read back from
+its metadata) is accepted only when its installed direct_url.json names the same repository and commit. A tool decomp
+does not pin (unbake: it installs itself on every land) is accepted at whatever git commit is installed.
 """
 
 from __future__ import annotations
@@ -70,7 +70,8 @@ def _requirements(distribution: metadata.Distribution) -> list[str]:
 
 
 def pins() -> dict[str, Pin]:
-    """The direct VCS pins this installed package declares, keyed by tool command."""
+    """The direct VCS pins this installed package declares for a tool, keyed by tool command. A tool with no pin
+    (unbake) is absent."""
     try:
         own = metadata.distribution(DISTRIBUTION)
     except metadata.PackageNotFoundError as exc:
@@ -80,13 +81,33 @@ def pins() -> dict[str, Pin]:
         match = _REQUIREMENT.match(row)
         if match:
             found[_normal(match["name"])] = Pin(match["name"], match["url"], match["commit"])
-    result: dict[str, Pin] = {}
-    for command, tool in TOOLS.items():
-        pin = found.get(_normal(tool.distribution))
-        if pin is None:
-            raise DependencyError("dependency.pin", f"{DISTRIBUTION} declares no commit pin for {tool.distribution}")
-        result[command] = pin
-    return result
+    return {command: found[_normal(tool.distribution)] for command, tool in TOOLS.items() if _normal(tool.distribution) in found}
+
+
+def installed_commit(distribution: str) -> str:
+    """The git commit `distribution` is installed from, read from its direct_url.json."""
+    try:
+        raw = metadata.distribution(distribution).read_text("direct_url.json")
+    except metadata.PackageNotFoundError as exc:
+        raise DependencyError("dependency.missing", f"{distribution} is not installed") from exc
+    if raw is None:
+        raise DependencyError("dependency.provenance", f"{distribution} has no direct_url.json VCS provenance")
+    try:
+        origin = json.loads(raw)
+        if origin["vcs_info"]["vcs"] != "git":
+            raise ValueError("not git")
+        return str(origin["vcs_info"]["commit_id"])
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise DependencyError("dependency.provenance", f"{distribution} has invalid VCS provenance") from exc
+
+
+def commits() -> dict[str, str]:
+    """Tool command -> the commit it runs at: decomp's pin, or the installed commit of a tool decomp does not pin."""
+    declared = pins()
+    return {
+        command: declared[command].commit if command in declared else installed_commit(tool.distribution)
+        for command, tool in TOOLS.items()
+    }
 
 
 def version_text() -> str:
@@ -99,41 +120,39 @@ def version_text() -> str:
             return "not installed"
 
     lines = [f"decomp {installed(DISTRIBUTION)}"]
-    for command, pin in pins().items():
-        lines.append(f"{command} {installed(pin.distribution)} ({pin.distribution} {pin.commit[:12]})")
+    for command, commit in commits().items():
+        lines.append(f"{command} {installed(TOOLS[command].distribution)} ({TOOLS[command].distribution} {commit[:12]})")
     return "\n".join(lines) + "\n"
 
 
 def verify_dependencies() -> dict[str, dict[str, str]]:
-    """Require every installed tool at its pinned commit, one unbake for all, and a standalone Cake Taste."""
+    """Require every installed tool from a git commit, a pinned one at its pinned repository and commit, and a
+    standalone Cake Taste. Unbake has no pin: it is reported at the commit installed."""
     declared = pins()
     report: dict[str, dict[str, str]] = {}
     installed: dict[str, metadata.Distribution] = {}
-    for command, pin in declared.items():
+    for command, tool in TOOLS.items():
         try:
-            distribution = metadata.distribution(pin.distribution)
+            distribution = metadata.distribution(tool.distribution)
         except metadata.PackageNotFoundError as exc:
-            raise DependencyError("dependency.missing", f"{pin.distribution} is not installed") from exc
+            raise DependencyError("dependency.missing", f"{tool.distribution} is not installed") from exc
         raw = distribution.read_text("direct_url.json")
         if raw is None:
             raise DependencyError("dependency.provenance", f"{command} has no direct_url.json VCS provenance")
         try:
             origin = json.loads(raw)
-            url, vcs = origin["url"], origin["vcs_info"]
-            valid = url.removesuffix(".git") == pin.url and vcs["vcs"] == "git" and vcs["commit_id"] == pin.commit
+            url, vcs = origin["url"].removesuffix(".git"), origin["vcs_info"]
+            commit = vcs["commit_id"]
+            valid = vcs["vcs"] == "git"
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise DependencyError("dependency.provenance", f"{command} has invalid VCS provenance") from exc
-        if not valid:
-            raise DependencyError("dependency.pin", f"{command} must come from {pin.url} at {pin.commit}")
+        pin = declared.get(command)
+        if not valid or (pin and (url != pin.url or commit != pin.commit)):
+            raise DependencyError(
+                "dependency.pin", f"{command} must come from {pin.url} at {pin.commit}" if pin else f"{command} is not a git install"
+            )
         installed[command] = distribution
-        report[command] = {
-            "distribution": pin.distribution,
-            "version": distribution.version,
-            "url": pin.url,
-            "commit": pin.commit,
-        }
-    if declared["unbake"].requirement not in _requirements(installed["recipe"]):
-        raise DependencyError("dependency.compatibility", "Recipe Maker pins a different unbake than this package")
+        report[command] = {"distribution": tool.distribution, "version": distribution.version, "url": url, "commit": commit}
     stray = {_normal(row.split("@")[0]) for row in _requirements(installed["taste"])} & {
         _normal(TOOLS["unbake"].distribution),
         _normal(TOOLS["recipe"].distribution),
@@ -267,7 +286,7 @@ def checkout_dirty(path: Path) -> list[str]:
 
 def checkout_drift(profile: Profile, commands: Sequence[str] | None = None) -> list[str]:
     """Why a checkout the seat runs tool code from is not at decomp's pin; empty when every one agrees."""
-    wanted = pins()
+    wanted = commits()
     found = []
     for command, path in checkouts_of(profile).items():
         if commands is not None and command not in commands:
@@ -276,9 +295,9 @@ def checkout_drift(profile: Profile, commands: Sequence[str] | None = None) -> l
             found.append(f"{command} checkout {path} is not a directory")
             continue
         head = checkout_head(path)
-        if head != wanted[command].commit:
+        if head != wanted[command]:
             found.append(
-                f"{command} checkout {path} is at {head} but decomp pins {wanted[command].commit}; "
+                f"{command} checkout {path} is at {head} but decomp runs {wanted[command]}; "
                 "run `decomp tools deploy` to align it"
             )
     return found

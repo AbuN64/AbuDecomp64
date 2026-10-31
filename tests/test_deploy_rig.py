@@ -451,7 +451,7 @@ class SuiteScriptTests(ScriptCase):
 
 
 class BuildScriptTests(ScriptCase):
-    """The BUILD script with a stand-in `decomp` that builds `<stage>.<sha12>` and swaps the stage link."""
+    """The BUILD script with a stand-in toolkit python running `-m abu_decomp tools deploy` that builds `<stage>.<sha12>` and swaps the stage link."""
 
     def setUp(self):
         super().setUp()
@@ -460,7 +460,7 @@ class BuildScriptTests(ScriptCase):
         self.stage = self.root / "venv-decomp-stage"
 
     def decomp(self, body):
-        wrapper(self.toolkit / "bin/decomp", body)
+        wrapper(self.toolkit / "bin/python", body)
 
     def run_build(self):
         env = sh_env(BUILD=str(self.build), HOME=str(self.root))  # the caller's own environment, as Dos admits it
@@ -469,9 +469,10 @@ class BuildScriptTests(ScriptCase):
     def test_the_build_links_build_to_the_stage_venv_and_never_touches_the_live_link(self):
         live = self.root / "live-target"
         wrapper(
-            live / "bin/decomp",
-            'test "$1 $2 $3 $4 $5" = "tools deploy --sha ' + SHA + ' --venv" || exit 7\n'
-            f'dir="$6.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$6"',
+            live / "bin/python",
+            'test "$1 $2 $3 $4 $5 $6 $7 $8 $9" = "-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
+            'case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n'  # the landed commit's own code runs the install
+            f'shift 9; dir="$1.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
         )
         self.toolkit.symlink_to(live)
         done = self.run_build()
@@ -484,7 +485,7 @@ class BuildScriptTests(ScriptCase):
 
     def test_a_failing_engine_exits_1_and_links_nothing(self):
         live = self.root / "live-target"
-        wrapper(live / "bin/decomp", "echo engine said no >&2; exit 3")
+        wrapper(live / "bin/python", "echo engine said no >&2; exit 3")
         self.toolkit.symlink_to(live)
         done = self.run_build()
         self.assertEqual(done.returncode, 1)
@@ -493,7 +494,7 @@ class BuildScriptTests(ScriptCase):
 
     def test_a_stage_link_that_reads_another_build_exits_1(self):
         live = self.root / "live-target"
-        wrapper(live / "bin/decomp", f'mkdir -p "{self.root}/other" && ln -sfn "{self.root}/other" "$6"')
+        wrapper(live / "bin/python", f'mkdir -p "{self.root}/other" && shift 9 && ln -sfn "{self.root}/other" "$1"')
         self.toolkit.symlink_to(live)
         done = self.run_build()
         self.assertEqual(done.returncode, 1)

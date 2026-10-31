@@ -11,19 +11,14 @@ from abu_decomp import deploy, tools
 from abu_decomp.config import load_profile
 
 U1, U2 = "1" * 40, "2" * 40
-R1, R2 = "3" * 40, "4" * 40
-T1 = "5" * 40
+R1 = "3" * 40
 D1 = "a" * 40
-URL = {
-    "unbake": "https://github.com/AbuN64/cake-unbake-64",
-    "recipemaker": "https://github.com/AbuN64/recipe-maker-64",
-    "cake-taste-64": "https://github.com/AbuN64/cake-taste-64",
-}
-
-
-def pyproject(name, version, **pins):
-    rows = [f'"{n} @ git+{URL[n]}@{c}"' for n, c in pins.items()]
-    return f'[project]\nname = "{name}"\nversion = "{version}"\ndependencies = [{", ".join(rows)}]\n'
+URL = deploy.PACKAGES
+CARRIED = [
+    "pycparser==3.0",
+    f"recipemaker @ git+{URL['recipemaker']}@{R1}",
+    f"unbake @ git+{URL['unbake']}@{U1}",
+]
 
 
 class DeployTests(unittest.TestCase):
@@ -42,20 +37,9 @@ class DeployTests(unittest.TestCase):
         sections = {"tools": {"project": str(self.project), "host": "host.toml", "timeout_seconds": 5}}
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
         self.profile = load_profile(self.root / "seat.json")
-        self.documents = {
-            (deploy.DECOMP_URL, D1): pyproject(
-                "abu-decomp-64", "0.1.0", **{"unbake": U1, "recipemaker": R1, "cake-taste-64": T1}
-            ),
-            (URL["unbake"], U1): '[project]\nname = "unbake"\ndynamic = ["version"]\n'
-            '[tool.setuptools.dynamic]\nversion = { attr = "unbake.__version__" }\n',
-            (URL["unbake"], U1, "src/unbake/__init__.py"): '"""x"""\n__version__ = "0.5.12"\n',
-            (URL["unbake"], U2): pyproject("unbake", "0.5.13"),
-            (URL["recipemaker"], R1): pyproject("recipemaker", "0.1.1", unbake=U1),
-            (URL["recipemaker"], R2): pyproject("recipemaker", "0.1.2", unbake=U2),
-            (URL["cake-taste-64"], T1): pyproject("cake-taste-64", "0.1.0"),
-        }
         self.commands = []
         self.fail = None
+        self.carried = list(CARRIED)  # what the live venv holds
         self.requirements = ""  # requirements.txt of the project revision
         self.asked = []
 
@@ -75,43 +59,36 @@ class DeployTests(unittest.TestCase):
         ]
         (self.project / "ci" / "run").write_text("\n".join(rows) + "\n")
 
-    def fetch(self, url, sha, path):
-        if path != "pyproject.toml":
-            if (url, sha, path) not in self.documents:
-                raise deploy.DeployError("deploy.fetch", path)
-            return self.documents[(url, sha, path)]
-        return self.documents[(url, sha)]
-
     def runner(self, argv, cwd=None):
         self.commands.append(list(argv))
+        if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail and self.fail in deploy.CARRY):  # the live venv's python lists its packages
+            return 0, json.dumps(self.carried)
         if "venv" in argv and "-m" in argv and not (self.fail and self.fail in " ".join(argv)):
             self.make_venv(Path(argv[-1]))
         if self.fail and self.fail in " ".join(argv):
             return 1, "boom"
         return 0, "ok output"
 
-    def deploy(self, sha=D1, venvs=("venv-a",), extra=None, **commits):
-        extra = extra or {}
+    def deploy(self, sha=D1, venvs=("venv-a",), package="abu-decomp-64", extra=None):
         return deploy.deploy(
             self.profile,
+            package,
             sha,
             [self.root / v for v in venvs],
-            {"unbake": None, "recipe": None, "taste": None, **commits},
-            fetch=self.fetch,
             run=self.runner,
             requirements_of=self.requirements_of,
-            **extra,
+            **(extra or {}),
         )
 
-    def test_agreeing_pins_install_git_commits_into_every_venv_and_smoke_test(self):
-        result, code, findings = self.deploy(venvs=("venv-a", "venv-b"), unbake=U1)
+    def test_one_package_is_installed_at_its_commit_beside_the_carried_ones_into_every_venv_and_smoke_tested(self):
+        result, code, findings = self.deploy(venvs=("venv-a", "venv-b"))
         self.assertEqual((code, findings), (0, []))
+        self.assertEqual(result["venvs"][0]["carried"], CARRIED)
         installs = [c for c in self.commands if "install" in c]
-        self.assertEqual(len(installs), 2)
-        specs = installs[0][installs[0].index("install") + 1 :]
-        self.assertEqual(specs[0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}")
-        self.assertIn(f"unbake @ git+{URL['unbake']}@{U1}", specs)
-        self.assertTrue(all("@ git+https://" in spec and ".whl" not in spec for spec in specs))
+        self.assertEqual(len(installs), 4)  # per venv: the carried set, then the package
+        carry, package = installs[0], installs[1]
+        self.assertEqual(carry[carry.index("install") + 1 :], ["--no-deps", *CARRIED])  # as installed, not re-resolved
+        self.assertEqual(package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"])
         self.assertEqual(
             sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
         )  # per venv: fresh, then via the link
@@ -127,41 +104,30 @@ class DeployTests(unittest.TestCase):
             self.assertTrue((self.root / f"{name}.old" / "bin" / "python").is_file())
         self.assertTrue(all(row["swap"]["readback"] for row in result["venvs"]))
         pip = [c for c in installs if c[0].endswith(f"venv-a.{D1[:12]}/bin/python")]
-        self.assertEqual(len(pip), 1)  # pip runs by the new venv's own python, never the live link
+        self.assertEqual(len(pip), 2)  # pip runs by the new venv's own python, never the live link
         self.assertFalse(
             any(c[:1] == [str(self.root / "venv-a" / "bin" / "python")] and "pip" in c for c in self.commands)
         )
 
-    def test_pins_that_disagree_are_named_and_nothing_is_installed(self):
-        result, code, findings = self.deploy(unbake=U2, recipe=R2)
-        self.assertEqual(code, 1)
-        self.assertEqual(self.commands, [])
-        moves = {(m["file"], m["pin"]): (m["now"], m["must"]) for m in result["pins_to_move"]}
-        self.assertEqual(moves[("abu-decomp-64 pyproject.toml", "unbake")], (U1, U2))
-        self.assertEqual(moves[("abu-decomp-64 pyproject.toml", "recipemaker")], (R1, R2))
-        self.assertFalse([f for f, _ in moves if f.startswith(str(self.project))])  # a project is never a pin
-        self.assertNotIn(("recipe-maker-64 pyproject.toml", "unbake"), moves)  # R2 already pins U2
-        self.assertTrue(all(f["key"] == "deploy.pin_must_move" and f["blocking"] for f in findings))
-
     def test_the_pinned_packages_of_the_project_are_installed_beside_the_tools(self):
         """RageWars pins splat64 and spimdisasm in requirements.txt: a plain deploy ships them, no hand reinstall."""
         self.requirements = "# make extract\nsplat64[mips]==0.50.0\nspimdisasm==1.42.4  # x\n"
-        result, code, findings = self.deploy(unbake=U1)
+        result, code, findings = self.deploy()
         self.assertEqual((code, findings), (0, []))
         self.assertEqual(result["packages"], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
         self.assertEqual(result["project_revision"], "c" * 40)
-        install = next(c for c in self.commands if "install" in c)
+        install = [c for c in self.commands if "install" in c][-1]
         self.assertEqual(install[-2:], ["splat64[mips]==0.50.0", "spimdisasm==1.42.4"])
 
     def test_the_requirements_come_from_the_project_main_or_the_named_revision_never_the_tree(self):
         (self.project / "requirements.txt").write_text("stale-tree==1\n")  # a work tree file is never read
         self.requirements = "splat64==0.50.0\n"
-        result, _, _ = self.deploy(unbake=U1)
+        result, _, _ = self.deploy()
         self.assertEqual((result["packages"], self.asked[-1][1:]), (["splat64==0.50.0"], ("origin", "main", None)))
-        self.deploy(unbake=U1, extra={"project_sha": "9" * 40})
+        self.deploy(extra={"project_sha": "9" * 40})
         self.assertEqual(self.asked[-1][3], "9" * 40)
         with self.assertRaises(deploy.DeployError) as caught:
-            self.deploy(unbake=U1, extra={"project_sha": "main"})
+            self.deploy(extra={"project_sha": "main"})
         self.assertEqual(caught.exception.key, "deploy.sha")
 
     def test_the_land_remote_and_branch_name_the_projects_main(self):
@@ -169,19 +135,19 @@ class DeployTests(unittest.TestCase):
         document["land"] = {"remote": "github", "branch": "trunk"}
         (self.root / "seat.json").write_text(json.dumps(document))
         self.profile = load_profile(self.root / "seat.json")
-        self.deploy(unbake=U1)
+        self.deploy()
         self.assertEqual(self.asked[-1][1:], ("github", "trunk", None))
 
     def test_a_project_package_that_is_not_an_exact_pin_refuses_before_anything_is_installed(self):
         self.requirements = "splat64>=0.50\n"
         with self.assertRaises(deploy.DeployError) as caught:
-            self.deploy(unbake=U1)
+            self.deploy()
         self.assertEqual((caught.exception.key, self.commands), ("deploy.requirements", []))
 
     def test_a_venv_that_cannot_import_a_declared_package_is_a_failed_deploy(self):
         self.requirements = "splat64==0.50.0\n"
         self.fail = "-c"  # the import check is the one command run with python -c
-        result, code, findings = self.deploy(unbake=U1)
+        result, code, findings = self.deploy()
         self.assertEqual(code, 1)
         self.assertEqual([f["key"] for f in findings], ["deploy.smoke"])
         self.assertIn("import splat64==0.50.0", findings[0]["message"])
@@ -252,14 +218,8 @@ class DeployTests(unittest.TestCase):
     def test_a_project_file_naming_another_tool_version_never_blocks_a_deploy(self):
         """Game projects build standalone and pin none of our tools: a tool release never asks a project to move."""
         self.pin_file(unbake="0.4.0")
-        result, code, findings = self.deploy(unbake=U1)
-        self.assertEqual((code, findings, result["pins_to_move"]), (0, [], []))
-
-    def test_recipe_pinning_another_unbake_must_move(self):
-        result, code, _ = self.deploy(unbake=U2)
-        moves = {(m["file"], m["pin"]): (m["now"], m["must"]) for m in result["pins_to_move"]}
-        self.assertEqual(moves[("recipe-maker-64 pyproject.toml", "unbake")], (U1, U2))
-        self.assertEqual(code, 1)
+        _, code, findings = self.deploy()
+        self.assertEqual((code, findings), (0, []))
 
     def test_only_full_commit_shas_and_real_venvs_are_accepted(self):
         for bad in ("main", "abc1234", "https://x/y.whl"):
@@ -267,8 +227,8 @@ class DeployTests(unittest.TestCase):
                 self.deploy(sha=bad)
             self.assertEqual(caught.exception.key, "deploy.sha")
         with self.assertRaises(deploy.DeployError) as caught:
-            self.deploy(unbake="v0.5.12")
-        self.assertEqual(caught.exception.key, "deploy.sha")
+            self.deploy(package="not-ours")
+        self.assertEqual(caught.exception.key, "deploy.package")
         with self.assertRaises(deploy.DeployError) as caught:
             self.deploy(venvs=("missing",))
         self.assertEqual(caught.exception.key, "deploy.venv")
@@ -314,10 +274,9 @@ class DeployTests(unittest.TestCase):
         with mock.patch.object(deploy, "holders", held):
             result, code, findings = deploy.deploy(
                 self.profile,
+                "abu-decomp-64",
                 D1,
                 [self.root / "venv-a"],
-                {"unbake": None, "recipe": None, "taste": None},
-                fetch=self.fetch,
                 run=runner,
                 requirements_of=self.requirements_of,
             )
@@ -373,3 +332,27 @@ class DeployTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CarryTests(DeployTests):
+    """The carry-over of the packages the deployed one does not replace."""
+
+    def test_the_package_and_the_projects_own_packages_are_not_carried(self):
+        self.requirements = "splat64[mips]==0.50.0\n"
+        self.deploy(package="unbake", sha=U2)
+        asked = next(c for c in self.commands if c[1:2] == ["-c"])
+        self.assertEqual(asked[0], str(self.root / "venv-a" / "bin" / "python"))  # the live venv lists itself
+        self.assertEqual(asked[3:], ["unbake", "splat64"])
+        install = [c for c in self.commands if "install" in c][-1]
+        self.assertEqual(install[-2:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", "splat64[mips]==0.50.0"])
+
+    def test_a_venv_that_cannot_be_listed_refuses_before_anything_is_built(self):
+        self.fail = "metadata.distributions"
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy()
+        self.assertEqual(caught.exception.key, "deploy.carry")
+        self.assertFalse([c for c in self.commands if "venv" in c])
+
+    def test_only_the_named_tools_checkout_moves(self):
+        wanted, findings = deploy.checkout_steps(self.profile, "unbake", U2)
+        self.assertEqual((wanted, findings), ({}, []))  # the seat names no checkout

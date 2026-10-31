@@ -1,11 +1,10 @@
-"""`decomp tools deploy`: install one decomp commit and its tools into venvs, after the pins agree.
+"""`decomp tools deploy`: install ONE named package at one commit into a toolkit venv.
 
-The tools are installed from git commits only (`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is
-refused), so a venv's provenance is always a commit that `decomp dependencies` can check. Before anything is
-installed the pins that must agree are compared and the ones that would have to move are printed:
-
-  decomp's pyproject pins of unbake, Recipe Maker and Cake Taste (at DECOMP_SHA) against the commits asked for;
-  Recipe Maker's own pin of unbake (at its commit) against the unbake commit.
+A tool installs itself: no repository pins another of our tools by commit, so the deploy of a package (`--package`,
+`--sha`) installs that package at that commit and carries every other package the live venv has as it is installed
+(the exact commit of a git install, the exact version of the rest), never re-resolving them from pins. The package is
+installed from a git commit only (`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is refused), so a venv's
+provenance is always a commit that `decomp dependencies` can check.
 
 A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move. It
 declares the Python packages its make runs (splat, spimdisasm, ...) in `requirements.txt` at its root, each pinned
@@ -15,12 +14,12 @@ never from a work tree (a stale or detached tree cannot drop packages): `--proje
 profile's `land.remote` / `land.branch`, default origin/main) fetched at deploy time. The smoke test imports every
 declared package from the new venv, so a venv that cannot import one is a failed deploy.
 
-Any mismatch refuses the deploy and names the file, the pin, what it says now and what it must say. When they agree,
-each checkout the seat names in `tools.checkouts` (a tool's code run from a git checkout) is brought to the pinned
-commit (fetch, detached checkout) and refused, untouched, when it has local changes.
+When the package is a tool, the checkout the seat names for it in `tools.checkouts` (a tool's code run from a git
+checkout) is brought to the deployed commit (fetch, detached checkout) and refused, untouched, when it has local
+changes.
 
-A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the four
-requirements are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own python so console
+A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the carried
+packages and the package are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own python so console
 script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake symbols --version V`
 on the project) runs against the fresh venv, and only then is the symlink swapped with rename(2). Processes started
 through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
@@ -38,10 +37,9 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import shutil
 import subprocess
-import tempfile
-import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -50,33 +48,23 @@ from abu_decomp import DecompError, tools
 from abu_decomp.config import ConfigError, Profile
 
 DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
+# Distribution name -> its repository: the packages a deploy can install, each by its own commit.
+PACKAGES = {
+    tools.DISTRIBUTION: DECOMP_URL,
+    "unbake": "https://github.com/AbuN64/cake-unbake-64",
+    "recipemaker": "https://github.com/AbuN64/recipe-maker-64",
+    "cake-taste-64": "https://github.com/AbuN64/cake-taste-64",
+}
 SHA = re.compile(r"[0-9a-f]{40}")
 _EXACT = re.compile(r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_*-]+$")
-_PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
 
 
-Fetch = Callable[[str, str, str], str]
 Requirements = Callable[[Path, str, str, str | None], "tuple[str, str]"]
 Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
 
 
 class DeployError(DecompError):
     pass
-
-
-def fetch_file(url: str, sha: str, path: str) -> str:
-    """File `path` of `url` at the commit `sha`, fetched shallow into a scratch directory."""
-    with tempfile.TemporaryDirectory(prefix="deploy-") as scratch:
-        for argv in (["git", "init", "-q", scratch], ["git", "-C", scratch, "fetch", "-q", "--depth=1", url, sha]):
-            done = subprocess.run(argv, capture_output=True, text=True, check=False)
-            if done.returncode:
-                raise DeployError("deploy.fetch", f"cannot fetch {url} at {sha}: {done.stderr.strip()[-300:]}")
-        shown = subprocess.run(
-            ["git", "-C", scratch, "show", f"FETCH_HEAD:{path}"], capture_output=True, text=True, check=False
-        )
-        if shown.returncode:
-            raise DeployError("deploy.fetch", f"{url} at {sha} has no {path}")
-        return shown.stdout
 
 
 def requirements_at(project: Path, remote: str, branch: str, sha: str | None) -> tuple[str, str]:
@@ -100,17 +88,7 @@ def requirements_at(project: Path, remote: str, branch: str, sha: str | None) ->
 
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
     done = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, check=False)
-    return done.returncode, (done.stdout + done.stderr)[-2000:]
-
-
-def pins_of(pyproject: str) -> dict[str, dict[str, str]]:
-    """Normalised distribution name -> {name, url, commit} for each direct git pin in `dependencies`."""
-    found: dict[str, dict[str, str]] = {}
-    for row in tomllib.loads(pyproject).get("project", {}).get("dependencies", []):
-        match = _PIN.match(row.strip())
-        if match:
-            found[tools._normal(match["name"])] = {k: match[k] for k in ("name", "url", "commit")}
-    return found
+    return done.returncode, (done.stdout + done.stderr)[-200_000:]
 
 
 def check_sha(label: str, value: str) -> str:
@@ -121,47 +99,56 @@ def check_sha(label: str, value: str) -> str:
     return value
 
 
-def plan(decomp: str, wanted: dict[str, str], fetch: Fetch) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """(requirements to install, pins that must move). `wanted` maps tool command to the commit asked for."""
-    own = pins_of(fetch(DECOMP_URL, decomp, "pyproject.toml"))
-    moves: list[dict[str, str]] = []
-    requirements = [{"name": tools.DISTRIBUTION, "url": DECOMP_URL, "commit": decomp}]
-    tool_pyprojects: dict[str, str] = {}
-    for command, tool in tools.TOOLS.items():
-        pin = own.get(tools._normal(tool.distribution))
-        if pin is None:
-            raise DeployError("deploy.pin", f"decomp {decomp[:12]} declares no commit pin for {tool.distribution}")
-        commit = wanted.get(command) or pin["commit"]
-        if commit != pin["commit"]:
-            moves.append(
-                {
-                    "file": "abu-decomp-64 pyproject.toml",
-                    "pin": pin["name"],
-                    "now": pin["commit"],
-                    "must": commit,
-                    "why": f"{command} is deployed at {commit[:12]}",
-                }
-            )
-        requirements.append({"name": pin["name"], "url": pin["url"], "commit": commit})
-        tool_pyprojects[command] = fetch(pin["url"], commit, "pyproject.toml")
-    unbake_commit = next(r["commit"] for r in requirements if tools._normal(r["name"]) == "unbake")
-    recipe_pin = pins_of(tool_pyprojects["recipe"]).get("unbake")
-    if recipe_pin is None or recipe_pin["commit"] != unbake_commit:
-        moves.append(
-            {
-                "file": "recipe-maker-64 pyproject.toml",
-                "pin": "unbake",
-                "now": recipe_pin["commit"] if recipe_pin else "none",
-                "must": unbake_commit,
-                "why": "Recipe Maker must pin the deployed unbake, then decomp's Recipe pin moves to that commit",
-            }
-        )
-    return requirements, moves
+# Run by the live venv's python: one JSON list of the requirements it holds, apart from the package being deployed
+# and pip itself: `name @ git+URL@COMMIT` for a git install, `name==VERSION` for the rest. Any other direct install
+# (a path, an archive, an editable tree) cannot be reproduced from a commit and fails the deploy.
+CARRY = """\
+import importlib.metadata as metadata
+import json
+import re
+import sys
+
+def normal(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+skip = {normal(name) for name in sys.argv[1:]} | {"pip"}
+rows = []
+for dist in metadata.distributions():
+    name = dist.metadata["Name"]
+    if normal(name) in skip:
+        continue
+    raw = dist.read_text("direct_url.json")
+    if raw is None:
+        rows.append(f"{name}=={dist.version}")
+        continue
+    origin = json.loads(raw)
+    vcs = origin.get("vcs_info", {})
+    if vcs.get("vcs") != "git":
+        sys.exit(f"{name} is installed from {origin.get('url')}, not from a git commit")
+    rows.append(f"{name} @ git+{origin['url']}@{vcs['commit_id']}")
+print(json.dumps(sorted(rows)))
+"""
 
 
-def versioned_path(live: Path, decomp: str) -> Path:
+def carried(live: Path, package: str, project_packages: Sequence[str], run: Run) -> list[str]:
+    """The requirements the live venv holds, other than `package` and the project's own pinned packages (those are
+    installed at the versions asked for)."""
+    skip = [package, *(re.split(r"[\[=]", spec)[0] for spec in project_packages)]
+    code, output = run([str(live / "bin" / "python"), "-c", CARRY, *skip], None)
+    if code:
+        raise DeployError("deploy.carry", f"cannot read the packages installed in {live}: {output[-300:]}")
+    return json.loads(output.strip().splitlines()[-1])
+
+
+def requirement(package: str, commit: str) -> str:
+    """The pip requirement of `package` at `commit`, with its `dev` extra (the suite a deploy gates on runs from it; pip
+    only warns when a package has no such extra)."""
+    return f"{package}[dev] @ git+{PACKAGES[package]}@{commit}"
+
+
+def versioned_path(live: Path, sha: str) -> Path:
     """`<live>.<sha12>`, or `<live>.<sha12>-N` when that name is already taken (a redeploy of the same commit)."""
-    base = live.with_name(f"{live.name}.{decomp[:12]}")
+    base = live.with_name(f"{live.name}.{sha[:12]}")
     candidate, number = base, 1
     while candidate.exists() or candidate.is_symlink():
         number += 1
@@ -221,22 +208,19 @@ for spec in sys.argv[1:]:
 
 
 def install(
-    venv: Path, base: Path, requirements: Sequence[dict[str, str]], run: Run, packages: Sequence[str] = ()
+    venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], run: Run
 ) -> list[dict[str, Any]]:
     """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
-    the tools by commit (decomp with its `dev` extra) and the project's pinned `packages`."""
+    the carried requirements exactly as they are (`--no-deps`: they are already a resolved set), then `specs` (the
+    package at its commit and the project's pinned packages) with their dependencies."""
     python = venv / "bin" / "python"
-    specs = [
-        f"{r['name']}{'[dev]' if tools._normal(r['name']) == tools._normal(tools.DISTRIBUTION) else ''}"
-        f" @ git+{r['url']}@{r['commit']}"
-        for r in requirements
-    ]
-    specs += packages
-    done: list[dict[str, Any]] = []
-    for name, argv in (
+    steps = [
         ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
+        *([("carry", [str(python), "-m", "pip", "install", "--no-deps", *carry])] if carry else []),
         ("install", [str(python), "-m", "pip", "install", *specs]),
-    ):
+    ]
+    done: list[dict[str, Any]] = []
+    for name, argv in steps:
         code, output = run(argv, None)
         done.append({"step": name, "ok": code == 0, "tail": output[-400:] if code else ""})
         if code:
@@ -284,14 +268,14 @@ def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequ
 
 
 def checkout_steps(
-    profile: Profile, requirements: Sequence[dict[str, str]]
+    profile: Profile, package: str, commit: str
 ) -> tuple[dict[str, tuple[Path, str]], list[dict[str, Any]]]:
-    """The checkouts the seat runs tool code from (`tools.checkouts`) with the commit each must sit at, and a
-    blocking finding for every one that has local changes (aligning would discard or carry them; never done)."""
-    commit = {tools._normal(r["name"]): r["commit"] for r in requirements}
+    """The checkout the seat runs `package` from (`tools.checkouts`, a tool only) with the commit it must sit at, and a
+    blocking finding for it when it has local changes (aligning would discard or carry them; never done)."""
     wanted = {
-        command: (path, commit[tools._normal(tools.TOOLS[command].distribution)])
+        command: (path, commit)
         for command, path in tools.checkouts_of(profile).items()
+        if tools._normal(tools.TOOLS[command].distribution) == tools._normal(package)
     }
     findings = []
     for command, (path, _) in wanted.items():
@@ -312,7 +296,7 @@ def checkout_steps(
 
 
 def align_checkouts(wanted: dict[str, tuple[Path, str]], run: Run) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Fetch each checkout, then a detached checkout of its pinned commit. (rows done, findings)"""
+    """Fetch each checkout, then a detached checkout of its commit. (rows done, findings)"""
     done: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
     for command, (path, sha) in wanted.items():
@@ -381,17 +365,17 @@ def _land_table(profile: Profile) -> dict[str, Any]:
 
 def deploy(
     profile: Profile,
-    decomp: str,
+    package: str,
+    sha: str,
     venvs: Sequence[Path],
-    commits: dict[str, str | None],
     *,
     project_sha: str | None = None,
-    fetch: Fetch = fetch_file,
     run: Run = run_command,
     requirements_of: Requirements = requirements_at,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    check_sha("--sha", decomp)
-    wanted = {command: check_sha(f"--{command}", sha) for command, sha in commits.items() if sha}
+    if package not in PACKAGES:
+        raise DeployError("deploy.package", f"--package must be one of {sorted(PACKAGES)}, got {package!r}")
+    check_sha("--sha", sha)
     if not venvs:
         raise DeployError("deploy.venv", "pass at least one --venv")
     for venv in venvs:
@@ -406,36 +390,27 @@ def deploy(
     remote, branch = str(land.get("remote", "origin")), str(land.get("branch", "main"))
     revision, text = requirements_of(project, remote, branch, project_sha)
     packages = project_requirements(text, f"{project} requirements.txt at {revision[:12]}")
-    requirements, moves = plan(decomp, wanted, fetch)
-    findings = [
-        {
-            "key": "deploy.pin_must_move",
-            "blocking": True,
-            "message": f"{m['file']}: {m['pin']} is {m['now']} and must be {m['must']} ({m['why']})",
-            **m,
-        }
-        for m in moves
-    ]
+    specs = [requirement(package, sha), *packages]
     result: dict[str, Any] = {
-        "decomp": decomp,
-        "requirements": [f"{r['name']} @ git+{r['url']}@{r['commit']}" for r in requirements],
+        "package": package,
+        "sha": sha,
+        "requirements": specs,
         "project_revision": revision,
         "packages": packages,
-        "pins_to_move": moves,
         "venvs": [],
     }
-    if moves:
-        return result, 1, findings
-    checkouts, refused = checkout_steps(profile, requirements)
+    findings: list[dict[str, Any]] = []
+    checkouts, refused = checkout_steps(profile, package, sha)
     if refused:
         return result, 1, refused
     result["checkouts"], findings = align_checkouts(checkouts, run)
     if findings:
         return result, 1, findings
     for live in venvs:
-        venv = versioned_path(live, decomp)
-        steps = install(venv, live, requirements, run, packages)
-        row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "steps": steps}
+        venv = versioned_path(live, sha)
+        carry = carried(live, package, packages, run)
+        steps = install(venv, live, specs, carry, run)
+        row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "carried": carry, "steps": steps}
         result["venvs"].append(row)
         if all(step["ok"] for step in steps):
             row["smoke"] = smoke(venv, project, tools.host_file(profile), run, packages)

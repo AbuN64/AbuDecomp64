@@ -231,12 +231,9 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
 def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
-    deploy = actions.add_parser(
-        "deploy", help="install a decomp commit and its tools into venvs from git commits, after the pins agree"
-    )
-    deploy.add_argument("--sha", required=True, help="the decomp commit (40 hex)")
-    for tool in ("unbake", "recipe", "taste"):
-        deploy.add_argument(f"--{tool}", help=f"the {tool} commit to deploy (default: the one decomp pins)")
+    deploy = actions.add_parser("deploy", help="install ONE named package at one commit into venvs, carrying the rest")
+    deploy.add_argument("--package", required=True, help="the distribution to install (abu-decomp-64, unbake, ...)")
+    deploy.add_argument("--sha", required=True, help="the package commit (40 hex)")
     deploy.add_argument(
         "--project-sha",
         help="the project commit whose requirements.txt is installed (default: the project's main, fetched now)",
@@ -249,8 +246,7 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
     profile = _profile(args.profile)
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
-    commits = {tool: getattr(args, tool) for tool in ("unbake", "recipe", "taste")}
-    return deploy.deploy(profile, args.sha, live, commits, project_sha=args.project_sha)
+    return deploy.deploy(profile, args.package, args.sha, live, project_sha=args.project_sha)
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1604,7 +1600,7 @@ COMMANDS: dict[str, Command] = {
     ),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
-    "tools": Command("deploy the pinned tools into venvs", _tools_arguments, _run_tools),
+    "tools": Command("install one package into venvs", _tools_arguments, _run_tools),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),
     "build": Command("build committed sources and promote verified releases", _build_arguments, _run_build),
     "probe": Command("queue oracle probe requests and join them to PROBE events", _probe_arguments, _run_probe),

@@ -13,8 +13,10 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
   1. the SHA to deploy must be on gitea main and on github main (else nothing touches the rig); when gitea main has
      moved past it to a descendant, main's head is deployed instead and the log says the older deploy deferred;
   2. the activation job (Toolkit = the live link, Revision = the SHA's first 12 digits, so BUILD is <toolkit>.<sha12>):
-     `decomp tools deploy --sha SHA` installs the pins of AbuDecomp64's pyproject at SHA into a fresh venv (through a
-     private `<toolkit>-stage` link the engine swaps; the activation's single per-host permit keeps it race free),
+     the Worktree's own `decomp tools deploy --package abu-decomp-64 --sha SHA` (the landed commit installs itself)
+     installs abu-decomp-64 at SHA into a fresh venv beside every other package of the live toolkit carried over as
+     installed (through a private `<toolkit>-stage` link the engine swaps; the activation's single per-host permit
+     keeps it race free),
      BUILD is linked to that venv, and the full test suite (pytest over tests/, unittest and pytest modules) runs
      in the Worktree with BUILD's python and the Worktree's src first on the import path. The imported abu_decomp
      path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
@@ -23,7 +25,7 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      When the live link already names BUILD, Job Invoke answers Exit 0 with `<link> is <target>: already active` and
      runs nothing: that is a no-op success, the suite gate is skipped and the readback still decides;
   3. the readback job: the live link resolves to BUILD, and the installed commit of AbuDecomp64 and of every direct
-     git pin of its pyproject at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
+     git pin its pyproject still has at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
      fix forward, no rollback);
   4. the serve job, after the link flipped: the site unit ci/abu-decomp-tas.service of the Worktree (ExecStart in the
      live toolkit link, Type=notify) is installed and enabled, then `systemctl --user restart` runs; it returns when the
@@ -70,8 +72,12 @@ Read = Callable[[str], str]
 BUILD = r"""set -u
 sha=$1 toolkit=$2
 : "${BUILD:?Job Invoke sets BUILD for an activation}"
+work=$(pwd -P)
 stage=$toolkit-stage
-(cd "$HOME" && "$toolkit/bin/decomp" tools deploy --sha "$sha" --venv "$stage") \
+# the stage link starts at the live toolkit: the packages it holds are the ones carried over
+ln -sfn "$(readlink -f "$toolkit")" "$stage" || exit 1
+(cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
+  --sha "$sha" --venv "$stage") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
 built=$(readlink -f "$stage")
 case $built in

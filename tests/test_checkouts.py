@@ -88,11 +88,8 @@ class CheckoutTests(unittest.TestCase):
         with self.assertRaises(tools.DependencyError):
             tools.checkouts_of(load_profile(self.root / "seat.json"))
 
-    def requirements(self):
-        return [{"name": "cake-taste-64", "url": URL, "commit": self.new}]
-
     def test_deploy_aligns_a_clean_checkout_to_the_pin(self):
-        wanted, refused = deploy.checkout_steps(self.profile, self.requirements())
+        wanted, refused = deploy.checkout_steps(self.profile, "cake-taste-64", self.new)
         self.assertEqual(refused, [])
         done, findings = deploy.align_checkouts(wanted, deploy.run_command)
         self.assertEqual((findings, done[0]["ok"]), ([], True))
@@ -101,7 +98,7 @@ class CheckoutTests(unittest.TestCase):
 
     def test_deploy_refuses_a_checkout_with_local_changes_and_leaves_it(self):
         (self.copy / "f").write_text("mine")
-        _, refused = deploy.checkout_steps(self.profile, self.requirements())
+        _, refused = deploy.checkout_steps(self.profile, "cake-taste-64", self.new)
         self.assertEqual([f["key"] for f in refused], ["deploy.checkout_dirty"])
         self.assertEqual((self.copy / "f").read_text(), "mine")
         self.assertEqual(tools.checkout_head(self.copy), self.old)
@@ -111,6 +108,8 @@ class CheckoutTests(unittest.TestCase):
 
         def run(argv, cwd=None):
             calls.append(list(argv))
+            if argv[1:2] == ["-c"]:  # the live venv lists its packages
+                return 0, "[]"
             return deploy.run_command(argv, cwd) if argv[0] == "git" else (0, "ok")
 
         real = self.root / "venv.0"
@@ -122,18 +121,17 @@ class CheckoutTests(unittest.TestCase):
         def requirements_of(project, remote, branch, sha):  # the project is no repository: no real git state is read
             return "a" * 40, ""
 
-        with mock.patch("abu_decomp.deploy.plan", return_value=(self.requirements(), [])):
-            (self.copy / "f").write_text("mine")
-            _, code, findings = deploy.deploy(
-                self.profile, "a" * 40, [venv], {}, run=run, requirements_of=requirements_of
-            )
-            self.assertEqual((code, findings[0]["key"], calls), (1, "deploy.checkout_dirty", []))
-            (self.copy / "f").write_text("2")
-            git(self.copy, "checkout", "-q", "--", "f")
-            git(self.copy, "reset", "-q", "--hard", self.old)
-            result, code, findings = deploy.deploy(
-                self.profile, "a" * 40, [venv], {}, run=run, requirements_of=requirements_of
-            )
+        (self.copy / "f").write_text("mine")
+        _, code, findings = deploy.deploy(
+            self.profile, "cake-taste-64", self.new, [venv], run=run, requirements_of=requirements_of
+        )
+        self.assertEqual((code, findings[0]["key"], calls), (1, "deploy.checkout_dirty", []))
+        (self.copy / "f").write_text("2")
+        git(self.copy, "checkout", "-q", "--", "f")
+        git(self.copy, "reset", "-q", "--hard", self.old)
+        result, code, findings = deploy.deploy(
+            self.profile, "cake-taste-64", self.new, [venv], run=run, requirements_of=requirements_of
+        )
         self.assertEqual(code, 1 if any(f["key"] == "deploy.smoke" for f in findings) else 0)
         self.assertEqual(tools.checkout_head(self.copy), self.new)
         self.assertEqual(result["checkouts"][0]["ok"], True)

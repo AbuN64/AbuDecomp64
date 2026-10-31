@@ -67,7 +67,7 @@ def _memo_path(profile: Profile, options: behave_run.Options, name: str, version
             options.cases or config["cases"],
             options.seed,
             config["depth"],
-            sorted((c, p.commit) for c, p in tools.pins().items()),
+            sorted(tools.commits().items()),
         ]
     )
     return behave_run.work_dir(config) / "precapture" / f"{hashlib.sha256(key.encode()).hexdigest()[:24]}.json"

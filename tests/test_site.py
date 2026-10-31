@@ -176,6 +176,6 @@ class PageTest(unittest.TestCase):
         for path in ("/api/contract", "/api/feed", "/api/feed/stream", "/static/site/map.js", "/static/icons.svg"):
             self.assertIn(path, page)
         shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")}
-        self.assertEqual(shipped, {"map", "fn", "stream", "play"})
+        self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
         for name in shipped:
             self.assertRegex((ROOT / "static" / "site" / f"{name}.js").read_text(), r"export function mount\(el, ctx\)")

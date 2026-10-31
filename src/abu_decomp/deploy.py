@@ -6,6 +6,11 @@ A tool installs itself: no repository pins another of our tools by commit, so th
 installed from a git commit only (`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is refused), so a venv's
 provenance is always a commit that `decomp dependencies` can check.
 
+The carried set is read from the venv being replaced, or from `--carry-from PATH` when the venv named by `--venv` is
+scratch the caller recreates (the rig's `<toolkit>-stage` link): that is the live toolkit link, read before the new venv
+is built, and the scratch venv is never read. A live install that is not a git commit (a path, an archive, an editable
+tree) refuses the deploy naming its origin.
+
 A game project pins none of our tools (it builds with its own make), so a deploy never asks a project to move. It
 declares the Python packages its make runs (splat, spimdisasm, ...) in `requirements.txt` at its root, each pinned
 `name==version`; the deploy installs them into every venv beside the decomp commit and its `dev` extra, so a plain
@@ -130,13 +135,13 @@ print(json.dumps(sorted(rows)))
 """
 
 
-def carried(live: Path, package: str, project_packages: Sequence[str], run: Run) -> list[str]:
-    """The requirements the live venv holds, other than `package` and the project's own pinned packages (those are
-    installed at the versions asked for)."""
+def carried(source: Path, package: str, project_packages: Sequence[str], run: Run) -> list[str]:
+    """The requirements the `source` venv holds (the live toolkit), other than `package` and the project's own pinned
+    packages (those are installed at the versions asked for)."""
     skip = [package, *(re.split(r"[\[=]", spec)[0] for spec in project_packages)]
-    code, output = run([str(live / "bin" / "python"), "-c", CARRY, *skip], None)
+    code, output = run([str(source / "bin" / "python"), "-c", CARRY, *skip], None)
     if code:
-        raise DeployError("deploy.carry", f"cannot read the packages installed in {live}: {output[-300:]}")
+        raise DeployError("deploy.carry", f"cannot read the packages installed in {source}: {output[-300:]}")
     return json.loads(output.strip().splitlines()[-1])
 
 
@@ -370,6 +375,7 @@ def deploy(
     venvs: Sequence[Path],
     *,
     project_sha: str | None = None,
+    carry_from: Path | None = None,
     run: Run = run_command,
     requirements_of: Requirements = requirements_at,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -384,6 +390,8 @@ def deploy(
         if not venv.is_symlink():
             raise DeployError("deploy.venv", f"{venv} is a real directory, not a symlink")
     project = tools.project_dir(profile)
+    if carry_from and not (carry_from / "bin" / "python").is_file():
+        raise DeployError("deploy.venv", f"--carry-from {carry_from} is not a venv (no bin/python)")
     if project_sha:
         check_sha("--project-sha", project_sha)
     land = _land_table(profile)
@@ -408,8 +416,9 @@ def deploy(
         return result, 1, findings
     for live in venvs:
         venv = versioned_path(live, sha)
-        carry = carried(live, package, packages, run)
-        steps = install(venv, live, specs, carry, run)
+        source = carry_from or live
+        carry = carried(source, package, packages, run)
+        steps = install(venv, source, specs, carry, run)
         row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "carried": carry, "steps": steps}
         result["venvs"].append(row)
         if all(step["ok"] for step in steps):

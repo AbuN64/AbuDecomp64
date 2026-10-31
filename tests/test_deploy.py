@@ -346,6 +346,51 @@ class CarryTests(DeployTests):
         install = [c for c in self.commands if "install" in c][-1]
         self.assertEqual(install[-2:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", "splat64[mips]==0.50.0"])
 
+    def test_the_carried_set_is_read_from_carry_from_and_the_scratch_venv_is_never_run(self):
+        """ed1c85a: the rig's `venv-decomp-stage` is scratch the deploy recreates; the live toolkit link is carried."""
+        live = self.root / "toolkit"
+        self.make_venv(self.root / "toolkit.real")
+        live.symlink_to(self.root / "toolkit.real")
+        scratch = self.root / "venv-a"
+        result, code, findings = self.deploy(extra={"carry_from": live})
+        self.assertEqual((code, findings), (0, []))
+        asked = next(c for c in self.commands if c[1:2] == ["-c"])
+        self.assertEqual(asked[0], str(live / "bin" / "python"))
+        create = next(c for c in self.commands if "venv" in c and "-m" in c)
+        self.assertEqual(create[0], str(live / "bin" / "python"))
+        self.assertFalse(any(c[0] == str(scratch / "bin" / "python") for c in self.commands if "pip" not in c))
+        self.assertEqual(result["venvs"][0]["carried"], CARRIED)
+        self.assertEqual(os.path.realpath(scratch), str(self.root / f"venv-a.{D1[:12]}"))  # the scratch link is swapped
+
+    def test_a_carry_from_that_is_not_a_venv_refuses_before_anything_runs(self):
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy(extra={"carry_from": self.root / "nowhere"})
+        self.assertEqual(caught.exception.key, "deploy.venv")
+        self.assertEqual(self.commands, [])
+
+    def test_a_live_file_install_refuses_naming_the_origin_and_the_live_link(self):
+        """The rig's live unbake was installed from file:///home/abu/runs/char-de-3/src by a run."""
+        live = self.root / "toolkit"
+        self.make_venv(live)
+        origin = "unbake is installed from file:///home/abu/runs/char-de-3/src, not from a git commit"
+
+        def run(argv, cwd=None):
+            return (1, origin) if argv[1:2] == ["-c"] else (0, "")
+
+        with self.assertRaises(deploy.DeployError) as caught:
+            deploy.deploy(
+                self.profile,
+                "abu-decomp-64",
+                D1,
+                [self.root / "venv-a"],
+                carry_from=live,
+                run=run,
+                requirements_of=self.requirements_of,
+            )
+        self.assertEqual(caught.exception.key, "deploy.carry")
+        self.assertIn(f"packages installed in {live}", str(caught.exception))
+        self.assertIn("file:///home/abu/runs/char-de-3/src", str(caught.exception))
+
     def test_a_venv_that_cannot_be_listed_refuses_before_anything_is_built(self):
         self.fail = "metadata.distributions"
         with self.assertRaises(deploy.DeployError) as caught:

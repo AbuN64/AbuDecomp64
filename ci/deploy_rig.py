@@ -15,8 +15,8 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
   2. the activation job (Toolkit = the live link, Revision = the SHA's first 12 digits, so BUILD is <toolkit>.<sha12>):
      the Worktree's own `decomp tools deploy --package abu-decomp-64 --sha SHA` (the landed commit installs itself)
      installs abu-decomp-64 at SHA into a fresh venv beside every other package of the live toolkit carried over as
-     installed (through a private `<toolkit>-stage` link the engine swaps; the activation's single per-host permit
-     keeps it race free),
+     installed (`--carry-from` the live link, read before the venv is built; the private `<toolkit>-stage` link the
+     engine swaps is scratch, never read; the activation's single per-host permit keeps it race free),
      BUILD is linked to that venv, and the full test suite (pytest over tests/, unittest and pytest modules) runs
      in the Worktree with BUILD's python and the Worktree's src first on the import path. The imported abu_decomp
      path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
@@ -74,10 +74,10 @@ sha=$1 toolkit=$2
 : "${BUILD:?Job Invoke sets BUILD for an activation}"
 work=$(pwd -P)
 stage=$toolkit-stage
-# the stage link starts at the live toolkit: the packages it holds are the ones carried over
+# the stage link is scratch the deploy recreates and never reads: the packages carried over are the live toolkit's
 ln -sfn "$(readlink -f "$toolkit")" "$stage" || exit 1
 (cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
-  --sha "$sha" --venv "$stage") \
+  --sha "$sha" --venv "$stage" --carry-from "$toolkit") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
 built=$(readlink -f "$stage")
 case $built in

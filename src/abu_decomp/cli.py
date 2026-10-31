@@ -239,6 +239,11 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
         help="the project commit whose requirements.txt is installed (default: the project's main, fetched now)",
     )
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
+    deploy.add_argument(
+        "--carry-from",
+        type=Path,
+        help="the venv whose packages are carried (default: each --venv itself); a scratch --venv is never read",
+    )
 
 
 def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
@@ -246,7 +251,8 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
     profile = _profile(args.profile)
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
-    return deploy.deploy(profile, args.package, args.sha, live, project_sha=args.project_sha)
+    carry_from = Path(os.path.abspath(args.carry_from)) if args.carry_from else None
+    return deploy.deploy(profile, args.package, args.sha, live, project_sha=args.project_sha, carry_from=carry_from)
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:

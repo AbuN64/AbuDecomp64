@@ -472,7 +472,8 @@ class BuildScriptTests(ScriptCase):
             live / "bin/python",
             'test "$1 $2 $3 $4 $5 $6 $7 $8 $9" = "-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
             'case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n'  # the landed commit's own code runs the install
-            f'shift 9; dir="$1.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
+            f'shift 9; test "$2 $3" = "--carry-from {self.toolkit}" || exit 6\n'  # the carried set is the live link's
+            f'dir="$1.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
         )
         self.toolkit.symlink_to(live)
         done = self.run_build()

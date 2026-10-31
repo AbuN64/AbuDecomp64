@@ -440,6 +440,26 @@ class SuiteScriptTests(ScriptCase):
         self.assertEqual(deploy_rig.suite(sha, "log", done.stdout)[0], f"{sha[:12]}: suite {facts['suite-summary']}")
         self.assertIn(f"suite-sha: {sha}", (self.built / "suite.txt").read_text())
 
+    def test_a_passing_suite_leaves_the_built_tree_read_only_and_a_failing_one_leaves_it_alone(self):
+        (self.built / "lib").mkdir()
+        self.built.chmod(0o555)  # the deploy sealed it after its smoke test
+        self.addCleanup(self.unseal)
+        done, _ = self.suite()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        for path in (self.built, self.built / "lib", self.built / "suite.txt", self.built / "bin/python"):
+            self.assertFalse(path.stat().st_mode & 0o222, path)
+        with self.assertRaises(PermissionError):
+            (self.built / "pip-wrote-this").write_text("no")
+        self.unseal()
+        (self.built / "suite.txt").unlink()
+        self.write_test("assert abu_decomp.VALUE == 2")
+        done, _ = self.suite()
+        self.assertEqual(done.returncode, 1)
+        self.assertTrue(self.built.stat().st_mode & 0o200)  # the gate failed: no seal
+
+    def unseal(self):
+        subprocess.run(["chmod", "-R", "u+w", str(self.built)], check=False)
+
     def test_a_failing_test_exits_1_names_the_first_failure_and_writes_no_suite_txt(self):
         self.write_test("assert abu_decomp.VALUE == 2")
         done, facts = self.suite()

@@ -18,7 +18,9 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      installed (`--carry-from` the live link, read before the venv is built; the private `<toolkit>-stage` link the
      engine swaps is scratch, never read; the activation's single per-host permit keeps it race free),
      BUILD is linked to that venv, and the full test suite (pytest over tests/, unittest and pytest modules) runs
-     in the Worktree with BUILD's python and the Worktree's src first on the import path. The imported abu_decomp
+     in the Worktree with BUILD's python and the Worktree's src first on the import path. After the gate passes and
+     before the flip, the built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place
+     and a job's pip install into it fails loudly. The imported abu_decomp
      path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
      alone and the deploy refuses with one line naming the first failing test. On exit 0 Job Invoke switches the
      live link to BUILD and keeps the replaced venv as <toolkit>.previous.
@@ -106,8 +108,12 @@ rc=0
 "$BUILD/bin/python" "$work/runner.py" > "$work/suite.log" 2>&1 || rc=$?
 cat "$work/suite.log"
 if [ "$rc" = 0 ]; then
+  # the deploy sealed the tree (chmod -R a-w) after its smoke test: open only the root for the one record, then seal
+  # again, so the gate has passed before the tree goes read-only and Job Invoke flips the link to a tree nobody writes
+  chmod u+w "$built" || exit 9
   { echo "suite-sha: $(git rev-parse HEAD)"; grep '^suite-\(summary\|import\)' "$work/suite.log"; } \
     > "$built/suite.txt" || exit 9
+  chmod -R a-w "$built" || exit 9
 fi
 exit "$rc"
 """

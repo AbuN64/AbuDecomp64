@@ -245,6 +245,56 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))
         self.assertFalse((self.root / f"venv-a.{D1[:12]}").exists())
 
+    def test_the_fresh_tree_goes_read_only_after_the_smoke_gate_and_before_the_link_flips(self):
+        live, order = self.root / "venv-a", []
+        old = os.path.realpath(live)
+
+        def runner(argv, cwd=None):
+            if argv[0] == "chmod":
+                order.append(("chmod", argv[1:], os.path.realpath(live) == old))  # the link still names the old tree
+            elif argv[0].endswith("decomp") and argv[1] == "dependencies":
+                order.append(("smoke", os.path.realpath(live) == old))
+            return self.runner(argv, cwd)
+
+        real_point = deploy.point
+
+        def point(*args):
+            order.append(("flip",))
+            return real_point(*args)
+
+        with mock.patch.object(deploy, "point", point):
+            result, code, findings = deploy.deploy(
+                self.profile, "abu-decomp-64", D1, [live], run=runner, requirements_of=self.requirements_of
+            )
+        self.assertEqual((code, findings), (0, []))
+        kinds = [o[0] for o in order]
+        self.assertEqual(kinds, ["smoke", "chmod", "flip", "smoke"])  # gate, read-only, flip, readback smoke
+        fresh = result["venvs"][0]["versioned"]
+        self.assertEqual(order[1], ("chmod", ["-R", "a-w", fresh], True))
+
+    def test_a_failed_smoke_never_seals_and_a_failed_seal_never_flips(self):
+        self.fail = "dependencies"
+        _, code, _ = self.deploy()
+        self.assertEqual(code, 1)
+        self.assertFalse([c for c in self.commands if c[0] == "chmod"])
+        self.fail = "chmod"
+        old = os.path.realpath(self.root / "venv-a")
+        _, code, findings = self.deploy()
+        self.assertEqual((code, findings[0]["key"]), (1, "deploy.seal"))
+        self.assertEqual(os.path.realpath(self.root / "venv-a"), old)
+
+    def test_seal_makes_a_real_tree_unwritable_and_unseal_removes_it(self):
+        tree = self.root / "sealed"
+        (tree / "lib" / "site").mkdir(parents=True)
+        (tree / "lib" / "site" / "m.py").write_text("x = 1\n")
+        self.assertTrue(deploy.seal(tree, deploy.run_command)["ok"])
+        for path in (tree, tree / "lib" / "site", tree / "lib" / "site" / "m.py"):
+            self.assertFalse(os.access(path, os.W_OK) and os.geteuid() != 0, path)
+        with self.assertRaises(PermissionError):
+            (tree / "new.txt").write_text("no")
+        deploy.unseal(tree)
+        self.assertFalse(tree.exists())
+
     def test_a_redeploy_of_one_commit_gets_its_own_versioned_dir(self):
         self.deploy()
         result, code, _ = self.deploy()

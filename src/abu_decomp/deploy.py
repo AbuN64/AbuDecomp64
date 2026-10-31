@@ -26,7 +26,8 @@ changes.
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the carried
 packages and the package are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own python so console
 script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake symbols --version V`
-on the project) runs against the fresh venv, and only then is the symlink swapped with rename(2). Processes started
+on the project) runs against the fresh venv, the fresh tree is made read-only (`chmod -R a-w`, so a job's pip install into the
+live toolkit fails loudly instead of rewriting it in place), and only then is the symlink swapped with rename(2). Processes started
 through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
 `venv_versions`: not the live target, not the newest rollback, no process using it). A live path that is still a real
 directory is refused (a deploy only swaps symlinks), and the link is read back.
@@ -159,6 +160,22 @@ def versioned_path(live: Path, sha: str) -> Path:
         number += 1
         candidate = base.with_name(f"{base.name}-{number}")
     return candidate
+
+
+def seal(venv: Path, run: Run) -> dict[str, Any]:
+    """Make the whole `venv` tree read-only (`chmod -R a-w`): a deployed toolkit is never written in place. The next
+    deploy builds a fresh tree, so nothing needs write access to this one."""
+    code, output = run(["chmod", "-R", "a-w", str(venv)], None)
+    return {"check": f"chmod -R a-w {venv}", "ok": code == 0, "tail": output[-300:] if code else ""}
+
+
+def unseal(venv: Path) -> None:
+    """Give the owner write access again on our own never-linked tree, so it can be removed."""
+    for root, dirs, files in os.walk(venv):
+        for name in [".", *dirs]:
+            if not (Path(root) / name).is_symlink():
+                (Path(root) / name).chmod(0o700)
+    shutil.rmtree(venv, ignore_errors=True)
 
 
 def point(live: Path, target: Path) -> dict[str, Any]:
@@ -441,11 +458,18 @@ def deploy(
         if bad:
             shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked, so nothing uses it
             continue
+        row["seal"] = seal(venv, run)  # after the gate (smoke), before the flip
+        if not row["seal"]["ok"]:
+            findings.append(
+                {"key": "deploy.seal", "blocking": True, "message": f"{venv}: {row['seal']['check']} failed: {row['seal']['tail']}"}
+            )
+            unseal(venv)  # built but never linked, so nothing uses it
+            continue
         try:
             row["swap"] = point(live, venv)
         except DeployError as error:
             findings.append({"key": error.key, "blocking": True, "message": str(error)})
-            shutil.rmtree(venv, ignore_errors=True)  # built but never linked, so nothing uses it
+            unseal(venv)  # built but never linked, so nothing uses it
             continue
         row["swap"]["readback_smoke"] = smoke(live, project, tools.host_file(profile), run, packages)
         if not row["swap"]["readback"] or not all(c["ok"] for c in row["swap"]["readback_smoke"]):

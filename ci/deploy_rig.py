@@ -92,7 +92,7 @@ stage=$toolkit-stage
 # the stage link is scratch the deploy recreates and never reads: the packages carried over are the live toolkit's
 ln -sfn "$(readlink -f "$toolkit")" "$stage" || exit 1
 (cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
-  --sha "$sha" --venv "$stage" --carry-from "$toolkit") \
+  --sha "$sha" --venv "$stage" --carry-from "$toolkit" --name "$name") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
 built=$(readlink -f "$stage")
 case $built in

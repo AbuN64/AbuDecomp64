@@ -246,6 +246,7 @@ def _tools_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="the venv whose packages are carried (default: each --venv itself); a scratch --venv is never read",
     )
+    deploy.add_argument("--name", help="the build name `tools name` answered: a deploy giving another name builds nothing")
     name.add_argument("--carry-from", type=Path, required=True, help="the venv whose packages the build would carry")
 
 
@@ -259,7 +260,9 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
         )
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
     carry_from = Path(os.path.abspath(args.carry_from)) if args.carry_from else None
-    return deploy.deploy(profile, args.package, args.sha, live, project_sha=args.project_sha, carry_from=carry_from)
+    return deploy.deploy(
+        profile, args.package, args.sha, live, project_sha=args.project_sha, carry_from=carry_from, expect_name=args.name
+    )
 
 
 def _probe_arguments(parser: argparse.ArgumentParser) -> None:

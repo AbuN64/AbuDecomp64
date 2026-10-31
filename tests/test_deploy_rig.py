@@ -517,6 +517,7 @@ class BuildScriptTests(ScriptCase):
             '"-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
             "case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n"  # the landed commit's own code runs the install
             f'shift 9; test "$2 $3" = "--carry-from {self.toolkit}" || exit 6\n'  # the carried set is the live link's
+            f'test "$4 $5" = "--name {NAME}" || exit 5\n'  # the name job's answer is the build the engine must give
             f'dir="$1.{NAME}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
         )
         self.toolkit.symlink_to(live)

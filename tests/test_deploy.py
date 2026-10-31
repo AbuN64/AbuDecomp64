@@ -523,6 +523,16 @@ class NameTests(DeployTests):
         self.assertEqual(result["venvs"][0]["name"], answered["name"])
         self.assertEqual(result["venvs"][0]["versioned"], str(self.root / f"venv-a.{answered['name']}"))
 
+    def test_a_deploy_giving_another_name_than_the_expected_one_refuses_before_building(self):
+        answered = self.name()[0]["name"]
+        before = {entry.name for entry in self.root.iterdir()}
+        with self.assertRaises(deploy.DeployError) as refused:
+            self.deploy(extra={"expect_name": "0" * 12})
+        self.assertEqual(refused.exception.key, "deploy.name")
+        self.assertEqual({entry.name for entry in self.root.iterdir()}, before)
+        result, code, _ = self.deploy(extra={"expect_name": answered})
+        self.assertEqual((code, result["venvs"][0]["name"]), (0, answered))
+
     def test_two_packages_deployed_after_each_other_get_two_names_and_a_repeat_keeps_its_own(self):
         decomp = self.name()[0]["name"]
         unbake = self.name(package="unbake", sha=U2)[0]["name"]

@@ -439,9 +439,12 @@ def deploy(
     *,
     project_sha: str | None = None,
     carry_from: Path | None = None,
+    expect_name: str | None = None,
     run: Run = run_command,
     requirements_of: Requirements = requirements_at,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    """`decomp tools deploy`; `expect_name` is the build name the caller read from `decomp tools name`: a deploy whose
+    content gives another name refuses before it builds anything."""
     if package not in PACKAGES:
         raise DeployError("deploy.package", f"--package must be one of {sorted(PACKAGES)}, got {package!r}")
     check_sha("--sha", sha)
@@ -481,6 +484,8 @@ def deploy(
         source = carry_from or live
         carry = carried(source, package, packages, run)
         build = content_name(specs, carry)
+        if expect_name and build != expect_name:
+            raise DeployError("deploy.name", f"{live} would build {build}, not the expected {expect_name}: nothing built")
         venv = versioned_path(live, build)
         steps = install(venv, source, specs, carry, run)
         row: dict[str, Any] = {

@@ -18,7 +18,8 @@ spec.loader.exec_module(deploy_rig)
 SHA = "a" * 12 + "b" * 28
 NEWER = "d" * 12 + "e" * 28
 TOOLKIT = deploy_rig.TOOLKIT
-BUILD = f"{TOOLKIT}.{SHA[:12]}"
+NAME = "0123456789ab"  # the engine's digest of the whole content; never the SHA
+BUILD = f"{TOOLKIT}.{NAME}"
 ENVIRON = {deploy_rig.ENV: SHA}
 ARGS = ["--Subject.Board", "board1", "--Subject.Card", "card1"]
 CHECKOUT = "/srv/runs/board1.card1/Projects/AbuN64/AbuDecomp64"
@@ -66,10 +67,16 @@ class Rig:
             "/runs/.tmp/job-rig-3.log": f"serve-sha: {served or head or SHA}\n",
         }
         self.refuse_at = refuse_at
+        self.names = []  # the name jobs, answered before the numbered ones
+        self.name_log = json.dumps({"ok": True, "result": {"name": NAME}}) + "\n"
+        self.name_exit = 0
         self.requests, self.git_calls, self.fetched = [], [], None
         self.have = True
 
     def job(self, body):
+        if body["Argv"][2] == deploy_rig.NAME:
+            self.names.append(body)
+            return answer(self.name_exit, "/runs/.tmp/job-rig-name.log")
         self.requests.append(body)
         n = len(self.requests)
         if self.refuse_at == n:
@@ -77,7 +84,7 @@ class Rig:
         return answer(self.exits[n - 1], f"/runs/.tmp/job-rig-{n}.log")
 
     def read(self, path):
-        return self.logs[path]
+        return self.name_log if path.endswith("job-rig-name.log") else self.logs[path]
 
     def git(self, *args):
         self.git_calls.append(args)
@@ -169,8 +176,8 @@ class DeployTests(unittest.TestCase):
             self.assertEqual(body["Subject"], {"Board": "board1", "Card": "card1"})
             self.assertEqual(body["Worktree"], f"Projects/AbuN64/AbuDecomp64@{SHA}")
             self.assertIsInstance(body["Argv"], list)
-        self.assertEqual(activation["Activation"], {"Toolkit": TOOLKIT, "Revision": SHA[:12]})
-        self.assertEqual(activation["Argv"][-2:], [SHA, TOOLKIT])
+        self.assertEqual(activation["Activation"], {"Toolkit": TOOLKIT, "Revision": NAME})
+        self.assertEqual(activation["Argv"][-3:], [SHA, TOOLKIT, NAME])
         self.assertNotIn("Activation", readback)
         self.assertEqual(readback["Argv"][-3:], [SHA, TOOLKIT, BUILD])
 
@@ -188,8 +195,8 @@ class DeployTests(unittest.TestCase):
         code, out, err = run_main(Rig())
         self.assertEqual((code, err), (0, ""))
         self.assertIn(f"deployed {SHA}", out.splitlines())
-        self.assertIn(f"{SHA[:12]}: activation job Exit 0, Log /runs/.tmp/job-rig-1.log", out)
-        self.assertIn(f"{SHA[:12]}: readback job Exit 0, Log /runs/.tmp/job-rig-2.log", out)
+        self.assertIn(f"{NAME}: activation job Exit 0, Log /runs/.tmp/job-rig-1.log", out)
+        self.assertIn(f"{NAME}: readback job Exit 0, Log /runs/.tmp/job-rig-2.log", out)
         self.assertIn(f"{SHA[:12]}: suite {SUMMARY}", out)
 
     def test_the_deploy_never_takes_the_old_ssh_slot_flock_or_waitfor_path(self):
@@ -212,7 +219,7 @@ class DeployTests(unittest.TestCase):
         moved = f"{SHA[:12]}: main has moved to {NEWER[:12]}, deploying main's head; the older deploy deferred"
         self.assertIn(moved, lines)
         self.assertEqual(rig.requests[0]["Worktree"], f"Projects/AbuN64/AbuDecomp64@{NEWER}")
-        self.assertEqual(rig.requests[0]["Activation"]["Revision"], NEWER[:12])
+        self.assertEqual(rig.requests[0]["Activation"]["Revision"], NAME)
         self.assertIn(f"deployed {NEWER}", lines)
 
     def test_a_commit_missing_here_is_fetched_and_still_missing_is_refused(self):
@@ -481,13 +488,13 @@ class SuiteScriptTests(ScriptCase):
 class BuildScriptTests(ScriptCase):
     """The BUILD script with a stand-in toolkit python running `-m abu_decomp tools deploy`.
 
-    The stand-in builds `<stage>.<sha12>` and swaps the stage link.
+    The stand-in builds `<stage>.<name>` and swaps the stage link.
     """
 
     def setUp(self):
         super().setUp()
         self.toolkit = self.root / "venv-decomp"
-        self.build = self.root / f"venv-decomp.{SHA[:12]}"
+        self.build = self.root / f"venv-decomp.{NAME}"
         self.stage = self.root / "venv-decomp-stage"
 
     def decomp(self, body):
@@ -495,7 +502,7 @@ class BuildScriptTests(ScriptCase):
 
     def run_build(self):
         env = sh_env(BUILD=str(self.build), HOME=str(self.root))  # the caller's own environment, as Dos admits it
-        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), env=env)
+        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, env=env)
 
     def test_the_build_links_build_to_the_stage_venv_and_never_touches_the_live_link(self):
         live = self.root / "live-target"
@@ -505,12 +512,12 @@ class BuildScriptTests(ScriptCase):
             '"-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
             "case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n"  # the landed commit's own code runs the install
             f'shift 9; test "$2 $3" = "--carry-from {self.toolkit}" || exit 6\n'  # the carried set is the live link's
-            f'dir="$1.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
+            f'dir="$1.{NAME}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
         )
         self.toolkit.symlink_to(live)
         done = self.run_build()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        built = self.root / f"venv-decomp-stage.{SHA[:12]}"
+        built = self.root / f"venv-decomp-stage.{NAME}"
         self.assertEqual(self.build.resolve(), built.resolve())
         self.assertEqual(self.stage.resolve(), built.resolve())
         self.assertEqual(self.toolkit.resolve(), live.resolve())
@@ -531,7 +538,50 @@ class BuildScriptTests(ScriptCase):
         self.toolkit.symlink_to(live)
         done = self.run_build()
         self.assertEqual(done.returncode, 1)
-        self.assertIn("not a build of", done.stderr)
+        self.assertIn("not the build", done.stderr)
+
+
+class NameScriptTests(ScriptCase):
+    """The NAME script asks the landed commit's own engine for the build's name and answers its envelope."""
+
+    def setUp(self):
+        super().setUp()
+        self.toolkit = self.root / "venv-decomp"
+
+    def test_the_name_script_runs_the_worktree_engine_over_the_live_link_and_a_failure_exits_1(self):
+        live = self.root / "live-target"
+        wrapper(
+            live / "bin/python",
+            'test "$*" = "-m abu_decomp tools name --package abu-decomp-64 --sha ' + SHA
+            + f' --carry-from {self.toolkit}" || exit 7\n'
+            "case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n"
+            f'echo \'{{"ok": true, "result": {{"name": "{NAME}"}}}}\'',
+        )
+        self.toolkit.symlink_to(live)
+        env = sh_env(HOME=str(self.root))
+        done = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), env=env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(deploy_rig.build_name(done.stdout), NAME)
+        wrapper(live / "bin/python", "exit 3")
+        failed = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), env=env)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn("name-error", failed.stderr)
+
+
+class BuildNameTests(unittest.TestCase):
+    def test_the_name_is_the_last_envelope_line_with_a_12_hex_name_and_anything_else_is_refused(self):
+        text = 'noise\n{"result": {"name": "abcdef012345"}}\n'
+        self.assertEqual(deploy_rig.build_name(text), "abcdef012345")
+        for bad in ("", "no json", '{"result": {}}', '{"result": {"name": "../x"}}'):
+            with self.assertRaisesRegex(deploy_rig.Refused, "no build name"):
+                deploy_rig.build_name(bad)
+
+    def test_a_name_job_that_fails_refuses_before_the_activation(self):
+        rig = Rig()
+        rig.name_exit = 1
+        with self.assertRaisesRegex(deploy_rig.Refused, "name exit 1"):
+            rig.deploy()
+        self.assertEqual(rig.requests, [])
 
 
 class ReadbackScriptTests(ScriptCase):

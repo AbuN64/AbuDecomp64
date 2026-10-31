@@ -232,24 +232,31 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     deploy = actions.add_parser("deploy", help="install ONE named package at one commit into venvs, carrying the rest")
-    deploy.add_argument("--package", required=True, help="the distribution to install (abu-decomp-64, unbake, ...)")
-    deploy.add_argument("--sha", required=True, help="the package commit (40 hex)")
-    deploy.add_argument(
-        "--project-sha",
-        help="the project commit whose requirements.txt is installed (default: the project's main, fetched now)",
-    )
+    name = actions.add_parser("name", help="the build name a deploy would give (every package's commit), building nothing")
+    for sub in (deploy, name):
+        sub.add_argument("--package", required=True, help="the distribution to install (abu-decomp-64, unbake, ...)")
+        sub.add_argument("--sha", required=True, help="the package commit (40 hex)")
+        sub.add_argument(
+            "--project-sha",
+            help="the project commit whose requirements.txt is installed (default: the project's main, fetched now)",
+        )
     deploy.add_argument("--venv", type=Path, required=True, nargs="+", help="live venv paths (symlinks) to deploy to")
     deploy.add_argument(
         "--carry-from",
         type=Path,
         help="the venv whose packages are carried (default: each --venv itself); a scratch --venv is never read",
     )
+    name.add_argument("--carry-from", type=Path, required=True, help="the venv whose packages the build would carry")
 
 
 def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import deploy
 
     profile = _profile(args.profile)
+    if args.action == "name":
+        return deploy.name(
+            profile, args.package, args.sha, Path(os.path.abspath(args.carry_from)), project_sha=args.project_sha
+        )
     live = [Path(os.path.abspath(path)) for path in args.venv]  # never resolve: the live path is the symlink
     carry_from = Path(os.path.abspath(args.carry_from)) if args.carry_from else None
     return deploy.deploy(profile, args.package, args.sha, live, project_sha=args.project_sha, carry_from=carry_from)

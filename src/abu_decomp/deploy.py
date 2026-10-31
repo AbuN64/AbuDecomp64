@@ -23,8 +23,14 @@ When the package is a tool, the checkout the seat names for it in `tools.checkou
 checkout) is brought to the deployed commit (fetch, detached checkout) and refused, untouched, when it has local
 changes.
 
+A toolkit build holds several packages, so its name identifies all of its content, never one package's commit: `<name>`
+is the first 12 hex digits of the sha256 of every requirement the build holds (the carried set, the package at its
+commit, the project's pinned packages), sorted. Two builds of one content share a name (a redeploy is the already-active
+no-op); a build that differs in any package gets another. `decomp tools name` answers that name without building, for
+a deployer that must name the build before the activation (`content_name` is the one rule, used by both).
+
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
-carried packages and the package are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own
+carried packages and the package are installed into a fresh venv beside it (`PATH.<name>`, pip run by that venv's own
 python so console script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake
 symbols --version V` on the project) runs against the fresh venv, the fresh tree is made read-only (`chmod -R a-w`, so
 a job's pip install into the live toolkit fails loudly instead of rewriting it in place), and only then is the symlink
@@ -42,6 +48,7 @@ deploy: `resync` in the result lists every tree with its outcome.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -160,9 +167,14 @@ def requirement(package: str, commit: str) -> str:
     return f"{package}[dev] @ git+{PACKAGES[package]}@{commit}"
 
 
-def versioned_path(live: Path, sha: str) -> Path:
-    """`<live>.<sha12>`, or `<live>.<sha12>-N` when that name is already taken (a redeploy of the same commit)."""
-    base = live.with_name(f"{live.name}.{sha[:12]}")
+def content_name(specs: Sequence[str], carry: Sequence[str]) -> str:
+    """The name of a build: 12 hex digits identifying every requirement it holds, whichever package is being deployed."""
+    return hashlib.sha256("\n".join(sorted({*specs, *carry})).encode()).hexdigest()[:12]
+
+
+def versioned_path(live: Path, name: str) -> Path:
+    """`<live>.<name>`, or `<live>.<name>-N` when that name is already taken (a redeploy of the same content)."""
+    base = live.with_name(f"{live.name}.{name}")
     candidate, number = base, 1
     while candidate.exists() or candidate.is_symlink():
         number += 1
@@ -391,6 +403,34 @@ def _land_table(profile: Profile) -> dict[str, Any]:
         return {}
 
 
+def name(
+    profile: Profile,
+    package: str,
+    sha: str,
+    source: Path,
+    *,
+    project_sha: str | None = None,
+    run: Run = run_command,
+    requirements_of: Requirements = requirements_at,
+) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    """`decomp tools name`: the build name a deploy of `package` at `sha` over the packages `source` holds would give;
+    builds nothing."""
+    if package not in PACKAGES:
+        raise DeployError("deploy.package", f"--package must be one of {sorted(PACKAGES)}, got {package!r}")
+    check_sha("--sha", sha)
+    if project_sha:
+        check_sha("--project-sha", project_sha)
+    if not (source / "bin" / "python").is_file():
+        raise DeployError("deploy.venv", f"--carry-from {source} is not a venv (no bin/python)")
+    land = _land_table(profile)
+    revision, text = requirements_of(
+        tools.project_dir(profile), str(land.get("remote", "origin")), str(land.get("branch", "main")), project_sha
+    )
+    packages = project_requirements(text, f"requirements.txt at {revision[:12]}")
+    specs, carry = [requirement(package, sha), *packages], carried(source, package, packages, run)
+    return {"name": content_name(specs, carry), "requirements": specs, "carried": carry}, 0, []
+
+
 def deploy(
     profile: Profile,
     package: str,
@@ -438,11 +478,18 @@ def deploy(
     if findings:
         return result, 1, findings
     for live in venvs:
-        venv = versioned_path(live, sha)
         source = carry_from or live
         carry = carried(source, package, packages, run)
+        build = content_name(specs, carry)
+        venv = versioned_path(live, build)
         steps = install(venv, source, specs, carry, run)
-        row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "carried": carry, "steps": steps}
+        row: dict[str, Any] = {
+            "venv": str(live),
+            "name": build,
+            "versioned": str(venv),
+            "carried": carry,
+            "steps": steps,
+        }
         result["venvs"].append(row)
         if all(step["ok"] for step in steps):
             row["smoke"] = smoke(venv, project, tools.host_file(profile), run, packages)

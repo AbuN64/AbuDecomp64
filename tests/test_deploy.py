@@ -21,6 +21,9 @@ CARRIED = [
 ]
 
 
+NAME1 = deploy.content_name([deploy.requirement("abu-decomp-64", D1)], CARRIED)  # the default deploy's build name
+
+
 class DeployTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -103,10 +106,10 @@ class DeployTests(unittest.TestCase):
             [row["venv"] for row in result["venvs"]], [str(self.root / "venv-a"), str(self.root / "venv-b")]
         )
         for name in ("venv-a", "venv-b"):  # swapped to a fresh versioned venv; the old tree is untouched
-            self.assertEqual(os.path.realpath(self.root / name), str(self.root / f"{name}.{D1[:12]}"))
+            self.assertEqual(os.path.realpath(self.root / name), str(self.root / f"{name}.{NAME1}"))
             self.assertTrue((self.root / f"{name}.old" / "bin" / "python").is_file())
         self.assertTrue(all(row["swap"]["readback"] for row in result["venvs"]))
-        pip = [c for c in installs if c[0].endswith(f"venv-a.{D1[:12]}/bin/python")]
+        pip = [c for c in installs if c[0].endswith(f"venv-a.{NAME1}/bin/python")]
         self.assertEqual(len(pip), 2)  # pip runs by the new venv's own python, never the live link
         self.assertFalse(
             any(c[:1] == [str(self.root / "venv-a" / "bin" / "python")] and "pip" in c for c in self.commands)
@@ -241,12 +244,12 @@ class DeployTests(unittest.TestCase):
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))  # live untouched
-        self.assertFalse((self.root / f"venv-a.{D1[:12]}").exists())
+        self.assertFalse((self.root / f"venv-a.{NAME1}").exists())
         self.fail = "dependencies"
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.smoke"))
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))
-        self.assertFalse((self.root / f"venv-a.{D1[:12]}").exists())
+        self.assertFalse((self.root / f"venv-a.{NAME1}").exists())
 
     def test_the_fresh_tree_goes_read_only_after_the_smoke_gate_and_before_the_link_flips(self):
         live, order = self.root / "venv-a", []
@@ -302,10 +305,10 @@ class DeployTests(unittest.TestCase):
         self.deploy()
         result, code, _ = self.deploy()
         self.assertEqual(code, 0)
-        self.assertEqual(result["venvs"][0]["versioned"], str(self.root / f"venv-a.{D1[:12]}-2"))
-        self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / f"venv-a.{D1[:12]}-2"))
-        self.assertEqual(result["venvs"][0]["swap"]["previous"], str(self.root / f"venv-a.{D1[:12]}"))
-        self.assertTrue((self.root / f"venv-a.{D1[:12]}" / "bin" / "python").is_file())
+        self.assertEqual(result["venvs"][0]["versioned"], str(self.root / f"venv-a.{NAME1}-2"))
+        self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / f"venv-a.{NAME1}-2"))
+        self.assertEqual(result["venvs"][0]["swap"]["previous"], str(self.root / f"venv-a.{NAME1}"))
+        self.assertTrue((self.root / f"venv-a.{NAME1}" / "bin" / "python").is_file())
 
     def test_a_deploy_resyncs_every_work_tree_with_the_new_venv_and_skips_a_held_one(self):
         trees = [self.root / name for name in ("lane-a", "lane-held", "lane-bad", "no-makefile")]
@@ -413,7 +416,7 @@ class CarryTests(DeployTests):
         self.assertEqual(create[0], str(live / "bin" / "python"))
         self.assertFalse(any(c[0] == str(scratch / "bin" / "python") for c in self.commands if "pip" not in c))
         self.assertEqual(result["venvs"][0]["carried"], CARRIED)
-        self.assertEqual(os.path.realpath(scratch), str(self.root / f"venv-a.{D1[:12]}"))  # the scratch link is swapped
+        self.assertEqual(os.path.realpath(scratch), str(self.root / f"venv-a.{NAME1}"))  # the scratch link is swapped
 
     def test_a_carry_from_that_is_not_a_venv_refuses_before_anything_runs(self):
         with self.assertRaises(deploy.DeployError) as caught:
@@ -491,3 +494,43 @@ class CarryTests(DeployTests):
     def test_only_the_named_tools_checkout_moves(self):
         wanted, findings = deploy.checkout_steps(self.profile, "unbake", U2)
         self.assertEqual((wanted, findings), ({}, []))  # the seat names no checkout
+
+
+class NameTests(DeployTests):
+    """The build name identifies every package the build holds: the 10-31 collision of two deploys into one toolkit."""
+
+    def name(self, package="abu-decomp-64", sha=D1, source="venv-a"):
+        return deploy.name(
+            self.profile, package, sha, self.root / source, run=self.runner, requirements_of=self.requirements_of
+        )
+
+    def test_the_name_is_the_content_of_the_whole_build_not_the_deployed_commit(self):
+        first, _, _ = self.name(package="unbake", sha=U2)
+        self.carried = [row.replace(R1, "4" * 40) for row in CARRIED]  # another package moved: another build
+        second, _, _ = self.name(package="unbake", sha=U2)
+        self.assertNotEqual(first["name"], second["name"])
+        self.assertEqual(first["name"], deploy.content_name(first["requirements"], first["carried"]))
+        self.assertNotIn(U2[:12], first["name"])
+
+    def test_one_content_has_one_name_whichever_order_it_is_listed_in(self):
+        self.assertEqual(deploy.content_name(["b", "a"], ["c"]), deploy.content_name(["a"], ["c", "b"]))
+        self.assertNotEqual(deploy.content_name(["a"], ["c"]), deploy.content_name(["a"], ["d"]))
+
+    def test_the_name_of_a_deploy_is_the_name_the_name_action_answers_before_it(self):
+        answered, code, findings = self.name()
+        self.assertEqual((code, findings), (0, []))
+        result, _, _ = self.deploy()
+        self.assertEqual(result["venvs"][0]["name"], answered["name"])
+        self.assertEqual(result["venvs"][0]["versioned"], str(self.root / f"venv-a.{answered['name']}"))
+
+    def test_two_packages_deployed_after_each_other_get_two_names_and_a_repeat_keeps_its_own(self):
+        decomp = self.name()[0]["name"]
+        unbake = self.name(package="unbake", sha=U2)[0]["name"]
+        self.assertNotEqual(decomp, unbake)
+        self.assertEqual(unbake, self.name(package="unbake", sha=U2)[0]["name"])
+
+    def test_the_name_action_refuses_a_bad_sha_package_or_source_and_builds_nothing(self):
+        for kwargs in ({"sha": "abc"}, {"package": "nope"}, {"source": "nowhere"}):
+            with self.assertRaises(deploy.DeployError):
+                self.name(**kwargs)
+        self.assertFalse([c for c in self.commands if "install" in c])

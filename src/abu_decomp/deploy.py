@@ -168,7 +168,7 @@ def requirement(package: str, commit: str) -> str:
 
 
 def content_name(specs: Sequence[str], carry: Sequence[str]) -> str:
-    """The name of a build: 12 hex digits identifying every requirement it holds, whichever package is being deployed."""
+    """The name of a build: 12 hex digits identifying every requirement it holds, whatever package is deployed."""
     return hashlib.sha256("\n".join(sorted({*specs, *carry})).encode()).hexdigest()[:12]
 
 

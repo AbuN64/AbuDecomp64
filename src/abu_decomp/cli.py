@@ -232,7 +232,7 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     deploy = actions.add_parser("deploy", help="install ONE named package at one commit into venvs, carrying the rest")
-    name = actions.add_parser("name", help="the build name a deploy would give (every package's commit), building nothing")
+    name = actions.add_parser("name", help="the build name a deploy would give (all packages), building nothing")
     for sub in (deploy, name):
         sub.add_argument("--package", required=True, help="the distribution to install (abu-decomp-64, unbake, ...)")
         sub.add_argument("--sha", required=True, help="the package commit (40 hex)")

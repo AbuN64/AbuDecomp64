@@ -44,7 +44,7 @@ class Record(unittest.TestCase):
             got["items"],
             [
                 {"name": "exit", "card": "card-exit", "state": "closed", "line": ""},
-                {"name": "bindings", "card": "card-bind", "state": "working", "line": "Step 2 of 4: the bind table is read"},
+                {"name": "bindings", "card": "card-bind", "state": "working", "line": ROWS["card-bind"]["Status"]},
                 {"name": "packaging", "card": "card-pack", "state": "open", "line": "waits on the port release preset"},
             ],
         )
@@ -76,7 +76,8 @@ class Settings(unittest.TestCase):
     def test_settings_are_validated(self):
         self.assertIsNone(site_enhanced.settings(None))
         self.assertEqual(site_enhanced.settings(dict(CONFIG)), CONFIG)
-        for bad in ({**CONFIG, "url": "x"}, {k: v for k, v in CONFIG.items() if k != "board"}, {**CONFIG, "items": {"a": 1}}):
+        lacking = {k: v for k, v in CONFIG.items() if k != "board"}
+        for bad in ({**CONFIG, "url": "x"}, lacking, {**CONFIG, "items": {"a": 1}}):
             with self.assertRaises(DecompError):
                 site_enhanced.settings(bad)
 
@@ -88,7 +89,8 @@ class Reading(unittest.TestCase):
         return body
 
     def test_eta_list_posts_the_action_and_keys_rows_by_card(self):
-        doc = {"Metadata": {"Result": "Success"}, "Response": [{"Identity": {"Card": "c1"}, "Description": {"Step": 1}}]}
+        row = {"Identity": {"Card": "c1"}, "Description": {"Step": 1}}
+        doc = {"Metadata": {"Result": "Success"}, "Response": [row]}
         with mock.patch("urllib.request.urlopen", return_value=self.reply(doc)) as urlopen:
             self.assertEqual(site_enhanced.eta_rows("http://butler.example.lan:1/", "b"), {"c1": {"Step": 1}})
         request = urlopen.call_args.args[0]

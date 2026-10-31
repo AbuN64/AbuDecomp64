@@ -200,7 +200,7 @@ class PageLogicTest(unittest.TestCase):
             site_map.colour_key("zzz", 0),
         ]
         self.assertEqual(got["colours"], server)
-        self.assertEqual(got["layout"], {"cols": 12, "rows": 3, "height": 18})
+        self.assertEqual(got["layout"], {"cols": 12, "rows": 3, "height": 24})
         self.assertEqual(got["lit"], ["named,differs", ["exact", "asm"], []])
         self.assertEqual(got["box"], 12 + 2)
 

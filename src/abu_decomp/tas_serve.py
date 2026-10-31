@@ -61,6 +61,7 @@ from abu_decomp import (
     inotify,
     site_core,
     site_enhanced,
+    site_map,
     site_stream,
     tas,
     tas_board,
@@ -266,6 +267,9 @@ class Server:
         self.live = Live(self)
         self.reach = Reach()
         self.feed = site_core.Feed()  # the site's typed events, fed by Live from the run rows
+        self.snapshots = site_core.Snapshots(self.feed)  # the map and Enhanced answers, rebuilt on feed changes
+        self.snapshots.register("map", lambda: site_map.answer(self, "GET", "", "", b""))
+        self.snapshots.register("enhanced", lambda: site_enhanced.answer(self, "GET", "", "", b""))
 
     # --- cached facts ---
 
@@ -1706,6 +1710,7 @@ def serve(profile: Profile) -> dict[str, Any]:
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
     server.live.start()
+    server.snapshots.start()
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()
     threading.Thread(target=server.phase.run_frames, daemon=True).start()

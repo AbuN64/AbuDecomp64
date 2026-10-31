@@ -51,6 +51,9 @@ FILTERS = (
 )
 FILTER_BITS = {key: 1 << index for index, (key, _) in enumerate(FILTERS)}
 
+# Regions whose GET answer is a snapshot: built off the request path, refreshed by the feed's run events.
+SNAPSHOTS = ("map", "enhanced")
+
 # Region -> (module that answers it, card that builds it). The module exports `answer(server, method, rest, query,
 # body) -> (status, payload)`; site_core only dispatches.
 REGIONS = {
@@ -200,6 +203,42 @@ class Feed:
             return self.version, [item for item in self.newest() if self.changed[item["id"]] > version]
 
 
+class Snapshots:
+    """The newest answer of each snapshot source, built by its own thread whenever the feed changes (the Live watch's
+    signal), so a request returns a held answer and a slow source (ButlerMaster) never delays another. A source not
+    built yet answers 503 `warming`."""
+
+    def __init__(self, feed: Feed) -> None:
+        self.feed = feed
+        self.makers: dict[str, Any] = {}
+        self.held: dict[str, tuple[int, Any]] = {}
+
+    def register(self, name: str, make: Any) -> None:
+        """`make() -> (status, payload)` builds the source's answer from data the server already holds."""
+        self.makers[name] = make
+
+    def refresh(self, name: str) -> None:
+        try:
+            self.held[name] = self.makers[name]()
+        except Exception as error:  # a failing source answers its own error and keeps the others alive
+            print(f"site snapshot {name}: {type(error).__name__}: {error}", flush=True)
+            self.held[name] = HTTPStatus.INTERNAL_SERVER_ERROR, {"error": f"{type(error).__name__}: {error}"}
+
+    def get(self, name: str) -> tuple[int, Any]:
+        return self.held.get(name) or (HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"the {name} snapshot is warming"})
+
+    def start(self) -> None:
+        for name in self.makers:
+            threading.Thread(target=self.follow, args=(name,), daemon=True, name=f"snapshot-{name}").start()
+
+    def follow(self, name: str) -> None:
+        """Build once, then again after every feed change (blocks on the feed's condition, never on a clock)."""
+        while True:
+            version = self.feed.version
+            self.refresh(name)
+            self.feed.since(version, None)
+
+
 def sse(name: str, data: Any) -> bytes:
     return f"event: {name}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
 
@@ -217,6 +256,8 @@ def answer(server: Any, method: str, path: str, query: str, body: bytes) -> tupl
     head, _, rest = path.removeprefix("/api/").partition("/")
     if not path.startswith("/api/") or head not in REGIONS:
         return None
+    if head in SNAPSHOTS and method == "GET" and not rest:
+        return server.snapshots.get(head)
     module = REGIONS[head][0]
     region = importlib.import_module(f"abu_decomp.{module}")
     return region.answer(server, method, rest, query, body)

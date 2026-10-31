@@ -66,10 +66,39 @@ class Record(unittest.TestCase):
         self.assertEqual(site_enhanced.answer(server(), "POST", "", "", b"")[0], HTTPStatus.METHOD_NOT_ALLOWED)
         self.assertEqual(site_enhanced.answer(server(), "GET", "x", "", b"")[0], HTTPStatus.BAD_REQUEST)
 
-    def test_the_region_is_routed_through_the_site(self):
-        with mock.patch.object(site_enhanced, "eta_rows", return_value=ROWS):
-            status, got = site_core.answer(server(), "GET", "/api/enhanced", "", b"")
+    def test_the_region_is_routed_through_the_held_snapshot_not_a_read(self):
+        feed = site_core.Feed()
+        held = site_core.Snapshots(feed)
+        edge = server()
+        edge.snapshots = held
+        held.register("enhanced", lambda: site_enhanced.answer(edge, "GET", "", "", b""))
+        self.assertEqual(site_core.answer(edge, "GET", "/api/enhanced", "", b"")[0], HTTPStatus.SERVICE_UNAVAILABLE)
+        with mock.patch.object(site_enhanced, "eta_rows", return_value=ROWS) as eta:
+            held.refresh("enhanced")
+            for _ in range(3):
+                status, got = site_core.answer(edge, "GET", "/api/enhanced", "", b"")
         self.assertEqual((status, got["story"]["working"]), (HTTPStatus.OK, 3))
+        eta.assert_called_once()  # three requests, one ButlerMaster read
+
+    def test_a_failing_source_holds_its_error_and_the_others_keep_theirs(self):
+        held = site_core.Snapshots(site_core.Feed())
+        held.register("map", lambda: (HTTPStatus.OK, {"rows": []}))
+        held.register("enhanced", lambda: 1 / 0)
+        held.refresh("enhanced")
+        held.refresh("map")
+        self.assertEqual(held.get("map")[0], HTTPStatus.OK)
+        self.assertEqual(held.get("enhanced")[0], HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def test_a_feed_change_rebuilds_the_snapshot(self):
+        feed = site_core.Feed()
+        held = site_core.Snapshots(feed)
+        built = []
+        held.register("map", lambda: (HTTPStatus.OK, built.append(1) or len(built)))
+        held.refresh("map")
+        version = feed.version
+        feed.publish([site_core.event("run.queued", 1.0, "l", "r", movie="m")])
+        self.assertGreater(feed.version, version)
+        self.assertEqual(feed.since(version, 0)[0], feed.version)  # a stream parked at `version` wakes at once
 
 
 class Settings(unittest.TestCase):

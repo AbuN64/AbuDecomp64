@@ -15,7 +15,7 @@
   --s-asm: #555555; --s-exact: #3b7ddd; --s-named: #1aa7a1; --b-ok: #3fc35a; --b-diff: #ff6b5c;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --radius: 10px; --gutter: 16px; --side: 340px;
+  --radius: 10px; --gutter: 16px; --side: 380px;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) { :root {
@@ -25,7 +25,7 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
 a { color: inherit; }
-svg.i { width: 18px; height: 18px; flex: none; }
+svg.i { width: 22px; height: 22px; flex: none; }
 .mono { font-family: var(--mono); }
 .dim { color: var(--dim); }
 
@@ -56,12 +56,23 @@ aside { border-right: 1px solid var(--line); overflow: auto; padding: var(--gutt
 main { overflow: auto; padding: var(--gutter) calc(var(--gutter) * 1.5); }
 h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
   display: flex; align-items: center; gap: 10px; }
-.enh-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--line); margin: 8px 0 18px; }
+.enh-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 8px 0 18px; }
 .enh-bar span { display: block; }
 .enh-closed { color: #2e9e5b; } .enh-working { color: #d89b1f; } .enh-open { color: var(--dim); }
 .enh-bar .enh-closed { background: #2e9e5b; } .enh-bar .enh-working { background: #d89b1f; } .enh-bar .enh-open { background: var(--dim); }
-.enh-tag { margin-right: 14px; font-family: var(--mono); }
-.enh-items { border-collapse: collapse; } .enh-items th, .enh-items td { text-align: left; padding: 4px 14px 4px 0; vertical-align: top; }
+.enh-tag { margin-right: 18px; font-size: 15px; }
+.enh-tag b { font: 700 20px var(--mono); margin-right: 6px; }
+.enh-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.enh-items li { display: grid; grid-template-columns: 150px 92px 1fr; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
+.enh-items li:first-child { border-top: 0; }
+.enh-items .name { font-weight: 600; }
+.enh-pill { justify-self: start; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: color-mix(in srgb, currentColor 16%, transparent); }
+.skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface), var(--raised), var(--surface)); background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite; min-height: 64px; margin-bottom: 10px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.overview { display: grid; gap: var(--gutter); margin-bottom: 28px; max-width: 980px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+.card h3 { margin: 0 0 12px; font: 600 15px var(--sans); }
 .stub { border: 1px dashed var(--line); border-radius: var(--radius); padding: 18px; color: var(--dim); background: var(--surface); }
 .stub b { color: var(--text); font-family: var(--mono); }
 
@@ -90,7 +101,6 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
   <label class="search"><svg class="i"><use href="/static/icons.svg#i-search"/></svg><input id="q" placeholder="Filter the feed" autocomplete="off"></label>
   <nav class="chips" id="chips" aria-label="live runs"></nav>
   <span class="live" id="live"><i></i>offline</span>
-  <a class="btn" href="#/enhanced">Enhanced</a>
   <a class="btn" href="#/play"><svg class="i"><use href="/static/icons.svg#i-gamepad-2"/></svg>New run</a>
 </header>
 <div class="frame">
@@ -98,6 +108,8 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
   <main id="view"></main>
 </div>
 <script type="module">
+// The shell's first paint, read back by the load measurement (LOAD.md): data-fcp is milliseconds from navigation start.
+new PerformanceObserver(list => { for (const e of list.getEntries()) if (e.name === "first-contentful-paint") { document.documentElement.dataset.fcp = Math.round(e.startTime); console.info("first-contentful-paint " + Math.round(e.startTime) + " ms"); } }).observe({ type: "paint", buffered: true });
 const $ = s => document.querySelector(s);
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -135,6 +147,7 @@ function line(ev) {
 }
 function textOf(ev) { return [ev.lane, ...Object.values(ev.fields)].join(" ").toLowerCase(); }
 function renderFeed() {
+  if (!S.contract) return; // the feed paints once the contract's templates have arrived
   const list = $("#feed");
   const items = [...S.events.values()].sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1))
     .filter(ev => !S.q || textOf(ev).includes(S.q));
@@ -162,7 +175,7 @@ const ctx = {
   stub: (what, card) => el("div", { class: "stub" }, `The ${what} is not built yet: card `, el("b", {}, card), " fills this region."),
   route: null,
 };
-const REGION = { fn: "fn", stream: "stream", play: "play", enhanced: "enhanced" };
+const REGION = { fn: "fn", stream: "stream", play: "play" };
 function parse() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const [name = "", ...rest] = path.split("/");
@@ -171,22 +184,27 @@ function parse() {
 async function show() {
   const r = ctx.route = parse(), view = $("#view");
   if (!REGION[r.name]) {
-    view.replaceChildren(el("h2", {}, "Feed"), el("ul", { class: "feed", id: "feed" }));
+    const status = el("div", { class: "overview", id: "overview" }, el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
+    view.replaceChildren(el("h2", {}, "Enhanced"), status, el("h2", {}, "Feed"), el("ul", { class: "feed", id: "feed" }));
+    import("/static/site/enhanced.js").then(mod => mod.mount(status, ctx)); // its own API, independent of every other region
     return renderFeed();
   }
   const mod = await import(`/static/site/${REGION[r.name]}.js`);
   view.replaceChildren();
   mod.mount(view, ctx);
 }
-async function boot() {
-  S.contract = await api("/api/contract");
-  const first = await api("/api/feed");
-  for (const ev of first.events) S.events.set(ev.id, ev);
-  (await import("/static/site/map.js")).mount($("#side"), ctx);
+// The shell is static: every region starts its own fetch at once and fills in when its answer lands.
+function boot() {
   $("#q").addEventListener("input", e => { S.q = e.target.value.trim().toLowerCase(); renderFeed(); });
   addEventListener("hashchange", show);
-  await show();
+  show();
   connect();
+  api("/api/feed").then(first => { for (const ev of first.events) S.events.set(ev.id, ev); renderFeed(); });
+  api("/api/contract").then(contract => {
+    S.contract = contract;
+    import("/static/site/map.js").then(mod => mod.mount($("#side"), ctx));
+    renderFeed();
+  });
 }
 boot();
 </script>

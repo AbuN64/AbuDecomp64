@@ -106,8 +106,9 @@ def check_sha(label: str, value: str) -> str:
 
 
 # Run by the live venv's python: one JSON list of the requirements it holds, apart from the package being deployed
-# and pip itself: `name @ git+URL@COMMIT` for a git install, `name==VERSION` for the rest. Any other direct install
-# (a path, an archive, an editable tree) cannot be reproduced from a commit and fails the deploy.
+# and pip itself: `name @ git+URL@COMMIT` for a git install, `name @ URL` for an archive or wheel fetched from a
+# URL (a wheel URL names an exact version), `name==VERSION` for the rest. A file:// install and an editable tree
+# cannot be reproduced elsewhere and fail the deploy.
 CARRY = """\
 import importlib.metadata as metadata
 import json
@@ -128,10 +129,16 @@ for dist in metadata.distributions():
         rows.append(f"{name}=={dist.version}")
         continue
     origin = json.loads(raw)
+    url = origin.get("url", "")
     vcs = origin.get("vcs_info", {})
-    if vcs.get("vcs") != "git":
-        sys.exit(f"{name} is installed from {origin.get('url')}, not from a git commit")
-    rows.append(f"{name} @ git+{origin['url']}@{vcs['commit_id']}")
+    if origin.get("dir_info", {}).get("editable") or url.startswith("file:"):
+        sys.exit(f"{name} is installed from {url}, an editable or file:// install that cannot be carried")
+    if not vcs:
+        rows.append(f"{name} @ {url}")
+    elif vcs.get("vcs") == "git":
+        rows.append(f"{name} @ git+{url}@{vcs['commit_id']}")
+    else:
+        sys.exit(f"{name} is installed from {url} with {vcs.get('vcs')}, not git")
 print(json.dumps(sorted(rows)))
 """
 

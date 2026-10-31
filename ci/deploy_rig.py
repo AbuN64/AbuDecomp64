@@ -58,8 +58,9 @@ PACKAGE = "abu_decomp"
 SHA = re.compile(r"[0-9a-f]{40}")
 SERVED = re.compile(r"^serve-sha: (\S*)$", re.MULTILINE)
 # Job Invoke answers Success and runs nothing when the live link already names the build: `<link> is <target>: already
-# active`. The activation's Exit is the verdict; this line only says the build and suite did not run.
-ALREADY_ACTIVE = re.compile(r"^\S+ is \S+: already active$", re.MULTILINE)
+# active`, which the job log may carry behind a `mo-butlermaster: ` prefix. The activation's Exit is the verdict; this
+# line only says the build and suite did not run.
+ALREADY_ACTIVE = re.compile(r"\S+ is \S+: already active$", re.MULTILINE)
 
 # git(args) runs git here and returns (exit code, output); job(request) is `mo-butlermaster Job Invoke` and returns its
 # answer; read(path) reads a job's Log, which lives on this machine.

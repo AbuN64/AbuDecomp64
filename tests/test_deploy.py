@@ -441,6 +441,45 @@ class CarryTests(DeployTests):
         self.assertIn(f"packages installed in {live}", str(caught.exception))
         self.assertIn("file:///home/abu/runs/char-de-3/src", str(caught.exception))
 
+    def carry_script(self, **dists):
+        """Runs deploy.CARRY (the live venv's python) over fake dist-infos; each dist is its direct_url.json or None."""
+        site = self.root / "site"
+        for name, origin in dists.items():
+            info = site / f"{name}-1.0.dist-info"
+            info.mkdir(parents=True)
+            (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n")
+            if origin is not None:
+                (info / "direct_url.json").write_text(json.dumps(origin))
+        env = {**os.environ, "PYTHONPATH": str(site)}
+        done = subprocess.run([sys.executable, "-S", "-c", deploy.CARRY], env=env, capture_output=True, text=True)
+        return done.returncode, done.stdout, done.stderr
+
+    def test_a_release_wheel_url_install_is_carried_as_that_url(self):
+        """rig-20261031T184313Z: abucache was installed from a release wheel URL and deploy.carry refused it."""
+        wheel = "https://github.com/AbuN64/cache-64/releases/download/v0.3.3/abucache-0.3.3-py3-none-any.whl"
+        code, out, err = self.carry_script(
+            abucache={"url": wheel, "archive_info": {"hash": "sha256=0"}},
+            gitpkg={"url": URL["unbake"], "vcs_info": {"vcs": "git", "commit_id": U1}},
+            plain=None,
+        )
+        self.assertEqual(code, 0, err)
+        rows = json.loads(out)
+        self.assertEqual(
+            rows, sorted([f"abucache @ {wheel}", f"gitpkg @ git+{URL['unbake']}@{U1}", "plain==1.0"])
+        )
+
+    def test_a_file_url_or_an_editable_install_refuses_naming_the_origin(self):
+        for origin in (
+            {"url": "file:///home/abu/runs/char-de-3/src", "dir_info": {}},
+            {"url": "file:///home/abu/runs/char-de-3/src", "dir_info": {"editable": True}},
+            {"url": "file:///x/unbake-0.1-py3-none-any.whl", "archive_info": {}},
+        ):
+            with self.subTest(origin=origin):
+                code, _, err = self.carry_script(unbake=origin)
+                self.assertNotEqual(code, 0)
+                self.assertIn(f"unbake is installed from {origin['url']}", err)
+                self.root.joinpath("site").rename(self.root / f"site-{abs(hash(str(origin)))}")
+
     def test_a_venv_that_cannot_be_listed_refuses_before_anything_is_built(self):
         self.fail = "metadata.distributions"
         with self.assertRaises(deploy.DeployError) as caught:

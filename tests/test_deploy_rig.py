@@ -278,6 +278,14 @@ class NoopActivationTests(unittest.TestCase):
         self.assertFalse(any(": suite " in line for line in lines))
         self.assertEqual(lines[-1], f"deployed {SHA}")
 
+    def test_the_butlermaster_prefixed_path_line_of_the_rig_log_is_the_no_op(self):
+        """rig-20261031T185605Z: the whole log was this one line and the 663ef10 deploy refused it as a gate failure."""
+        link, build = "/home/abu/venv-decomp", "/home/abu/venv-decomp.663ef10e2957"
+        rig = Rig(suite=f"mo-butlermaster: {link} is {build}: already active\n")
+        lines = rig.deploy()
+        self.assertTrue(any("activation was a no-op" in line for line in lines))
+        self.assertEqual(lines[-1], f"deployed {SHA}")
+
     def test_the_no_op_still_refuses_when_the_readback_finds_the_link_elsewhere(self):
         rig = Rig(suite=noop_log(), readback=1)
         rig.logs["/runs/.tmp/job-rig-2.log"] = f"readback: {TOOLKIT} reads /x/other, not {BUILD}\n"

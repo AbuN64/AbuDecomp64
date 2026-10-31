@@ -10,7 +10,7 @@ Job Invoke, so the deploy's jobs run as the landing card's jobs. The card identi
 Any refusal or failed step prints one line on stderr and exits 1. Every rig step is one `mo-butlermaster Job Invoke`
 at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> with JOBS set to Dos's width):
 
-  1. the SHA to deploy must be on gitea main and on github main (else nothing touches the rig); when gitea main has
+  1. the SHA to deploy must be on gitea main (else nothing touches the rig); when gitea main has
      moved past it to a descendant, main's head is deployed instead and the log says the older deploy deferred;
   2. the name job: the Worktree's own `decomp tools name` (the engine owns the rule) answers the build's NAME, a digest
      of every package commit the new toolkit holds (the live toolkit's, with abu-decomp-64 at SHA), never the SHA alone:
@@ -55,10 +55,7 @@ ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
 REPOSITORY = "Projects/AbuN64/AbuDecomp64"
 HOST = "rig"
 TOOLKIT = "/home/abu/venv-decomp"
-REMOTES = {
-    "gitea": "http://10.10.10.130:18556/Projects/AbuDecomp64.git",
-    "github": "https://github.com/AbuN64/abu-decomp-64.git",
-}
+GITEA = "http://10.10.10.130:18556/Projects/AbuDecomp64.git"
 PACKAGE = "abu_decomp"
 SHA = re.compile(r"[0-9a-f]{40}")
 NAME_RE = re.compile(r"[0-9a-f]{12}")
@@ -325,27 +322,17 @@ def landed_sha(environ: dict[str, str]) -> str:
 
 def newest_main(sha: str, git: Seam) -> str:
     """The SHA to deploy: gitea main's head when it descends from sha (sha itself when it is the head), else Refused.
-    The head must also be on github main. Both mains are fetched into a scratch bare repo."""
+    Gitea main is fetched into a scratch bare repo."""
     work = tempfile.mkdtemp(prefix="deploy-rig-")
     try:
         git("-C", work, "init", "-q", "--bare")
-
-        def fetch(name: str) -> None:
-            code, out = git("-C", work, "fetch", "-q", "--no-tags", "--filter=blob:none", REMOTES[name], "main")
-            if code:
-                raise Refused(f"cannot fetch {name} main ({REMOTES[name]}): {last_line(out, code)}")
-
-        def require_on(name: str, commit: str) -> None:
-            if git("-C", work, "merge-base", "--is-ancestor", commit, "FETCH_HEAD")[0]:
-                raise Refused(f"{commit[:12]} is not on {name} main")
-
-        fetch("gitea")
-        require_on("gitea", sha)
+        code, out = git("-C", work, "fetch", "-q", "--no-tags", "--filter=blob:none", GITEA, "main")
+        if code:
+            raise Refused(f"cannot fetch gitea main ({GITEA}): {last_line(out, code)}")
+        if git("-C", work, "merge-base", "--is-ancestor", sha, "FETCH_HEAD")[0]:
+            raise Refused(f"{sha[:12]} is not on gitea main")
         code, out = git("-C", work, "rev-parse", "FETCH_HEAD")
-        head = out if code == 0 and SHA.fullmatch(out) else sha
-        fetch("github")
-        require_on("github", head)
-        return head
+        return out if code == 0 and SHA.fullmatch(out) else sha
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

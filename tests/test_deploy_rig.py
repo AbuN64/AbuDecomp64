@@ -50,7 +50,6 @@ class Rig:
     def __init__(
         self,
         gitea=True,
-        github=True,
         head=None,
         activation=0,
         readback=0,
@@ -59,7 +58,7 @@ class Rig:
         served=None,
         refuse_at=None,
     ):
-        self.head, self.on = head, {"gitea": gitea, "github": github}
+        self.head, self.on = head, gitea
         self.exits = [activation, readback, serve]
         self.logs = {
             "/runs/.tmp/job-rig-1.log": suite if suite is not None else suite_log(head or SHA),
@@ -70,7 +69,7 @@ class Rig:
         self.names = []  # the name jobs, answered before the numbered ones
         self.name_log = json.dumps({"ok": True, "result": {"name": NAME}}) + "\n"
         self.name_exit = 0
-        self.requests, self.git_calls, self.fetched = [], [], None
+        self.requests, self.git_calls = [], []
         self.have = True
 
     def job(self, body):
@@ -91,13 +90,12 @@ class Rig:
         if "rev-parse" in args:
             return 0, self.head or ""
         if "fetch" in args and "-C" in args:
-            self.fetched = next(name for name, url in deploy_rig.REMOTES.items() if url in args)
             return 0, ""
         if "fetch" in args:
             self.have = True
             return 0, ""
         if "merge-base" in args:
-            return (0 if self.on[self.fetched] else 1), ""
+            return (0 if self.on else 1), ""
         if "cat-file" in args:
             return (0 if self.have else 1), ""
         return 0, ""
@@ -205,13 +203,20 @@ class DeployTests(unittest.TestCase):
         for word in ("ssh", "flock", "finish/slot", "waitfor", "deploy-decomp.lock", "mv -T"):
             self.assertNotIn(word, code)
 
-    def test_a_sha_not_on_either_main_refuses_before_any_job(self):
-        for missing in ("gitea", "github"):
-            rig = Rig(**{missing: False})
-            code, out, err = run_main(rig)
-            self.assertEqual(code, 1)
-            self.assertEqual(err.strip(), f"deploy refused: {SHA[:12]} is not on {missing} main")
-            self.assertEqual((out, rig.requests), ("", []))
+    def test_a_sha_not_on_gitea_main_refuses_before_any_job(self):
+        rig = Rig(gitea=False)
+        code, out, err = run_main(rig)
+        self.assertEqual(code, 1)
+        self.assertEqual(err.strip(), f"deploy refused: {SHA[:12]} is not on gitea main")
+        self.assertEqual((out, rig.requests), ("", []))
+
+    def test_only_gitea_main_is_fetched_and_github_is_never_consulted(self):
+        rig = Rig()
+        rig.deploy()
+        fetches = [call for call in rig.git_calls if "fetch" in call and "-C" in call]
+        self.assertEqual([call[-2] for call in fetches], [deploy_rig.GITEA])
+        self.assertFalse(any("github" in str(call) for call in rig.git_calls))
+        self.assertNotIn("github", (Path(__file__).parent.parent / "ci" / "deploy_rig.py").read_text().lower())
 
     def test_main_moved_to_a_descendant_deploys_the_head(self):
         rig = Rig(head=NEWER)

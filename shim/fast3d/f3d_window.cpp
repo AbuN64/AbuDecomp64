@@ -287,6 +287,15 @@ void F3dWindow::SetTargetFps(int fps) { mTargetFps = (uint32_t)fps; }
 void F3dWindow::SetMaxFrameLatency(int) {}
 const char* F3dWindow::GetKeyName(int scancode) { return SDL_GetScancodeName((SDL_Scancode)scancode); }
 bool F3dWindow::CanDisableVsync() { return true; }
+int F3dWindow::SetVsync(bool on)
+{
+    if (!mWindow)
+        return 0;
+    SDL_GL_SetSwapInterval(on ? 1 : 0); // a driver without it fails; the read-back is the truth
+    int interval = 0;
+    mVsyncEnabled = SDL_GL_GetSwapInterval(&interval) && interval != 0;
+    return mVsyncEnabled ? 1 : 0;
+}
 bool F3dWindow::IsRunning() { return mIsRunning; }
 void F3dWindow::Destroy()
 {

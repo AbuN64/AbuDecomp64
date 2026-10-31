@@ -10,7 +10,7 @@ enum {
     PAD_A = 0x8000, PAD_B = 0x4000, PAD_START = 0x1000, PAD_UP = 0x0800, PAD_DOWN = 0x0400,
     PAD_LEFT = 0x0200, PAD_RIGHT = 0x0100, PAD_L = 0x0020, PAD_R = 0x0010
 };
-enum { ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT };
+enum { ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_CAP, ROW_VSYNC, ROW_CONTROLS, ROW_QUIT };
 enum { STICK_ON = 40, REPEAT_DELAY = 20, REPEAT_EVERY = 4, MAX_SIZES = 64, SCALE_STEP = 25, ERROR_CAP = 96 };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -20,12 +20,14 @@ typedef struct {
     void *context;
     N64cSettingsLoadFn load;
     N64cSettingsRequestFn request;
+    N64cSettingsObserveFn observe;
 } Host;
 static Host host;                /* the bound host; request == NULL: none */
 static char menu_error[ERROR_CAP];   /* why the last change was refused, shown until the next one */
 static unsigned changes;             /* N64C_DO_* bits of changes waiting for apply */
 static u32 sizes[MAX_SIZES][2];
 static size_t size_count;
+static N64cPresentationCaps caps;     /* what the window can present */
 static int mobile, is_open, selected, quit_armed;
 static unsigned menus, todo;
 static unsigned held, suppress;   /* buttons down at the previous sample; buttons the game must not see until released */
@@ -34,15 +36,15 @@ static int suppress_stick, hotkey_was, repeat_count;
 void n64c_options_default(N64cOptions *o)
 {
     *o = (N64cOptions){.display = {.fullscreen = N64C_WIN_WINDOWED, .width = 640, .height = 480, .render_scale = 100},
-                       .fps_unlock = 0};
+                       .presentation = {.unlock = 0, .vsync = 0, .cap_policy = N64C_CAP_AUTO, .cap_hz = 0}};
 }
 
-bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequestFn request)
+bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequestFn request, N64cSettingsObserveFn observe)
 {
-    if (!load || !request) return false;
+    if (!load || !request || !observe) return false;
     pthread_mutex_lock(&lock);
     const bool vacant = host.request == NULL;
-    if (vacant) host = (Host){context, load, request};
+    if (vacant) host = (Host){context, load, request, observe};
     pthread_mutex_unlock(&lock);
     return vacant;
 }
@@ -63,9 +65,18 @@ bool n64c_settings_load(N64cOptions *o)
     return load && load(context, o);
 }
 
-void n64c_menu_configure(const N64cOptions *now, const u32 (*list)[2], size_t count, int phone)
+void n64c_settings_observe(const N64cOptions *realized)
 {
     pthread_mutex_lock(&lock);
+    const Host h = host;
+    pthread_mutex_unlock(&lock);
+    if (h.observe) h.observe(h.context, realized);
+}
+
+void n64c_menu_configure(const N64cOptions *now, const u32 (*list)[2], size_t count, int phone, const N64cPresentationCaps *window)
+{
+    pthread_mutex_lock(&lock);
+    caps = *window;
     opts = committed = *now;
     menu_error[0] = 0;
     changes = 0;
@@ -91,11 +102,11 @@ void n64c_menu_context(unsigned flags)
 
 static int row_at(int index)
 {
-    static const int desktop[] = {ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT};
-    static const int phone[] = {ROW_RESUME, ROW_SCALE, ROW_UNLOCK, ROW_CONTROLS, ROW_QUIT};
+    static const int desktop[] = {ROW_RESUME, ROW_WINDOW, ROW_RESOLUTION, ROW_SCALE, ROW_UNLOCK, ROW_CAP, ROW_VSYNC, ROW_CONTROLS, ROW_QUIT};
+    static const int phone[] = {ROW_RESUME, ROW_SCALE, ROW_UNLOCK, ROW_CAP, ROW_VSYNC, ROW_CONTROLS, ROW_QUIT};
     return mobile ? phone[index] : desktop[index];
 }
-static int row_count(void) { return mobile ? 5 : 7; }
+static int row_count(void) { return mobile ? 7 : 9; }
 
 /* A change waits for the next n64c_menu_take, which applies it and only then saves. */
 static void changed(unsigned what)
@@ -129,8 +140,29 @@ static void adjust(int row, int delta)
         opts.display.render_scale = s < 25 ? 25 : s > 100 ? 100 : s;
         changed(N64C_DO_SCALE);
     } else if (row == ROW_UNLOCK) {
-        opts.fps_unlock = !opts.fps_unlock;
-        changed(N64C_DO_UNLOCK);
+        if (!caps.unlock_available) snprintf(menu_error, sizeof menu_error, "this window cannot draw extra pictures");
+        else {
+            opts.presentation.unlock = !opts.presentation.unlock;
+            changed(N64C_DO_PRESENTATION);
+        }
+    } else if (row == ROW_VSYNC) {
+        if (!caps.vsync_available) snprintf(menu_error, sizeof menu_error, "this window cannot wait for the display");
+        else {
+            opts.presentation.vsync = !opts.presentation.vsync;
+            changed(N64C_DO_PRESENTATION);
+        }
+    } else if (row == ROW_CAP) {
+        static const struct { int policy; u32 hz; } steps[] = {
+            {N64C_CAP_AUTO, 0}, {N64C_CAP_FIXED, 30}, {N64C_CAP_FIXED, 60}, {N64C_CAP_FIXED, 120},
+            {N64C_CAP_FIXED, 144}, {N64C_CAP_FIXED, 240}, {N64C_CAP_MAX, 0}};
+        const int count = (int)(sizeof steps / sizeof steps[0]);
+        int i = -1;
+        for (int k = 0; k < count; k++)
+            if (steps[k].policy == opts.presentation.cap_policy && (steps[k].policy != N64C_CAP_FIXED || steps[k].hz == opts.presentation.cap_hz)) i = k;
+        i = i < 0 ? (delta > 0 ? 0 : count - 1) : (i + delta + count) % count;
+        opts.presentation.cap_policy = steps[i].policy;
+        opts.presentation.cap_hz = steps[i].hz;
+        changed(N64C_DO_PRESENTATION);
     }
 }
 
@@ -155,7 +187,7 @@ static void press(unsigned button)
         else if (row == ROW_QUIT) {
             if (quit_armed) { todo |= N64C_DO_QUIT; close_screen(); }
             else quit_armed = 1;
-        } else if (row == ROW_UNLOCK || row == ROW_WINDOW || row == ROW_RESOLUTION || row == ROW_SCALE) adjust(row, 1);
+        } else if (row == ROW_UNLOCK || row == ROW_CAP || row == ROW_VSYNC || row == ROW_WINDOW || row == ROW_RESOLUTION || row == ROW_SCALE) adjust(row, 1);
     } else if (button == PAD_B || button == PAD_START) {
         if (quit_armed) quit_armed = 0;
         else close_screen();
@@ -255,7 +287,13 @@ size_t n64c_menu_text(char *buf, size_t cap, int *selected_line, int *scale)
             snprintf(value, sizeof value, "< %ux%u >", opts.display.width, opts.display.height);
             break;
         case ROW_SCALE: label = "RENDER SCALE"; snprintf(value, sizeof value, "< %d%% >", opts.display.render_scale); break;
-        case ROW_UNLOCK: label = "FRAMERATE UNLOCK"; snprintf(value, sizeof value, "< %s >", opts.fps_unlock ? "ON" : "OFF"); break;
+        case ROW_UNLOCK: label = "FRAMERATE UNLOCK"; snprintf(value, sizeof value, "< %s >", opts.presentation.unlock ? "ON" : "OFF"); break;
+        case ROW_VSYNC: label = "VSYNC"; snprintf(value, sizeof value, "< %s >", opts.presentation.vsync ? "ON" : "OFF"); break;
+        case ROW_CAP:
+            label = "FRAME CAP";
+            if (opts.presentation.cap_policy == N64C_CAP_FIXED) snprintf(value, sizeof value, "< %u FPS >", (unsigned)opts.presentation.cap_hz);
+            else snprintf(value, sizeof value, "< %s >", opts.presentation.cap_policy == N64C_CAP_MAX ? "MAX" : "AUTO");
+            break;
         case ROW_CONTROLS: label = "CONTROLS"; break;
         case ROW_QUIT: label = quit_armed ? "PRESS A AGAIN TO QUIT" : "QUIT GAME"; break;
         }
@@ -283,15 +321,14 @@ unsigned n64c_menu_take(N64cOptions *now)
         const Host h = host;
         changes = 0;
         pthread_mutex_unlock(&lock);
-        N64cDisplaySettings effective = requested.display;
+        N64cOptions effective = requested;
         char error[ERROR_CAP] = "";
         const bool ok = h.request ? h.request(h.context, &requested, &effective, error, sizeof error) : false;
         if (!h.request) snprintf(error, sizeof error, "no options host is registered");
         pthread_mutex_lock(&lock);
         if (ok) { /* the host applied and saved; what is really in force is what the screen keeps */
-            committed = requested;
-            committed.display = effective;
-            if (!memcmp(&opts.display, &requested.display, sizeof opts.display)) opts.display = effective; /* none made meanwhile */
+            committed = effective;
+            if (!memcmp(&opts, &requested, sizeof opts)) opts = effective; /* none made meanwhile */
             menu_error[0] = 0;
             what |= asked;
         } else {

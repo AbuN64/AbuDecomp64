@@ -21,12 +21,13 @@ static void tap(unsigned button)
     (void)sample(button, 0);
     (void)sample(0, 0);
 }
+static N64cPresentationCaps caps = {.unlock_available = 1, .vsync_available = 1, .refresh_hz = 60};
 static void start(int mobile)
 {
     static const u32 sizes[3][2] = {{1920, 1080}, {1280, 720}, {640, 480}};
     N64cOptions o;
     n64c_options_default(&o);
-    n64c_menu_configure(&o, sizes, 3, mobile);
+    n64c_menu_configure(&o, sizes, 3, mobile, &caps);
 }
 
 /* The host: its own config (recorded only by a successful request), and a way to refuse or to get a different scale. */
@@ -35,6 +36,8 @@ typedef struct {
     int has_config, loads, applies, records;
     bool refuse;
     int effective_scale;   /* nonzero: the scale the render target really got */
+    int observed;          /* options handed to observe */
+    N64cOptions seen;
 } Host;
 static bool host_load(void *context, N64cOptions *options)
 {
@@ -44,7 +47,13 @@ static bool host_load(void *context, N64cOptions *options)
     *options = h->stored;
     return true;
 }
-static bool host_request(void *context, const N64cOptions *requested, N64cDisplaySettings *effective, char *error, size_t capacity)
+static void host_observe(void *context, const N64cOptions *realized)
+{
+    Host *h = context;
+    h->observed++;
+    h->seen = *realized;
+}
+static bool host_request(void *context, const N64cOptions *requested, N64cOptions *effective, char *error, size_t capacity)
 {
     Host *h = context;
     h->applies++;
@@ -52,9 +61,8 @@ static bool host_request(void *context, const N64cOptions *requested, N64cDispla
         snprintf(error, capacity, "the display refused %ux%u", requested->display.width, requested->display.height);
         return false;
     }
-    if (h->effective_scale) effective->render_scale = h->effective_scale;
-    h->stored = *requested;
-    h->stored.display = *effective;
+    if (h->effective_scale) effective->display.render_scale = h->effective_scale;
+    h->stored = *effective;
     h->has_config = 1;
     h->records++;
     return true;
@@ -79,15 +87,15 @@ static void seam_tests(void)
     n64c_settings_unbind();
     n64c_options_default(&o);
     Test_Check(!n64c_settings_load(&o), "without a host nothing is loaded");
-    Test_Check(!n64c_settings_bind(&host, host_load, NULL), "a host without a request callback is refused");
+    Test_Check(!n64c_settings_bind(&host, host_load, NULL, host_observe), "a host without a request callback is refused");
     host = (Host){0};
-    Test_Check(n64c_settings_bind(&host, host_load, host_request), "the host binds");
+    Test_Check(n64c_settings_bind(&host, host_load, host_request, host_observe), "the host binds");
     n64c_options_default(&back);
     Test_Check(!n64c_settings_load(&back) && host.loads == 1 && !memcmp(&back, &o, sizeof o),
                "the load callback is used at startup, and may have no config");
     host.stored = o;
     host.stored.display = (N64cDisplaySettings){N64C_WIN_BORDERLESS, 1280, 720, 50};
-    host.stored.fps_unlock = 1;
+    host.stored.presentation.unlock = 1;
     host.has_config = 1;
     Test_Check(n64c_settings_load(&back) && host.loads == 2 && !memcmp(&back, &host.stored, sizeof back),
                "the startup options are what the host's load gave");
@@ -143,12 +151,77 @@ static void seam_tests(void)
                "without a host a change is refused");
     Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "NO OPTIONS HOST") != NULL, "and the screen says why");
     Test_Check(access("options.cfg", F_OK) != 0, "no options.cfg is written, with a host or without");
-    (void)n64c_settings_bind(&host, host_load, host_request);
+    (void)n64c_settings_bind(&host, host_load, host_request, host_observe);
 }
 
 /* The registration's lifetime. The embedding host binds before n64c_game_main; boot's call is the same bind with its own
  * flags-only host, kept only when it returned true (the boot's own unbind at its exit is then its to make). A binding is
  * never replaced: a bind while bound is refused and changes nothing; only an explicit unbind removes it. */
+static void presentation_tests(void)
+{
+    N64cOptions now, o;
+    char text[640];
+    int line, scale;
+    host = (Host){0};
+    n64c_settings_unbind();
+    Test_Check(n64c_settings_bind(&host, host_load, host_request, host_observe), "the host binds");
+    n64c_options_default(&o);
+    Test_Check(o.presentation.unlock == 0 && o.presentation.vsync == 0 && o.presentation.cap_policy == N64C_CAP_AUTO,
+               "the presentation defaults are unlock off, vsync off, cap auto");
+
+    /* the cap row steps auto, 30, 60, 120, 144, 240, max and wraps; every step reaches the host with its policy */
+    start(0);
+    open_screen();
+    for (int i = 0; i < 5; i++) tap(DOWN); /* resume, window, resolution, scale, unlock, cap */
+    tap(RIGHT);
+    unsigned what = n64c_menu_take(&now);
+    Test_Check((what & N64C_DO_PRESENTATION) && now.presentation.cap_policy == N64C_CAP_FIXED && now.presentation.cap_hz == 30 &&
+                   host.stored.presentation.cap_hz == 30 && host.stored.presentation.cap_policy == N64C_CAP_FIXED,
+               "right on the frame cap row takes the first fixed rate, and the host holds it");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "FRAME CAP  < 30 FPS >") != NULL, "and the screen shows it");
+    tap(LEFT);
+    tap(LEFT);
+    (void)n64c_menu_take(&now);
+    Test_Check(now.presentation.cap_policy == N64C_CAP_MAX && now.presentation.cap_hz == 0, "left from auto wraps to max");
+    Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "FRAME CAP  < MAX >") != NULL, "and the screen shows max");
+
+    /* vsync the window can honour: the host's effective value is what the screen keeps */
+    tap(DOWN); /* vsync */
+    tap(A);
+    what = n64c_menu_take(&now);
+    Test_Check((what & N64C_DO_PRESENTATION) && now.presentation.vsync == 1 && host.stored.presentation.vsync == 1, "A on vsync switches it on");
+
+    /* a window that cannot wait or draw extra pictures refuses on the screen, and the host never hears of it */
+    caps.vsync_available = 0;
+    caps.unlock_available = 0;
+    start(0);
+    open_screen();
+    const int applies = host.applies;
+    for (int i = 0; i < 6; i++) tap(DOWN); /* vsync */
+    tap(A);
+    what = n64c_menu_take(&now);
+    Test_Check(!(what & N64C_DO_PRESENTATION) && now.presentation.vsync == 0 && host.applies == applies &&
+                   n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "CANNOT WAIT FOR THE DISPLAY") != NULL,
+               "vsync the window cannot honour is refused on the screen and never reaches the host");
+    tap(UP);
+    tap(UP); /* unlock */
+    tap(A);
+    what = n64c_menu_take(&now);
+    Test_Check(!(what & N64C_DO_PRESENTATION) && now.presentation.unlock == 0 && host.applies == applies &&
+                   strstr((n64c_menu_text(text, sizeof text, &line, &scale), text), "CANNOT DRAW EXTRA PICTURES") != NULL,
+               "and so is an unlock the window cannot draw");
+    caps.vsync_available = caps.unlock_available = 1;
+
+    /* the startup readback: observe hands the host the realized options, and without a host it is nothing */
+    o.display = (N64cDisplaySettings){N64C_WIN_BORDERLESS, 1920, 1080, 100};
+    n64c_settings_observe(&o);
+    Test_Check(host.observed == 1 && host.seen.display.width == 1920 && host.seen.display.fullscreen == N64C_WIN_BORDERLESS,
+               "observe reaches the bound host with the realized options");
+    n64c_settings_unbind();
+    n64c_settings_observe(&o);
+    Test_Check(host.observed == 1, "with no host bound observe is nothing");
+}
+
 static void lifetime_tests(void)
 {
     Host pre = {0}, own = {0};
@@ -164,8 +237,8 @@ static void lifetime_tests(void)
     n64c_settings_unbind();
 
     /* a host bound before the boot survives it and gets the load and the requests */
-    Test_Check(n64c_settings_bind(&pre, host_load, host_request), "the host binds before the game's entry");
-    Test_Check(!n64c_settings_bind(&own, host_load, host_request), "boot's own bind is refused while a host is bound");
+    Test_Check(n64c_settings_bind(&pre, host_load, host_request, host_observe), "the host binds before the game's entry");
+    Test_Check(!n64c_settings_bind(&own, host_load, host_request, host_observe), "boot's own bind is refused while a host is bound");
     n64c_options_default(&back);
     Test_Check(n64c_settings_load(&back) && pre.loads == 1 && own.loads == 0 && back.display.width == 1280,
                "the boot's load reaches the pre-entry host");
@@ -178,8 +251,8 @@ static void lifetime_tests(void)
     Test_Check(n64c_settings_load(&back) && pre.loads == 2 && own.loads == 0, "the host is still bound after the game's main returns");
 
     /* rebinding while bound is refused, even for the same host or with missing callbacks; the binding stays */
-    Test_Check(!n64c_settings_bind(&pre, host_load, host_request), "rebinding the bound host is refused");
-    Test_Check(!n64c_settings_bind(&own, NULL, NULL), "a bind without callbacks is refused");
+    Test_Check(!n64c_settings_bind(&pre, host_load, host_request, host_observe), "rebinding the bound host is refused");
+    Test_Check(!n64c_settings_bind(&own, NULL, NULL, NULL), "a bind without callbacks is refused");
     Test_Check(n64c_settings_load(&back) && pre.loads == 3 && own.loads == 0, "a refused bind leaves the host as it was");
 
     /* only an explicit unbind removes it; then load refuses and a bind is accepted again */
@@ -188,19 +261,19 @@ static void lifetime_tests(void)
     Test_Check(!n64c_settings_load(&back) && pre.loads == 3 && own.loads == 0, "after unbind the load refuses and calls nobody");
 
     /* no host bound: boot's own host is the one used, and it unbinds what it bound */
-    Test_Check(n64c_settings_bind(&own, host_load, host_request), "boot's own bind is accepted when none is bound");
+    Test_Check(n64c_settings_bind(&own, host_load, host_request, host_observe), "boot's own bind is accepted when none is bound");
     Test_Check(n64c_settings_load(&back) && own.loads == 1 && pre.loads == 3, "the load reaches boot's own host");
-    Test_Check(!n64c_settings_bind(&pre, host_load, host_request), "a host binding late does not replace it");
+    Test_Check(!n64c_settings_bind(&pre, host_load, host_request, host_observe), "a host binding late does not replace it");
     n64c_settings_unbind();
     Test_Check(!n64c_settings_load(&back) && own.loads == 1, "boot's unbind at its exit leaves nothing bound");
-    Test_Check(n64c_settings_bind(&pre, host_load, host_request), "so the next host binds");
+    Test_Check(n64c_settings_bind(&pre, host_load, host_request, host_observe), "so the next host binds");
     n64c_settings_unbind();
 }
 
 int main(void)
 {
     host = (Host){0};
-    Test_Check(n64c_settings_bind(&host, host_load, host_request), "the host binds");
+    Test_Check(n64c_settings_bind(&host, host_load, host_request, host_observe), "the host binds");
     N64cOptions now;
     /* the screen opens only inside a game menu */
     start(0);
@@ -247,28 +320,30 @@ int main(void)
     tap(DOWN);
     tap(A);
     what = n64c_menu_take(&now);
-    Test_Check((what & N64C_DO_UNLOCK) && now.fps_unlock == 1, "A on the unlock row switches it on");
+    Test_Check((what & N64C_DO_PRESENTATION) && now.presentation.unlock == 1, "A on the unlock row switches it on");
     Test_Check(n64c_menu_take(&now) == 0, "a change is reported once");
-    Test_Check(host.stored.fps_unlock == 1 && host.stored.display.fullscreen == N64C_WIN_BORDERLESS,
+    Test_Check(host.stored.presentation.unlock == 1 && host.stored.display.fullscreen == N64C_WIN_BORDERLESS,
                "every change reaches the host's apply, which holds the options");
     /* a request is applied AND saved or it is nothing: the host fails its save, answers false, the unlock stays as it was */
     host.refuse = true;
     tap(A);
     what = n64c_menu_take(&now);
-    Test_Check(!(what & N64C_DO_UNLOCK) && now.fps_unlock == 1 && host.stored.fps_unlock == 1,
+    Test_Check(!(what & N64C_DO_PRESENTATION) && now.presentation.unlock == 1 && host.stored.presentation.unlock == 1,
                "a request whose save failed leaves the unlock, the screen and the host's archive as they were");
     Test_Check(n64c_menu_text(text, sizeof text, &line, &scale) > 0 && strstr(text, "FRAMERATE UNLOCK  < ON >") != NULL,
                "and the screen still shows it on");
     host.refuse = false;
 
     /* controls opens the page and closes the screen */
+    tap(DOWN); /* cap */
+    tap(DOWN); /* vsync */
     tap(DOWN);
     tap(A);
     Test_Check((n64c_menu_take(&now) & N64C_DO_CONTROLS) && !n64c_menu_is_open(), "the controls row asks for the Controls page");
     (void)sample(L | R, 0);
     (void)sample(0, 0);
     Test_Check(n64c_menu_is_open(), "the screen opens again");
-    for (int i = 0; i < 5; i++) tap(DOWN); /* resume, window, resolution, scale, unlock, controls, quit */
+    for (int i = 0; i < 7; i++) tap(DOWN); /* resume, window, resolution, scale, unlock, cap, vsync, controls, quit */
     tap(DOWN);
     tap(A);
     Test_Check(n64c_menu_take(&now) == 0, "the first A on quit only arms it");
@@ -305,6 +380,7 @@ int main(void)
     pad = sample(L | R, 0);
     (void)pad;
     seam_tests();
+    presentation_tests();
     lifetime_tests();
     puts("menu ok");
     return 0;

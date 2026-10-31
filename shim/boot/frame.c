@@ -42,7 +42,7 @@ static FILE *fopen_new(const char *path)
 static struct {
     u32 tasks,audio_tasks,ram_bytes,shown;
     u32 submitted,gfx_submitted,progress_tasks;
-    int closed;
+    int closed,window; /* window: a live run with a visible window (vsync means something there) */
     u64 commands;
     void *presented;
     uint8_t *ram;
@@ -168,11 +168,11 @@ static long long ns_since(const struct timespec *a,const struct timespec *b)
 {
     return (long long)(b->tv_sec-a->tv_sec)*1000000000ll+(b->tv_nsec-a->tv_nsec);
 }
-void n64c_boot_frame_unlock(int on)
-{
-    unlock.on=on!=0;
-}
-static int unlock_request=-1; /* the options screen's choice, applied between two game frames (n64c_boot_frame_live) */
+/* The presentation settings (n64c_menu.h): present_now is what the frame module has in force; a request that reaches
+ * the live loop waits in present_next until the loop is between two frames (no picture group open). Nothing here is
+ * read by the guest: its clock, the VI, audio and input polls run as without it. */
+static N64cPresentationSettings present_now,present_next;
+static int present_pending,live_running,display_mode;
 /* The options screen (n64c_menu.h): applies what it changed since the last retrace and hands the renderer its text. */
 /* Evidence without a keyboard: N64C_OPTIONS_SHOT=PREFIX writes PREFIX-closed.ppm when a game menu comes up, then opens the screen
  * as the hotkey would, steps to the frame-rate row, switches it on and writes PREFIX-open.ppm; with N64C_OPTIONS_SHOT_QUIT set it then steps to Quit game and confirms. */
@@ -202,7 +202,7 @@ static void menu_update(void)
 {
     N64cOptions now;
     const unsigned what=n64c_menu_take(&now);
-    if (what&N64C_DO_UNLOCK) unlock_request=now.fps_unlock;
+    (void)now; /* the host's request already applied the display and the presentation */
     if (what&N64C_DO_CONTROLS) n64c_f3d_open_controls(frame.f3d);
     if (what&N64C_DO_QUIT) { fprintf(stderr,"boot-frame: quit from the options screen\n");n64c_f3d_quit(frame.f3d); }
     char text[640];
@@ -293,21 +293,109 @@ int n64c_boot_frame_start(u32 width,u32 height,u32 ram_bytes,int audio_abi,u32 w
     n64c_set_task_handler(M_GFXTASK,graphics,NULL);
     n64c_set_task_handler(M_AUDTASK,frame.audio ? audio : unsupported_task,NULL);
     n64c_set_present(present,NULL);
-    n64c_f3d_unlock(frame.f3d,unlock.on);
-    unlock.live=0;
+    unlock.on=0;unlock.live=0;unlock.hz=0;
+    present_now=present_next=(N64cPresentationSettings){.cap_policy=N64C_CAP_AUTO};
+    present_pending=live_running=0;display_mode=N64C_WIN_WINDOWED;
+    n64c_f3d_unlock(frame.f3d,0);
+    frame.window=live && !host.offscreen;
     if (live) n64c_boot_stop_hook=live_stop;
     return 1;
 }
-/* The window the display settings last took (what a failed apply goes back to is the window's own, in n64c_f3d_display). */
+/* What the window realized: its drawable pixels and the render scale the target really has (the window may differ from
+ * what was asked: borderless and fullscreen take the display's size, a window manager may clamp). */
+static void display_realized(N64cDisplaySettings *out,int fallback_scale)
+{
+    u32 window_w=0,window_h=0,render_w=0,render_h=0;
+    n64c_f3d_sizes(frame.f3d,&window_w,&window_h,&render_w,&render_h);
+    out->fullscreen=display_mode;
+    out->width=window_w;out->height=window_h;
+    const u32 scale=window_w ? (u32)(((unsigned long long)render_w*100+window_w/2)/window_w) : (u32)fallback_scale;
+    out->render_scale=scale<1 ? 1 : scale>100 ? 100 : (int)scale;
+}
+/* The window the display settings last took (what a failed apply goes back to is the window's own, in n64c_f3d_display).
+ * *effective is what the window realized afterwards, not what was asked. */
 bool n64c_display_apply(const N64cDisplaySettings *requested,N64cDisplaySettings *effective,char *error,size_t capacity)
 {
     if (!frame.f3d) { snprintf(error,capacity,"the window is not open");return false; }
     int scale=requested->render_scale;
     if (!n64c_f3d_display(frame.f3d,requested->fullscreen,requested->width,requested->height,requested->render_scale,&scale,error,capacity))
         return false;
-    *effective=*requested;
-    effective->render_scale=scale;
+    display_mode=requested->fullscreen;
+    display_realized(effective,scale);
     return true;
+}
+static u32 cap_rate(const N64cPresentationSettings *p)
+{
+    u32 hz=0;
+    if (p->cap_policy==N64C_CAP_FIXED) return p->cap_hz;
+    if (p->cap_policy==N64C_CAP_AUTO) (void)n64c_unlock_rate(NULL,n64c_f3d_refresh_hz(frame.f3d),&hz);
+    return hz; /* MAX: no limit */
+}
+bool n64c_cap_parse(const char *text,int *policy,u32 *hz)
+{
+    *hz=0;
+    if (!text || !*text || !strcmp(text,"1") || !strcmp(text,"auto")) { *policy=N64C_CAP_AUTO;return true; }
+    if (!strcmp(text,"max")) { *policy=N64C_CAP_MAX;return true; }
+    char *end;
+    const unsigned long v=strtoul(text,&end,10);
+    if (*end || v<N64C_CAP_HZ_MIN || v>N64C_CAP_HZ_MAX) return false;
+    *policy=N64C_CAP_FIXED;*hz=(u32)v;
+    return true;
+}
+void n64c_presentation_caps(N64cPresentationCaps *caps)
+{
+    *caps=(N64cPresentationCaps){0};
+    if (!frame.f3d) return;
+    caps->unlock_available=1;
+    caps->refresh_hz=n64c_f3d_refresh_hz(frame.f3d);
+    if (frame.window) { /* can the swap wait for the display: ask, then put back what is in force */
+        caps->vsync_available=n64c_f3d_vsync(frame.f3d,1)==1;
+        (void)n64c_f3d_vsync(frame.f3d,present_now.vsync);
+    }
+}
+static void unlock_rate_setup(void)
+{
+    unlock.hz=0;
+    if (!unlock.on) return;
+    unlock.hz=cap_rate(&present_now);
+    fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
+}
+/* The boundary: with no picture group open, what was requested becomes what the frame module has in force. */
+static void present_commit(u32 n)
+{
+    present_now=present_next;present_pending=0;
+    unlock.on=present_now.unlock!=0;
+    n64c_f3d_unlock(frame.f3d,unlock.on);
+    unlock.live=0;unlock.last_n=n-1;
+    if (unlock.on) unlock_rate_setup(); else { unlock.hz=0;fprintf(stderr,"boot-fps: unlock off\n"); }
+}
+bool n64c_presentation_apply(const N64cPresentationSettings *requested,N64cPresentationSettings *effective,char *error,size_t capacity)
+{
+    if (!frame.f3d) { snprintf(error,capacity,"the window is not open");return false; }
+    if ((requested->unlock!=0 && requested->unlock!=1) || (requested->vsync!=0 && requested->vsync!=1)) {
+        snprintf(error,capacity,"unlock %d and vsync %d are not 0 or 1",requested->unlock,requested->vsync);
+        return false;
+    }
+    if (requested->cap_policy<N64C_CAP_AUTO || requested->cap_policy>N64C_CAP_FIXED ||
+        (requested->cap_policy==N64C_CAP_FIXED && (requested->cap_hz<N64C_CAP_HZ_MIN || requested->cap_hz>N64C_CAP_HZ_MAX))) {
+        snprintf(error,capacity,"frame cap %d/%u is not auto, max or %d..%d",requested->cap_policy,(unsigned)requested->cap_hz,
+                 N64C_CAP_HZ_MIN,N64C_CAP_HZ_MAX);
+        return false;
+    }
+    N64cPresentationSettings out=*requested;
+    out.vsync=frame.window ? n64c_f3d_vsync(frame.f3d,requested->vsync)==1 : 0; /* the swap interval the context really has */
+    out.cap_hz=cap_rate(&out);
+    present_next=out;present_pending=1;
+    if (!live_running) present_commit(1); /* before the loop there is no frame to wait for */
+    *effective=out;
+    return true;
+}
+void n64c_boot_frame_presentation(const N64cPresentationSettings *start)
+{
+    char error[256];
+    N64cPresentationSettings effective;
+    if (!n64c_presentation_apply(start,&effective,error,sizeof error))
+        fprintf(stderr,"boot-options: start presentation refused: %s\n",error);
 }
 void n64c_boot_frame_options(const N64cOptions *now)
 {
@@ -320,20 +408,21 @@ void n64c_boot_frame_options(const N64cOptions *now)
     const size_t count=n64c_f3d_display_sizes(frame.f3d,sizes,64);
 #endif
     static const char *const modes[]={"windowed","borderless","fullscreen"};
-    fprintf(stderr,"boot-options: start window=%s %ux%u unlock=%d scale=%d%%\n",modes[now->display.fullscreen%3],now->display.width,now->display.height,now->fps_unlock,now->display.render_scale);
-    N64cOptions start=*now;
+    fprintf(stderr,"boot-options: start window=%s %ux%u unlock=%d scale=%d%%\n",modes[now->display.fullscreen%3],now->display.width,now->display.height,now->presentation.unlock,now->display.render_scale);
     if (now->display.render_scale!=100 || (!mobile && now->display.fullscreen!=N64C_WIN_WINDOWED)) {
         char error[256];
         N64cDisplaySettings effective;
-        if (n64c_display_apply(&now->display,&effective,error,sizeof error)) start.display=effective;
-        else {
+        if (!n64c_display_apply(&now->display,&effective,error,sizeof error))
             fprintf(stderr,"boot-options: start display refused: %s\n",error);
-            n64c_options_default(&start);
-            start.display.width=now->display.width;start.display.height=now->display.height;
-            start.fps_unlock=now->fps_unlock;
-        }
     }
-    n64c_menu_configure(&start,(const u32 (*)[2])sizes,count,mobile);
+    /* what the window really is now, whatever was asked, goes to the host and the screen */
+    N64cOptions realized;
+    display_realized(&realized.display,100);
+    realized.presentation=present_now;
+    N64cPresentationCaps caps;
+    n64c_presentation_caps(&caps);
+    n64c_settings_observe(&realized);
+    n64c_menu_configure(&realized,(const u32 (*)[2])sizes,count,mobile,&caps);
 }
 /* The VI shows whichever color image it was given; double buffering presents an earlier rendered surface,
  * never the last one by assumption. Reads it back scaled to width x height (caller frees), NULL when never rendered. */
@@ -607,16 +696,6 @@ void n64c_boot_run_ended(void)
 {
     fps_report("ended",live_speed);
 }
-static void unlock_rate_setup(void)
-{
-    if (!unlock.on) return;
-    const char *text=getenv("N64C_FPS_UNLOCK");
-    if (!n64c_unlock_rate(text,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz)) {
-        fprintf(stderr,"boot-frame: N64C_FPS_UNLOCK must be a rate, max or 1, got %s; using the default\n",text);
-        (void)n64c_unlock_rate(NULL,n64c_f3d_refresh_hz(frame.f3d),&unlock.hz);
-    }
-    fprintf(stderr,"boot-fps: unlock on, %u pictures a second at most\n",unlock.hz);
-}
 int n64c_boot_frame_live(void)
 {
     u32 speed;
@@ -634,6 +713,7 @@ int n64c_boot_frame_live(void)
     unlock.t0=start;unlock.flips=unlock.groups=unlock.interpolated=0;unlock.last_n=0;unlock.cost_ns=0;
     unlock.checked=unlock.mismatched=0;unlock.worst=0;
     unlock.check=getenv("N64C_FPS_UNLOCK_CHECK") && *getenv("N64C_FPS_UNLOCK_CHECK") && strcmp(getenv("N64C_FPS_UNLOCK_CHECK"),"0");
+    live_running=1;
     unlock_rate_setup();
     const u32 run_speed=speed; /* the speed a release (live input handed back) returns to */
     const long long run_interval=view.interval_ns;
@@ -653,12 +733,7 @@ int n64c_boot_frame_live(void)
             gate_seen=n64c_tas_gate_epoch();base=n-1;clock_gettime(CLOCK_MONOTONIC,&start);
         }
         if (n64c_tas_live_taken() && view.path) view.interval_ns=1000000000ll/60-2000000ll;
-        if (unlock_request>=0) { /* between two frames: no picture group is open */
-            unlock.on=unlock_request!=0;unlock_request=-1;
-            n64c_f3d_unlock(frame.f3d,unlock.on);
-            unlock.live=0;unlock.last_n=n-1;
-            if (unlock.on) unlock_rate_setup(); else fprintf(stderr,"boot-fps: unlock off\n");
-        }
+        if (present_pending) present_commit(n); /* between two frames: no picture group is open */
         if (unlock.on) n64c_f3d_group_begin(frame.f3d);
         N64C_ZONE(zf,"frame");
         const int alive=n64c_frame();
@@ -690,6 +765,7 @@ int n64c_boot_frame_live(void)
                     frame.tasks,frame.audio_tasks,(unsigned long long)frame.commands);
         wait_retrace(&start,n-base,n64c_tas_gate_seeking()?0:speed);
     }
+    live_running=0;
     fps_report("closed",speed);
     fprintf(stderr,"boot-frame: window closed at retrace %u\n",osViGetRetraceCount());
     return 1;
@@ -703,4 +779,5 @@ void n64c_boot_frame_close(void)
     n64a_abi_destroy(frame.audio);
     n64c_f3d_close(frame.f3d);
     frame=(typeof(frame)){0};
+    live_running=0;
 }

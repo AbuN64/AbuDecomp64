@@ -76,34 +76,6 @@ int n64c_touch_parse(N64cTouchLayout *l, const char *text, char *err, size_t err
     *l = work;
     return 1;
 }
-int n64c_touch_save(const N64cTouchLayout *l, const char *path)
-{
-    size_t need = n64c_touch_format(l, NULL, 0);
-    char *buf = malloc(need + 1), tmp[600];
-    if (!buf) return 0;
-    n64c_touch_format(l, buf, need + 1);
-    int ok = snprintf(tmp, sizeof tmp, "%s.tmp", path) < (int)sizeof tmp;
-    FILE *f = ok ? fopen(tmp, "wb") : NULL;
-    ok = f && fwrite(buf, 1, need, f) == need;
-    if (f) ok = fclose(f) == 0 && ok;
-    ok = ok && rename(tmp, path) == 0;
-    if (!ok && f) remove(tmp);
-    free(buf);
-    return ok;
-}
-int n64c_touch_load(N64cTouchLayout *l, const char *path, char *err, size_t errcap)
-{
-    FILE *f = fopen(path, "rb");
-    if (!f) return 1;
-    char *buf = malloc(8192);
-    size_t n = buf ? fread(buf, 1, 8191, f) : 0;
-    fclose(f);
-    if (!buf) return 0;
-    buf[n] = 0;
-    int ok = n64c_touch_parse(l, buf, err, errcap);
-    free(buf);
-    return ok;
-}
 int n64c_touch_corner(float x, float y)
 {
     if (y < 0.08f && x < 0.06f) return N64C_TOUCH_CORNER_MENU;

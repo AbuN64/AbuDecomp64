@@ -8,6 +8,7 @@
 #include "n64c_binds.h"
 #include "n64c_cont.h"
 #include <SDL3/SDL.h>
+#include <stdbool.h>
 #include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
@@ -22,17 +23,33 @@ enum {
 };
 /* Bit of the SI button word for an action; 0 for the four stick directions. */
 unsigned n64c_action_button(int action);
-/* The live bind table, valid before start and after stop. Edit it with n64c_binds_set(); call
- * n64c_input_binds_save() to keep a change. Only the window thread may touch it. */
+/* The live bind table, valid before start and after stop. Edit it with n64c_binds_set(), then call
+ * n64c_input_binds_commit() to keep the change. Only the window thread may touch it. */
 N64cBinds *n64c_input_binds(void);
-/* Factory bindings applied to the live table (all players or one), saved if a path is set. */
-void n64c_input_binds_reset(int player /* -1 = all */);
-/* Path of the bind file (config/controls.cfg of the user folder). start loads it; an unreadable file is reported
- * on stderr and the factory table stays. NULL/"" disables persistence. */
-void n64c_input_set_config_path(const char *path);
-int n64c_input_binds_save(void);
-/* Touch zones (n64c_touch.h): edit mode on/off (leaving saves config/touch-layout.cfg, beside the binds). */
-int n64c_input_touch_save(void);
+/* The controls seam. The host program binds a context with two callbacks and owns the file and its lifecycle: the shim
+ * reads and writes no controls file (the host archives the table in its one config file, with the text form of
+ * n64c_binds_format / n64c_binds_parse). Both callbacks run on the window thread, with no shim lock held.
+ *   load:    at every input start, with a copy of the table in force (the factory table until something else was kept);
+ *            fills it from the host's archive and returns true, or returns false when it has none (the table stays).
+ *   request: when the Controls page asks to keep an edit, with the complete table requested. The host validates it,
+ *            applies it to its own state and saves its archive (atomically), and returns true only when all of that held.
+ *            On false it has changed nothing and writes the reason into error (capacity bytes, supplied by the shim); the
+ *            shim then puts the table back to the last one the host accepted and reports the reason.
+ * The context is borrowed: the host keeps it alive from bind until n64c_input_host_unbind. The registration is the host's
+ * and outlives n64c_game_main and every n64c_input_start/stop: the host binds before calling it, the game's boot binds its
+ * flags-only host only when none is bound, and only n64c_input_host_unbind removes a binding. With none bound the Controls
+ * page refuses every change. There is no file fallback. */
+typedef bool (*N64cInputLoadFn)(void *context, N64cBinds *binds);
+typedef bool (*N64cInputRequestFn)(void *context, const N64cBinds *requested, char *error, size_t capacity);
+/* False, with nothing changed, when a callback is missing or a host is already bound. */
+bool n64c_input_host_bind(void *context, N64cInputLoadFn load, N64cInputRequestFn request);
+void n64c_input_host_unbind(void);
+/* Keeps the edit made to the live table: asks the host. True: the host accepted and saved it. False: the table is back to
+ * the last accepted one and error says why. */
+bool n64c_input_binds_commit(char *error, size_t capacity);
+/* Factory bindings applied to the live table (all players or one), then committed as above. */
+bool n64c_input_binds_reset(int player /* -1 = all */, char *error, size_t capacity);
+/* Touch zones (n64c_touch.h): edit mode on/off. The layout lives for the run; no file keeps it. */
 void n64c_input_touch_edit(int editing);
 /* NULL/offscreen windows and every N64C_LOCKSTEP environment disable live input. */
 int n64c_input_start(SDL_Window *window);

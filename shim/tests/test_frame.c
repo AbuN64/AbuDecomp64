@@ -61,7 +61,13 @@ static unsigned unlocked,group_begins,group_ends,interp_draws,interp_presents,in
 static int group_result=3;
 static float last_alpha;
 void n64c_f3d_unlock(N64cF3d *f,int on) { CHECK(f==(N64cF3d *)&renderer);unlocked=(unsigned)on; }
-void n64c_f3d_group_begin(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);group_begins++; }
+static void (*in_first_group)(void); /* runs once, inside the first picture group (the settings screen applies there) */
+void n64c_f3d_group_begin(N64cF3d *f)
+{
+    CHECK(f==(N64cF3d *)&renderer);
+    group_begins++;
+    if (in_first_group) { void (*run)(void)=in_first_group;in_first_group=NULL;run(); }
+}
 int n64c_f3d_group_end(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);group_ends++;return group_result; }
 int n64c_f3d_interp_draw(N64cF3d *f,float alpha) { CHECK(f==(N64cF3d *)&renderer && alpha>=0 && alpha<=1);last_alpha=alpha;interp_draws++;return 1; }
 int n64c_f3d_interp_present(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);interp_presents++;return 1; }
@@ -77,7 +83,24 @@ uint32_t n64c_f3d_refresh_hz(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return
 int n64c_f3d_events(N64cF3d *f) { CHECK(f==(N64cF3d *)&renderer);return ++polls<2; }
 /* The options screen's window side: the frame loop only forwards what the screen asks for. */
 void n64c_f3d_overlay(N64cF3d *f,const char *text,int selected_line,int max_scale) { (void)f;(void)text;(void)selected_line;(void)max_scale; }
-int n64c_f3d_display(N64cF3d *f,int mode,uint32_t width,uint32_t height,int percent,int *effective,char *error,size_t capacity) { (void)f;(void)mode;(void)width;(void)height;(void)percent;(void)error;(void)capacity;if (effective) *effective=percent;return 1; }
+/* The window stand-in realizes a size other than the one asked for (a borderless window takes the display's, a window
+ * manager clamps): the display call only records the mode, the sizes are what the "window" decided. */
+static int display_calls,display_refuse,display_mode,vsync_can=1,vsync_calls,vsync_now;
+static uint32_t realized_w=1920,realized_h=1080,realized_render_w=960,realized_render_h=540;
+int n64c_f3d_display(N64cF3d *f,int mode,uint32_t width,uint32_t height,int percent,int *effective,char *error,size_t capacity)
+{
+    CHECK(f==(N64cF3d *)&renderer);
+    display_calls++;
+    if (display_refuse) { snprintf(error,capacity,"no such mode %ux%u",(unsigned)width,(unsigned)height);return 0; }
+    display_mode=mode;*effective=percent;
+    return 1;
+}
+void n64c_f3d_sizes(const N64cF3d *f,uint32_t *ww,uint32_t *wh,uint32_t *rw,uint32_t *rh)
+{
+    CHECK(f==(N64cF3d *)&renderer);
+    *ww=realized_w;*wh=realized_h;*rw=realized_render_w;*rh=realized_render_h;
+}
+int n64c_f3d_vsync(N64cF3d *f,int on) { CHECK(f==(N64cF3d *)&renderer);vsync_calls++;if (vsync_can) vsync_now=on!=0;return vsync_now; }
 void n64c_f3d_window_shot(N64cF3d *f,const char *path) { (void)f;(void)path; }
 size_t n64c_f3d_display_sizes(N64cF3d *f,uint32_t (*sizes)[2],size_t max) { (void)f;(void)sizes;(void)max;return 0; }
 void n64c_f3d_quit(N64cF3d *f) { (void)f; }
@@ -130,6 +153,105 @@ static void start(int mode)
 {
     scenario=mode;retraces=0;presents=0;shown=0;render_progress=0;
     CHECK(n64c_boot_frame_start(2,2,sizeof ram,mode==8 ? -1 : 0,window_mode ? 4 : 0,window_mode ? 3 : 0));
+}
+/* Observed state handed to the settings host at startup. */
+static struct { unsigned loads,requests,observes;N64cOptions observed; } host;
+static bool host_load(void *c,N64cOptions *o) { (void)c;(void)o;host.loads++;return false; }
+static bool host_request(void *c,const N64cOptions *r,N64cOptions *e,char *error,size_t capacity)
+{
+    (void)c;(void)r;(void)e;(void)error;(void)capacity;
+    host.requests++;
+    return true;
+}
+static void host_observe(void *c,const N64cOptions *o) { (void)c;host.observes++;host.observed=*o; }
+/* The options screen applies from inside n64c_frame(), with the picture group open. */
+static int inside_unlocked_at_apply=-1,inside_ok;
+static void apply_inside_group(void)
+{
+    char error[256];
+    N64cPresentationSettings want={.unlock=0,.cap_policy=N64C_CAP_MAX},got;
+    inside_ok=n64c_presentation_apply(&want,&got,error,sizeof error) && got.unlock==0 && got.cap_hz==0;
+    inside_unlocked_at_apply=(int)unlocked; /* still the old state: the group is open */
+}
+/* Presentation and display: what the window realized is what is reported; unlock and cap take effect at the frame
+ * boundary (never inside an open picture group); vsync and unlock never touch the guest's retrace count. */
+static void presentation_tests(void)
+{
+    char error[256];
+    N64cPresentationSettings want={0},got;
+    int policy;u32 hz;
+    /* the cap text: auto/1/empty, max, a rate 2..100000 */
+    CHECK(n64c_cap_parse(NULL,&policy,&hz) && policy==N64C_CAP_AUTO && hz==0);
+    CHECK(n64c_cap_parse("auto",&policy,&hz) && policy==N64C_CAP_AUTO && n64c_cap_parse("1",&policy,&hz) && policy==N64C_CAP_AUTO);
+    CHECK(n64c_cap_parse("max",&policy,&hz) && policy==N64C_CAP_MAX && hz==0);
+    CHECK(n64c_cap_parse("2",&policy,&hz) && policy==N64C_CAP_FIXED && hz==2);
+    CHECK(n64c_cap_parse("100000",&policy,&hz) && policy==N64C_CAP_FIXED && hz==100000);
+    CHECK(!n64c_cap_parse("0",&policy,&hz) && !n64c_cap_parse("100001",&policy,&hz) && !n64c_cap_parse("fast",&policy,&hz) && !n64c_cap_parse("90x",&policy,&hz));
+    /* caps: unlock is always there, vsync only when the window's swap can wait, and the display's rate rides along */
+    start(0);
+    N64cPresentationCaps caps;
+    n64c_presentation_caps(&caps);
+    CHECK(caps.unlock_available==1 && caps.vsync_available==1 && caps.refresh_hz==144);
+    vsync_can=0;vsync_now=0;n64c_presentation_caps(&caps);CHECK(caps.vsync_available==0);
+    vsync_can=1;
+    /* a refused request changes nothing and says why */
+    want=(N64cPresentationSettings){.unlock=2};
+    CHECK(!n64c_presentation_apply(&want,&got,error,sizeof error) && *error);
+    want=(N64cPresentationSettings){.cap_policy=N64C_CAP_FIXED,.cap_hz=1};
+    CHECK(!n64c_presentation_apply(&want,&got,error,sizeof error) && *error);
+    want=(N64cPresentationSettings){.cap_policy=N64C_CAP_FIXED,.cap_hz=100001};
+    CHECK(!n64c_presentation_apply(&want,&got,error,sizeof error) && *error);
+    want=(N64cPresentationSettings){.cap_policy=7};
+    CHECK(!n64c_presentation_apply(&want,&got,error,sizeof error) && unlocked==0);
+    /* effective carries the resolved rate: FIXED as asked, MAX unlimited, AUTO the display's */
+    want=(N64cPresentationSettings){.unlock=1,.vsync=1,.cap_policy=N64C_CAP_FIXED,.cap_hz=75};
+    CHECK(n64c_presentation_apply(&want,&got,error,sizeof error) && got.unlock==1 && got.vsync==1 && got.cap_hz==75 && vsync_now==1);
+    want.cap_policy=N64C_CAP_MAX;want.cap_hz=9;
+    CHECK(n64c_presentation_apply(&want,&got,error,sizeof error) && got.cap_policy==N64C_CAP_MAX && got.cap_hz==0);
+    want.cap_policy=N64C_CAP_AUTO;
+    CHECK(n64c_presentation_apply(&want,&got,error,sizeof error) && got.cap_hz==144);
+    /* vsync the window cannot honour is reported as off */
+    vsync_can=0;vsync_now=0;
+    CHECK(n64c_presentation_apply(&want,&got,error,sizeof error) && got.vsync==0);
+    vsync_can=1;
+    /* before the loop a request is in force at once; in the loop it waits for the frame boundary: applied inside the
+     * first picture group it changes nothing until the next frame, and the guest's retraces are those of a locked run */
+    start(0);
+    unlocked=0;group_begins=0;
+    want=(N64cPresentationSettings){.unlock=1,.cap_policy=N64C_CAP_AUTO};
+    CHECK(n64c_presentation_apply(&want,&got,error,sizeof error) && unlocked==1);
+    in_first_group=apply_inside_group;
+    CHECK(n64c_boot_frame_live()==1 && retraces==3);
+    CHECK(inside_ok && inside_unlocked_at_apply==1 && unlocked==0 && group_begins==1 && in_first_group==NULL);
+    start(0);
+    unlocked=0;group_begins=0;
+    CHECK(n64c_boot_frame_live()==1 && retraces==3 && group_begins==0 && unlocked==0); /* off stays off: three retraces as ever */
+    /* display: the size reported is what the window realized, not what was asked */
+    start(0);
+    N64cDisplaySettings ask={.fullscreen=N64C_WIN_BORDERLESS,.width=800,.height=600,.render_scale=50},real;
+    realized_w=1920;realized_h=1080;realized_render_w=960;realized_render_h=540;
+    CHECK(n64c_display_apply(&ask,&real,error,sizeof error));
+    CHECK(real.fullscreen==N64C_WIN_BORDERLESS && real.width==1920 && real.height==1080 && real.render_scale==50 && display_mode==N64C_WIN_BORDERLESS);
+    realized_w=1000;realized_h=700;realized_render_w=250;realized_render_h=175; /* the window manager clamped it */
+    ask=(N64cDisplaySettings){.fullscreen=N64C_WIN_WINDOWED,.width=4000,.height=3000,.render_scale=100};
+    CHECK(n64c_display_apply(&ask,&real,error,sizeof error) && real.width==1000 && real.height==700 && real.render_scale==25);
+    display_refuse=1;
+    CHECK(!n64c_display_apply(&ask,&real,error,sizeof error) && strstr(error,"4000x3000"));
+    display_refuse=0;
+    /* startup: the options as the window realized them reach the bound host, display and presentation, never the defaults */
+    CHECK(n64c_settings_bind(&host,host_load,host_request,host_observe));
+    memset(&host,0,sizeof host);
+    realized_w=1280;realized_h=720;realized_render_w=1280;realized_render_h=720;
+    N64cOptions now;
+    n64c_options_default(&now);
+    now.display.width=640;now.display.height=480;
+    n64c_boot_frame_options(&now);
+    CHECK(host.observes==1 && host.observed.display.width==1280 && host.observed.display.height==720 && host.observed.display.render_scale==100);
+    CHECK(host.requests==0 && host.loads==0);
+    n64c_settings_unbind();
+    n64c_boot_frame_options(&now);
+    CHECK(host.observes==1); /* unbound: nothing to tell */
+    unlocked=0;
 }
 int main(int argc,char **argv)
 {
@@ -218,8 +340,10 @@ int main(int argc,char **argv)
      * VI's own present only polls events, so input is read once per retrace as without it; a frame that is not the
      * same scene as the one before is shown as the VI shows it. Without unlock none of this runs. */
     CHECK(unlocked==0 && group_begins==0 && interp_draws==0);
-    n64c_boot_frame_unlock(1);
     start(0);
+    N64cPresentationSettings unlock_want={.unlock=1,.cap_policy=N64C_CAP_AUTO},unlock_got;
+    char unlock_error[256];
+    CHECK(n64c_presentation_apply(&unlock_want,&unlock_got,unlock_error,sizeof unlock_error) && unlock_got.unlock==1 && unlock_got.cap_hz==144); /* AUTO: max(refresh 144, 120) */
     CHECK(unlocked==1);
     CHECK(n64c_boot_frame_live()==1 && retraces==3 && group_begins==3 && group_ends==3);
     CHECK(presents==1 && polls==2);                      /* retrace 1 was before any interpolated group; 2 and 3 only polled */
@@ -232,10 +356,11 @@ int main(int argc,char **argv)
     CHECK(!n64c_unlock_rate("0",60,&hz) && !n64c_unlock_rate("fast",60,&hz) && !n64c_unlock_rate("1x",60,&hz));
     group_result=1;polls=0;presents=0;interp_draws=0;
     start(0);CHECK(n64c_boot_frame_live()==1 && interp_draws==0 && presents==3 && polls==0);
-    group_result=3;n64c_boot_frame_unlock(0);
+    group_result=3;
     start(0);CHECK(unlocked==0);
     CHECK(n64c_parse_view_fps(NULL,&fps) && fps==15 && n64c_parse_view_fps("60",&fps) && fps==60);
     CHECK(!n64c_parse_view_fps("0",&fps) && !n64c_parse_view_fps("121",&fps) && !n64c_parse_view_fps("6x",&fps));
+    presentation_tests();
     start(1);CHECK(n64c_boot_frame_live()==0 && retraces==1);
     n64c_boot_frame_close();
     CHECK(!n64c_boot_stop_hook);

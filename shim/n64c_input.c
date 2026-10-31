@@ -15,7 +15,14 @@ static SDL_Window *input_window;
 static SDL_Gamepad *pads[N64C_PLAYERS];
 static N64cBinds binds;
 static int binds_ready;
-static char config_path[512], touch_path[512];
+static N64cBinds committed; /* the table the host last accepted (or loaded); a refused edit goes back to it */
+typedef struct {
+    void *context;
+    N64cInputLoadFn load;
+    N64cInputRequestFn request;
+} ControlsHost;
+static ControlsHost host; /* the bound controls host; request == NULL: none */
+static pthread_mutex_t host_mutex = PTHREAD_MUTEX_INITIALIZER;
 static OSContPad snapshot[N64C_PLAYERS];
 static int present[N64C_PLAYERS];
 static pthread_mutex_t snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -43,51 +50,65 @@ unsigned n64c_action_button(int action)
 }
 N64cBinds *n64c_input_binds(void)
 {
-    if (!binds_ready) { n64c_binds_defaults(&binds); binds_ready = 1; }
+    if (!binds_ready) { n64c_binds_defaults(&binds); committed = binds; binds_ready = 1; }
     return &binds;
-}
-void n64c_input_set_config_path(const char *path)
-{
-    snprintf(config_path, sizeof config_path, "%s", path ? path : "");
-    touch_path[0] = 0; /* the touch layout sits beside the binds */
-    if (config_path[0]) {
-        const char *slash = strrchr(config_path, '/');
-        snprintf(touch_path, sizeof touch_path, "%.*stouch-layout.cfg", slash ? (int)(slash - config_path) + 1 : 0, config_path);
-    }
-}
-int n64c_input_touch_save(void)
-{
-    if (!touch_path[0]) return 0;
-    if (n64c_touch_save(n64c_touch_layout(), touch_path)) return 1;
-    fprintf(stderr, "input: cannot save the touch layout to %s\n", touch_path);
-    return 0;
 }
 void n64c_input_touch_edit(int editing)
 {
     if (editing == n64c_touch_editing()) return;
     n64c_touch_set_editing(editing);
-    if (!editing) n64c_input_touch_save();
 }
-int n64c_input_binds_save(void)
+bool n64c_input_host_bind(void *context, N64cInputLoadFn load, N64cInputRequestFn request)
 {
-    if (!config_path[0]) return 0;
-    if (n64c_binds_save(n64c_input_binds(), config_path)) return 1;
-    fprintf(stderr, "input: cannot save the controls to %s\n", config_path);
-    return 0;
+    if (!load || !request) return false;
+    pthread_mutex_lock(&host_mutex);
+    const bool vacant = host.request == NULL;
+    if (vacant) host = (ControlsHost){context, load, request};
+    pthread_mutex_unlock(&host_mutex);
+    return vacant;
 }
-void n64c_input_binds_reset(int player)
+void n64c_input_host_unbind(void)
+{
+    pthread_mutex_lock(&host_mutex);
+    memset(&host, 0, sizeof host);
+    pthread_mutex_unlock(&host_mutex);
+}
+bool n64c_input_binds_commit(char *error, size_t capacity)
+{
+    N64cBinds *live = n64c_input_binds();
+    pthread_mutex_lock(&host_mutex);
+    const ControlsHost h = host;
+    pthread_mutex_unlock(&host_mutex);
+    const N64cBinds requested = *live;
+    if (error && capacity) error[0] = 0;
+    char reason[160] = "";
+    bool ok = false;
+    if (!h.request) snprintf(reason, sizeof reason, "no controls host is registered");
+    else ok = h.request(h.context, &requested, reason, sizeof reason);
+    if (ok) {
+        committed = requested;
+        return true;
+    }
+    *live = committed; /* the host kept nothing: the table is the last one it accepted */
+    if (error && capacity) snprintf(error, capacity, "%s", reason[0] ? reason : "the host refused the controls");
+    return false;
+}
+bool n64c_input_binds_reset(int player, char *error, size_t capacity)
 {
     N64cBinds *b = n64c_input_binds();
     for (int p = 0; p < N64C_PLAYERS; ++p)
         if (player < 0 || player == p) n64c_binds_player_defaults(b, p);
-    n64c_input_binds_save();
+    return n64c_input_binds_commit(error, capacity);
 }
 static void load_config(void)
 {
     N64cBinds *b = n64c_input_binds();
-    char err[160] = "";
-    if (config_path[0] && !n64c_binds_load(b, config_path, err, sizeof err))
-        fprintf(stderr, "input: %s: %s; using the current controls\n", config_path, err);
+    pthread_mutex_lock(&host_mutex);
+    const ControlsHost h = host;
+    pthread_mutex_unlock(&host_mutex);
+    if (!h.load) return;
+    N64cBinds work = *b;
+    if (h.load(h.context, &work)) *b = committed = work;
 }
 static void publish(int port, OSContPad pad, int is_present)
 {
@@ -264,11 +285,6 @@ int n64c_input_start(SDL_Window *window)
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) return 0;
     input_window = window;
     load_config();
-    {
-        char err[160] = "";
-        if (touch_path[0] && !n64c_touch_load(n64c_touch_layout(), touch_path, err, sizeof err))
-            fprintf(stderr, "input: %s: %s; using the current touch layout\n", touch_path, err);
-    }
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); /* fingers drive the touch zones, not a mouse pointer */
     n64c_touch_release_all();
     mouse_dx = mouse_dy = 0;
@@ -363,7 +379,6 @@ void n64c_input_event(const SDL_Event *event)
             if (corner == N64C_TOUCH_CORNER_MENU) n64c_input_touch_edit(!n64c_touch_editing());
             else if (corner == N64C_TOUCH_CORNER_RESET && n64c_touch_editing()) {
                 n64c_touch_defaults(n64c_touch_layout());
-                n64c_input_touch_save();
             }
         } else if (event->type == SDL_EVENT_FINGER_MOTION) n64c_touch_move(id, event->tfinger.x, event->tfinger.y);
         else n64c_touch_up(id);

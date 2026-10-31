@@ -166,10 +166,30 @@ static void clear_devices(void)
                                   memset(devices[i].axes, 0, sizeof devices[i].axes); }
     mouse_mask = 0;
 }
+/* The controls host the program owns: it archives the table (the real one writes its config file) and may refuse. */
+static struct { N64cBinds archive; bool has; bool refuse; unsigned loads, requests; int context; } controls_host;
+static bool host_load(void *context, N64cBinds *binds)
+{
+    CHECK(context == &controls_host);
+    controls_host.loads++;
+    if (!controls_host.has) return false;
+    *binds = controls_host.archive;
+    return true;
+}
+static bool host_request(void *context, const N64cBinds *requested, char *error, size_t capacity)
+{
+    CHECK(context == &controls_host);
+    controls_host.requests++;
+    if (controls_host.refuse) { snprintf(error, capacity, "disk full"); return false; }
+    controls_host.archive = *requested; controls_host.has = true;
+    return true;
+}
 static void fresh(void)
 {
     n64c_input_stop(); clear_devices(); focus = window;
-    n64c_input_set_config_path(NULL);
+    n64c_input_host_unbind();
+    memset(&controls_host, 0, sizeof controls_host);
+    CHECK(n64c_input_host_bind(&controls_host, host_load, host_request));
     n64c_binds_defaults(n64c_input_binds());
 }
 static void policy(void)
@@ -394,12 +414,9 @@ static int page_has(const char *text)
     for (int i = 0; i < n; ++i) if (strstr(lines[i].text, text)) return 1;
     return 0;
 }
-static char config_file[] = "/tmp/n64c_controls_test.cfg";
 static void page(void)
 {
     fresh();
-    remove(config_file);
-    n64c_input_set_config_path(config_file);
     CHECK(n64c_input_start(window));
     CHECK(!n64c_controls_active());
     key_event(SDL_SCANCODE_RETURN, false); CHECK(!n64c_controls_active());
@@ -413,7 +430,12 @@ static void page(void)
     key_event(SDL_SCANCODE_Q, false); n64c_input_update();
     const N64cBind *slot = &n64c_input_binds()->player[0].slot[N64C_ACT_B][1];
     CHECK(slot->kind == N64C_BIND_KEY && slot->code == SDL_SCANCODE_Q && page_has("[K20"));
-    FILE *f = fopen(config_file, "rb"); CHECK(f != NULL); if (f) fclose(f); /* saved at once */
+    CHECK(controls_host.requests == 1 && controls_host.archive.player[0].slot[N64C_ACT_B][1].code == SDL_SCANCODE_Q); /* kept at once, by the host */
+    /* A host that refuses: the page says why and the bind stays what the host last kept. */
+    controls_host.refuse = true;
+    key_event(SDL_SCANCODE_RETURN, false); key_event(SDL_SCANCODE_W, false); n64c_input_update();
+    CHECK(page_has("DISK FULL") && slot->code == SDL_SCANCODE_Q && controls_host.requests == 2);
+    controls_host.refuse = false;
     /* Binding the same key to A: both rows show the conflict and the footer names the other holder. */
     key_event(SDL_SCANCODE_UP, false); key_event(SDL_SCANCODE_LEFT, false);
     key_event(SDL_SCANCODE_RETURN, false); key_event(SDL_SCANCODE_Q, false); n64c_input_update();
@@ -437,23 +459,61 @@ static void page(void)
     CHECK(page_has("ENTER AGAIN") && n64c_input_binds()->player[0].slot[N64C_ACT_B][1].kind == N64C_BIND_KEY);
     key_event(SDL_SCANCODE_RETURN, false);
     CHECK(page_has("PLAYER RESET") && n64c_input_binds()->player[0].slot[N64C_ACT_B][1].kind == N64C_BIND_NONE);
-    /* Close with Escape, saved; a fresh start restores a rebind from the file. */
+    /* Close with Escape; the host archived every kept edit, and a fresh start restores them from it. */
+    char error[160];
     CHECK(n64c_binds_set(n64c_input_binds(), 1, N64C_ACT_START, 0, (N64cBind){N64C_BIND_KEY, 0, SDL_SCANCODE_F7}));
+    CHECK(n64c_input_binds_commit(error, sizeof error));
     key_event(SDL_SCANCODE_ESCAPE, false); CHECK(!n64c_controls_active());
     n64c_input_stop();
     n64c_binds_defaults(n64c_input_binds());
     CHECK(n64c_input_binds()->player[1].slot[N64C_ACT_START][0].kind == N64C_BIND_NONE);
-    CHECK(n64c_input_start(window));
-    CHECK(n64c_input_binds()->player[1].slot[N64C_ACT_START][0].code == SDL_SCANCODE_F7);
+    controls_host.loads = 0;
+    CHECK(n64c_input_start(window) && controls_host.loads == 1);
+    CHECK(n64c_input_binds()->player[1].slot[N64C_ACT_START][0].code == SDL_SCANCODE_F7); /* the kept edit came back from the host */
     keyboard[SDL_SCANCODE_F7] = true; CHECK(sample_port(1).button == 0x1000);
-    /* A broken file is refused whole: the controls stay as they were. */
     n64c_input_stop();
-    f = fopen(config_file, "wb"); fputs("[player1]\nA = key:7\n", f); fclose(f);
-    n64c_binds_defaults(n64c_input_binds());
+}
+/* The controls seam: bound before the input starts and across stop/start, load refused by the host leaves the table, a
+ * refused request puts the table back and says why, no host refuses every edit, and nothing reads or writes a file. */
+static void controls_seam(void)
+{
+    char error[160];
+    fresh();
+    /* a host bound before the first start survives start/stop cycles and is asked to load on each */
+    CHECK(n64c_input_start(window) && controls_host.loads == 1);
+    n64c_input_stop(); CHECK(n64c_input_start(window) && controls_host.loads == 2);
+    CHECK(!n64c_input_host_bind(&controls_host, host_load, host_request)); /* one binding; it is never replaced */
+    CHECK(!n64c_input_host_bind(NULL, NULL, host_request) && !n64c_input_host_bind(NULL, host_load, NULL));
+    /* a host with nothing archived leaves the table as it was */
+    n64c_input_stop();
+    controls_host.has = false;
+    CHECK(n64c_binds_set(n64c_input_binds(), 0, N64C_ACT_A, 1, (N64cBind){N64C_BIND_KEY, 0, SDL_SCANCODE_9}));
+    CHECK(n64c_input_start(window) && n64c_input_binds()->player[0].slot[N64C_ACT_A][1].code == SDL_SCANCODE_9);
+    /* applied and saved: the request carries the complete table, the host's archive is what it was given */
+    N64cBinds before = *n64c_input_binds();
+    CHECK(n64c_binds_set(n64c_input_binds(), 2, N64C_ACT_Z, 0, (N64cBind){N64C_BIND_KEY, 0, SDL_SCANCODE_8}));
+    controls_host.requests = 0;
+    CHECK(n64c_input_binds_commit(error, sizeof error) && !error[0] && controls_host.requests == 1);
+    CHECK(!memcmp(&controls_host.archive, n64c_input_binds(), sizeof before) && controls_host.archive.player[2].slot[N64C_ACT_Z][0].code == SDL_SCANCODE_8);
+    /* refused: the live table goes back to the last accepted one, the host's archive is untouched, the reason comes out */
+    N64cBinds accepted = *n64c_input_binds();
+    controls_host.refuse = true;
+    CHECK(n64c_binds_set(n64c_input_binds(), 2, N64C_ACT_Z, 0, (N64cBind){N64C_BIND_KEY, 0, SDL_SCANCODE_7}));
+    CHECK(!n64c_input_binds_commit(error, sizeof error) && !strcmp(error, "disk full"));
+    CHECK(!memcmp(n64c_input_binds(), &accepted, sizeof accepted) && !memcmp(&controls_host.archive, &accepted, sizeof accepted));
+    CHECK(!n64c_input_binds_reset(-1, error, sizeof error) && !memcmp(n64c_input_binds(), &accepted, sizeof accepted)); /* a refused reset restores too */
+    controls_host.refuse = false;
+    CHECK(n64c_input_binds_reset(2, error, sizeof error) && n64c_input_binds()->player[2].slot[N64C_ACT_Z][0].code != SDL_SCANCODE_8);
+    /* unbound: every edit is refused, the table stays, a start has nothing to load */
+    n64c_input_host_unbind();
+    accepted = *n64c_input_binds();
     CHECK(n64c_input_start(window));
-    CHECK(n64c_input_binds()->player[0].slot[N64C_ACT_A][0].code == SDL_SCANCODE_X);
+    CHECK(n64c_binds_set(n64c_input_binds(), 0, N64C_ACT_A, 0, (N64cBind){N64C_BIND_KEY, 0, SDL_SCANCODE_6}));
+    CHECK(!n64c_input_binds_commit(error, sizeof error) && strstr(error, "no controls host") && !memcmp(n64c_input_binds(), &accepted, sizeof accepted));
     n64c_input_stop();
-    remove(config_file);
+    n64c_input_host_unbind(); /* unbinding nothing is no error */
+    CHECK(n64c_input_host_bind(&controls_host, host_load, host_request));
+    n64c_input_host_unbind();
 }
 static void binds_model(void)
 {
@@ -490,11 +550,6 @@ static void binds_model(void)
     }
     N64cBinds d; n64c_binds_defaults(&d); CHECK(n64c_binds_parse(&d, "# only this\n[player2]\nB = key:9 none none none none none\n", err, sizeof err));
     CHECK(d.player[1].slot[N64C_ACT_B][0].code == 9 && d.player[0].slot[N64C_ACT_A][0].code == SDL_SCANCODE_X);
-    CHECK(n64c_binds_save(&a, "/tmp/n64c_binds_model.cfg") && n64c_binds_load(&d, "/tmp/n64c_binds_model.cfg", err, sizeof err) &&
-          !memcmp(&a, &d, sizeof a));
-    remove("/tmp/n64c_binds_model.cfg");
-    CHECK(n64c_binds_load(&d, "/tmp/n64c_binds_absent.cfg", err, sizeof err) && !memcmp(&a, &d, sizeof a));
-    CHECK(!n64c_binds_save(&a, "/nonexistent-dir/x.cfg"));
 }
 static void finger(Uint32 type, long long id, float x, float y)
 {
@@ -502,13 +557,9 @@ static void finger(Uint32 type, long long id, float x, float y)
 }
 static void touch(void)
 {
-    char dir[] = "/tmp/n64c_touch_XXXXXX", ctl[80], tp[80], err[100] = "";
-    CHECK(mkdtemp(dir));
-    snprintf(ctl, sizeof ctl, "%s/controls.cfg", dir); /* the layout is kept beside the binds file */
-    snprintf(tp, sizeof tp, "%s/touch-layout.cfg", dir);
+    char err[100] = "";
     fresh();
     n64c_touch_defaults(n64c_touch_layout());
-    n64c_input_set_config_path(ctl);
     CHECK(n64c_input_start(window));
     N64cTouchLayout *l = n64c_touch_layout();
     CHECK(read_port(0, NULL).button == 0);
@@ -523,7 +574,7 @@ static void touch(void)
     finger(SDL_EVENT_FINGER_DOWN, 2, sx, sy); finger(SDL_EVENT_FINGER_MOTION, 2, sx + 0.5f, sy); n64c_input_update();
     CHECK(read_port(0, NULL).stick_x == 80 && read_port(0, NULL).stick_y == 0 && read_port(1, NULL).stick_x == 0);
     finger(SDL_EVENT_FINGER_UP, 2, 0, 0);
-    /* Edit: the top-left corner starts editing; drag moves a zone, a second finger drags its size; leaving saves. */
+    /* Edit: the top-left corner starts editing; drag moves a zone, a second finger drags its size; leaving keeps it for the run. */
     finger(SDL_EVENT_FINGER_DOWN, 3, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 3, 0, 0);
     CHECK(n64c_touch_editing());
     float ax = l->zone[N64C_ACT_A].x, ay = l->zone[N64C_ACT_A].y, ar = l->zone[N64C_ACT_A].r;
@@ -537,8 +588,8 @@ static void touch(void)
     float moved_x = l->zone[N64C_ACT_A].x, moved_r = l->zone[N64C_ACT_A].r;
     finger(SDL_EVENT_FINGER_DOWN, 6, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 6, 0, 0);
     CHECK(!n64c_touch_editing());
-    /* Restore: a fresh start reads the saved layout back; reset in edit mode restores the factory one. */
-    n64c_touch_defaults(l);
+    /* The layout lives for the run, no file keeps it: a stop and start leaves it; reset in edit mode restores the factory one. */
+    n64c_input_stop();
     CHECK(n64c_input_start(window) && fabsf(n64c_touch_layout()->zone[N64C_ACT_A].x - moved_x) < 1e-4f &&
           fabsf(n64c_touch_layout()->zone[N64C_ACT_A].r - moved_r) < 1e-4f);
     finger(SDL_EVENT_FINGER_DOWN, 7, 0.01f, 0.01f); finger(SDL_EVENT_FINGER_UP, 7, 0, 0);
@@ -553,7 +604,6 @@ static void touch(void)
     /* A pad's Back button opens the Controls page. */
     CHECK(!n64c_controls_active()); pad_button_event(SDL_GAMEPAD_BUTTON_BACK); CHECK(n64c_controls_active());
     n64c_controls_close();
-    remove(tp); remove(ctl); rmdir(dir);
     n64c_input_stop();
     n64c_touch_set_editing(0);
 }
@@ -621,9 +671,9 @@ static void virtual_hotplug(void)
 int main(void)
 {
     n64c_cont_reset(NULL);
-    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); virtual_pads(); virtual_hotplug(); mouse(); rebinding(); page(); touch();
+    policy(); binds_model(); mapping(); axes(); pad_defaults(); four_ports(); virtual_pads(); virtual_hotplug(); mouse(); rebinding(); page(); controls_seam(); touch();
     CHECK(inits - 1 == quits); /* exactly one unsuccessful init */
-    printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page, touch)\n",
+    printf("input_sdl: %d checks, %d failures (binds, mapping, SI, deadzone, policy, focus, 4-port hotplug, mouse, rebinding, page, controls seam, touch)\n",
            checks, failures);
     return failures ? 1 : 0;
 }

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* On-screen touch controls: round zones laid over the window (coordinates 0..1 across it, origin top-left), one per
  * N64 button and one stick. Pure C, no SDL: n64c_input.c feeds finger events and reads the resulting pad. The
- * layout is editable in place (n64c_touch_set_editing) and kept as text in config/touch-layout.cfg. */
+ * layout is editable in place (n64c_touch_set_editing) and lives for the run (the text form below is for a host that wants to keep it). */
 #ifndef N64C_TOUCH_H
 #define N64C_TOUCH_H
 #include "n64c_binds.h"
@@ -18,8 +18,6 @@ void n64c_touch_defaults(N64cTouchLayout *layout);
 const char *n64c_touch_zone_name(int zone);
 size_t n64c_touch_format(const N64cTouchLayout *layout, char *buf, size_t cap); /* bytes needed without the NUL */
 int n64c_touch_parse(N64cTouchLayout *layout, const char *text, char *err, size_t errcap); /* 0 leaves *layout unchanged */
-int n64c_touch_save(const N64cTouchLayout *layout, const char *path);
-int n64c_touch_load(N64cTouchLayout *layout, const char *path, char *err, size_t errcap); /* absent file = 1 */
 int n64c_touch_corner(float x, float y);
 /* The live layout and finger state. aspect = window width / height (zones are round on screen). */
 N64cTouchLayout *n64c_touch_layout(void);

@@ -11,7 +11,7 @@ extern "C" {
 enum { N64C_CONTROLS_COLUMNS = 40, N64C_CONTROLS_MAX_LINES = 30 };
 typedef struct { char text[N64C_CONTROLS_COLUMNS + 1]; } N64cControlsLine;
 void n64c_controls_open(void);
-void n64c_controls_close(void); /* saves the binds to the config file */
+void n64c_controls_close(void); /* every edit is already kept through the controls host (n64c_input.h) */
 int n64c_controls_active(void);
 /* Keys: up/down row, left/right slot, Tab device, 1-4 player, Enter rebind, Delete clear, Esc/F10 close.
  * Pad: d-pad move, A rebind, X clear, B close, Y player, LB/RB device. Returns 1 when the page took the event. */

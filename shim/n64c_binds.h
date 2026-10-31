@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Per-player controller bindings: the data model behind the Controls page. Pure C, no SDL calls: a bind names a
  * host input by number, n64c_input.c samples it. Each N64 input holds two slots per device (keyboard, gamepad,
- * mouse) for each of the four N64 ports. The text form is the file the port keeps in config/. */
+ * mouse) for each of the four N64 ports. The text form is what the host archives in its config (n64c_input.h: the controls seam). */
 #ifndef N64C_BINDS_H
 #define N64C_BINDS_H
 #include <stddef.h>
@@ -54,8 +54,6 @@ int n64c_binds_has_mouse_look(const N64cBinds *binds);
  * returns 0, writes "line N: reason" to err and leaves *binds unchanged. */
 size_t n64c_binds_format(const N64cBinds *binds, char *buf, size_t cap); /* bytes needed without the NUL */
 int n64c_binds_parse(N64cBinds *binds, const char *text, char *err, size_t errcap);
-int n64c_binds_save(const N64cBinds *binds, const char *path);                 /* temp file then rename; 1 ok */
-int n64c_binds_load(N64cBinds *binds, const char *path, char *err, size_t errcap); /* absent file = 1, untouched */
 #ifdef __cplusplus
 }
 #endif

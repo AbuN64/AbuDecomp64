@@ -67,6 +67,9 @@ int n64c_f3d_display(N64cF3d *f3d, int mode, uint32_t width, uint32_t height, in
                      size_t capacity);
 /* The window's own pixels and the size the game renders at (the window's pixels scaled). */
 void n64c_f3d_sizes(const N64cF3d *f3d, uint32_t *window_w, uint32_t *window_h, uint32_t *render_w, uint32_t *render_h);
+/* The buffer swap waits for the display (on) or not, with the window's context current; returns the swap interval the
+ * context really has afterwards, 1 or 0 (0 when the window cannot wait, whatever was asked). */
+int n64c_f3d_vsync(N64cF3d *f3d, int on);
 size_t n64c_f3d_display_sizes(N64cF3d *f3d, uint32_t (*sizes)[2], size_t max);
 void n64c_f3d_quit(N64cF3d *f3d);
 void n64c_f3d_open_controls(N64cF3d *f3d); /* the Controls page, from the options screen */

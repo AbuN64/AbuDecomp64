@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "n64c_binds.h"
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -214,45 +213,4 @@ int n64c_binds_parse(N64cBinds *binds, const char *text, char *err, size_t errca
     }
     *binds = work;
     return 1;
-}
-int n64c_binds_save(const N64cBinds *binds, const char *path)
-{
-    size_t need = n64c_binds_format(binds, NULL, 0);
-    char *buf = malloc(need + 1), tmp[600];
-    if (!buf) return 0;
-    n64c_binds_format(binds, buf, need + 1);
-    snprintf(tmp, sizeof tmp, "%s.tmp", path);
-    FILE *f = fopen(tmp, "wb");
-    int ok = f && fwrite(buf, 1, need, f) == need;
-    if (f && fclose(f) != 0) ok = 0;
-    free(buf);
-    if (ok && rename(tmp, path) != 0) ok = 0;
-    if (!ok) remove(tmp);
-    return ok;
-}
-int n64c_binds_load(N64cBinds *binds, const char *path, char *err, size_t errcap)
-{
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        if (errno == ENOENT) return 1;
-        if (err && errcap) snprintf(err, errcap, "cannot read %s: %s", path, strerror(errno));
-        return 0;
-    }
-    char *text = NULL;
-    size_t size = 0, cap = 0;
-    for (;;) {
-        if (size + 4096 > cap) {
-            char *bigger = realloc(text, cap = cap ? cap * 2 : 8192);
-            if (!bigger) { free(text); fclose(f); return 0; }
-            text = bigger;
-        }
-        size_t got = fread(text + size, 1, cap - size - 1, f);
-        if (!got) break;
-        size += got;
-    }
-    fclose(f);
-    text[size] = 0;
-    int ok = n64c_binds_parse(binds, text, err, errcap);
-    free(text);
-    return ok;
 }

@@ -168,10 +168,26 @@ static bool boot_settings_load(void *context,N64cOptions *options)
     (void)context;(void)options;
     return false;
 }
-static bool boot_settings_request(void *context,const N64cOptions *requested,N64cDisplaySettings *effective,char *error,size_t capacity)
+static bool boot_settings_request(void *context,const N64cOptions *requested,N64cOptions *effective,char *error,size_t capacity)
 {
     (void)context;
-    return n64c_display_apply(&requested->display,effective,error,capacity);
+    return n64c_display_apply(&requested->display,&effective->display,error,capacity) &&
+           n64c_presentation_apply(&requested->presentation,&effective->presentation,error,capacity);
+}
+static void boot_settings_observe(void *context,const N64cOptions *realized)
+{
+    (void)context;(void)realized;
+}
+/* The same for the controls: nothing stored, so the factory table stays, and an edit lasts the run. */
+static bool boot_controls_load(void *context,N64cBinds *binds)
+{
+    (void)context;(void)binds;
+    return false;
+}
+static bool boot_controls_request(void *context,const N64cBinds *requested,char *error,size_t capacity)
+{
+    (void)context;(void)requested;(void)error;(void)capacity;
+    return true;
 }
 
 static int boot(const Options *o,const char *cart_path,const char *base,const char *user)
@@ -188,10 +204,9 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         fprintf(stderr,"boot-input: cart image extent differs from the project layout\n");
         return EXIT_RUNTIME;
     }
-    char shaders[INST_PATH],settings[INST_PATH],controls[INST_PATH];
+    char shaders[INST_PATH],settings[INST_PATH];
     if (snprintf(shaders,sizeof shaders,"%sfast3d-shaders.o2r",base)>=(int)sizeof shaders ||
-        snprintf(settings,sizeof settings,"%s/config/fast3d-settings.json",user)>=(int)sizeof settings ||
-        snprintf(controls,sizeof controls,"%s/config/controls.cfg",user)>=(int)sizeof controls) {
+        snprintf(settings,sizeof settings,"%s/config/fast3d-settings.json",user)>=(int)sizeof settings) {
         fprintf(stderr,"boot-input: path too long\n");
         return EXIT_RUNTIME;
     }
@@ -309,7 +324,6 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         return rc;
     }
     const int live=!o->capture;
-    n64c_input_set_config_path(controls); /* the Controls page keeps its binds here; the window loads them */
     n64c_boot_frame_host(shaders,settings,o->offscreen);
     N64cOptions options;
     n64c_options_default(&options);
@@ -318,8 +332,11 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
     if (o->window_set) { options.display.width=o->out_w;options.display.height=o->out_h;options.display.fullscreen=N64C_WIN_WINDOWED; }
     {
         const char *env=getenv("N64C_FPS_UNLOCK");
-        if (o->fps_unlock || (env && *env && strcmp(env,"0"))) options.fps_unlock=1;
-        n64c_boot_frame_unlock(options.fps_unlock);
+        if (o->fps_unlock || (env && *env && strcmp(env,"0"))) options.presentation.unlock=1;
+        if (env && *env && !n64c_cap_parse(env,&options.presentation.cap_policy,&options.presentation.cap_hz)) {
+            fprintf(stderr,"boot-frame: N64C_FPS_UNLOCK must be a rate, max or 1, got %s; using the default\n",env);
+            options.presentation.cap_policy=N64C_CAP_AUTO;options.presentation.cap_hz=0;
+        }
     }
     if (!n64c_boot_frame_start(o->fb_w,o->fb_h,ram_bytes,n64c_boot_audio_abi,
                                live ? options.display.width : 0,live ? options.display.height : 0)) {
@@ -327,6 +344,7 @@ static int boot(const Options *o,const char *cart_path,const char *base,const ch
         n64c_shutdown();
         return EXIT_RUNTIME;
     }
+    n64c_boot_frame_presentation(&options.presentation);
     if (live && !o->offscreen) n64c_boot_frame_options(&options);
     n64c_game_scheduler_attach();
     if (n64c_trace_init) n64c_trace_init();
@@ -432,10 +450,12 @@ static int program(int argc,char **argv)
         fprintf(stderr,"assets: ok %s %s\n",assets.dump->id,assets.dir);
         return 0;
     }
-    /* A host bound before n64c_game_main keeps its binding through the run and after it; only when none is bound does this
-     * program bind its flags-only host, for this run, and unbind what it bound. */
-    const bool own_host=n64c_settings_bind(NULL,boot_settings_load,boot_settings_request);
+    /* A host bound before n64c_game_main (settings or controls) keeps its binding through the run and after it; only when none
+     * is bound does this program bind its flags-only host, for this run, and unbind what it bound. */
+    const bool own_host=n64c_settings_bind(NULL,boot_settings_load,boot_settings_request,boot_settings_observe);
+    const bool own_controls=n64c_input_host_bind(NULL,boot_controls_load,boot_controls_request);
     const int rc=boot(&o,assets.cart,base,user);
+    if (own_controls) n64c_input_host_unbind();
     if (own_host) n64c_settings_unbind();
     return rc;
 }

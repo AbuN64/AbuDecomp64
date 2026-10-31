@@ -33,18 +33,22 @@ static void expect_sizes(uint32_t window_w, uint32_t window_h, uint32_t render_w
 }
 
 static bool host_load(void*, N64cOptions*) { return false; }
-static bool host_request(void*, const N64cOptions* requested, N64cDisplaySettings* effective, char* error, size_t capacity)
+static bool host_request(void*, const N64cOptions* requested, N64cOptions* effective, char* error, size_t capacity)
 {
     int scale = requested->display.render_scale;
     if (!n64c_f3d_display(f3d, requested->display.fullscreen, requested->display.width, requested->display.height, scale,
                           &scale, error, capacity))
         return false;
-    effective->render_scale = scale;
-    stored = *requested;
-    stored.display = *effective;
+    uint32_t window_w, window_h, render_w, render_h;
+    n64c_f3d_sizes(f3d, &window_w, &window_h, &render_w, &render_h);
+    effective->display.width = window_w;
+    effective->display.height = window_h;
+    effective->display.render_scale = scale;
+    stored = *effective;
     records++;
     return true;
 }
+static void host_observe(void*, const N64cOptions*) {}
 
 static void tap(unsigned button)
 {
@@ -84,10 +88,11 @@ int main(int argc, char** argv)
 
     // The options screen over the real window: the second size is one no window can have.
     static const u32 sizes[2][2] = {{1024, 768}, {0, 0}};
-    check(n64c_settings_bind(nullptr, host_load, host_request), "the host binds");
+    check(n64c_settings_bind(nullptr, host_load, host_request, host_observe), "the host binds");
     N64cOptions options;
     n64c_options_default(&options);
-    n64c_menu_configure(&options, sizes, 2, 0);
+    const N64cPresentationCaps caps = {1, 1, 60};
+    n64c_menu_configure(&options, sizes, 2, 0, &caps);
     n64c_menu_context(N64C_MENU_PAUSE);
     OSContPad pad = {};
     pad.button = 0x0020 | 0x0010; // L+R opens

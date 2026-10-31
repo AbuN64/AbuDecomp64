@@ -56,6 +56,8 @@ class F3dWindow final : public Fast::GfxWindowBackend {
     int RenderScale() const { return mRenderScale; }
     // The scale the render target really has against the window's pixels (whole pixels, at least one).
     int EffectiveRenderScale() const;
+    // The buffer swap waits for the display (on) or not; returns the interval the context really has afterwards (0 or 1).
+    int SetVsync(bool on);
     size_t DisplaySizes(uint32_t (*sizes)[2], size_t max) const;
     void GetOutputDimensions(uint32_t* width, uint32_t* height) const; // the window's own pixels, whatever the scale
 

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* The port's options screen: a presentation-layer overlay (window mode, resolution or render scale, frame-rate unlock,
+/* The port's options screen: a presentation-layer overlay (window mode, resolution or render scale, frame-rate unlock, frame cap, vsync,
  * quit) opened from the game's main and pause menus and driven by the same pad and keyboard. It lives wholly in the
  * host layer: while it is open the game reads a neutral pad; nothing in the guest's code, clock or memory changes.
  * No SDL here: the host reports the display's sizes and applies what the screen asks for (n64c_menu_take). */
@@ -13,58 +13,76 @@ extern "C" {
 #endif
 enum { N64C_WIN_WINDOWED, N64C_WIN_BORDERLESS, N64C_WIN_FULLSCREEN };
 enum { N64C_MENU_MAIN = 1, N64C_MENU_PAUSE = 2 };                   /* n64c_menu_context: which game menu is up */
-enum { N64C_DO_WINDOW = 1, N64C_DO_UNLOCK = 2, N64C_DO_SCALE = 4, N64C_DO_QUIT = 8, N64C_DO_CONTROLS = 16 }; /* n64c_menu_take */
+enum { N64C_DO_WINDOW = 1, N64C_DO_PRESENTATION = 2, N64C_DO_SCALE = 4, N64C_DO_QUIT = 8, N64C_DO_CONTROLS = 16 }; /* n64c_menu_take */
 /* The display half of the options: what the host program applies to its window and renderer. */
 typedef struct {
     int fullscreen;      /* N64C_WIN_*: 0 windowed, 1 borderless, 2 fullscreen */
-    u32 width, height;   /* the window's size (windowed) or the display mode (fullscreen) */
+    u32 width, height;   /* the window's drawable pixels (windowed) or the display mode (fullscreen) */
     int render_scale;    /* percent of the window's pixels the game renders at, 25..100 */
 } N64cDisplaySettings;
-/* Who owns each field (apply / archive):
- *   display.*   applied by the host's controller through n64c_display_apply (boot/frame.h), archived by the host.
- *   fps_unlock  applied natively by the shim (the frame pacer, N64C_DO_UNLOCK) once a request has succeeded, archived by the
- *               host: it travels in every request, so the host's archive must keep it. The framerate card will later own the
- *               full cap/vsync feature. */
+/* The presentation half: how the window shows pictures, never what the guest does (its clock, VI, audio and input polls
+ * run as without it). cap_policy picks the rate an unlocked run presents at: AUTO the display's refresh rate or 120,
+ * whichever is more (the shim's existing policy), MAX no limit, FIXED cap_hz pictures a second (2..100000). In an
+ * effective result cap_hz is the rate the policy resolved to (0 for MAX); a request ignores it unless the policy is FIXED. */
+enum { N64C_CAP_AUTO, N64C_CAP_MAX, N64C_CAP_FIXED, N64C_CAP_HZ_MIN = 2, N64C_CAP_HZ_MAX = 100000 };
+typedef struct {
+    int unlock;          /* 0/1: draw extra pictures between game frames */
+    int vsync;           /* 0/1: the window's buffer swap waits for the display */
+    int cap_policy;      /* N64C_CAP_* */
+    u32 cap_hz;
+} N64cPresentationSettings;
+/* What the host window can do (n64c_boot_frame_presentation_caps): a request outside it comes back with the effective value. */
+typedef struct {
+    int unlock_available, vsync_available;
+    u32 refresh_hz;      /* the display's rate (the AUTO policy's base) */
+} N64cPresentationCaps;
 typedef struct {
     N64cDisplaySettings display;
-    int fps_unlock;      /* 0/1 */
+    N64cPresentationSettings presentation;
 } N64cOptions;
 
-void n64c_options_default(N64cOptions *o);
+void n64c_options_default(N64cOptions *o); /* windowed 640x480 at 100%; unlock off, vsync off, cap AUTO */
 
-/* The settings seam. The host program binds a context with two callbacks and owns its config file and its lifecycle: the
+/* The settings seam. The host program binds a context with three callbacks and owns its config file and its lifecycle: the
  * shim reads and writes no options file (the host saves in its own exit path, after the game's main returns), and
  * without a bound host the screen refuses every change.
  *   load:    at startup, fills *options (already holding the defaults) from the host's config; false when it has none.
  *   request: when the screen asks for a change, with the complete options requested. The host's controller applies the
- *            display part by calling n64c_display_apply (boot/frame.h) exactly once and saves its archive (atomically:
- *            a temp file renamed into place). A request is atomic: true means applied AND saved. If the save fails the
- *            controller restores the display it had (n64c_display_apply with the prior effective settings, a restore and not
- *            a second apply of the request), puts back its working copy and cvars, and returns false. fps_unlock is
- *            applied by the shim only after a true return, so a refusal leaves no mixed state. It returns true after writing into *effective the display settings that really took effect (the window's
- *            size and the render scale the target actually has; *effective arrives holding the request); the screen
- *            shows and keeps those. On failure it returns false after writing a message into error (capacity bytes,
- *            supplied by the shim) and leaves the prior display unchanged: the screen shows the message and keeps the
- *            options it had. The screen never applies a second time and n64c_display_apply never calls back into it.
- *            Called from the thread that calls n64c_menu_take, with no shim lock held.
+ *            display part by calling n64c_display_apply and the presentation part by calling n64c_presentation_apply
+ *            (boot/frame.h), each exactly once, and saves its archive (atomically: a temp file renamed into place). A
+ *            request is atomic: true means applied AND saved. If the save fails the controller restores what it had (both
+ *            apply calls again with the prior effective values, a restore and not a second apply of the request), puts back
+ *            its working copy and cvars, and returns false. It returns true after writing into *effective what really took
+ *            effect (the window's realized size and render scale, the presentation as the window honours it; *effective
+ *            arrives holding the request); the screen shows and keeps those. On failure it returns false after writing a
+ *            message into error (capacity bytes, supplied by the shim) and leaves the prior options unchanged: the screen
+ *            shows the message and keeps the options it had. The screen never applies a second time and the apply functions
+ *            never call back into it. Called from the thread that calls n64c_menu_take, with no shim lock held.
+ *   observe: once at startup, when the window exists (n64c_boot_frame_options): the options as the window and the frame
+ *            module realized them, display and presentation, never defaults. The host keeps them as observed state.
  * The context is borrowed: the host keeps it alive from bind until n64c_settings_unbind.
  * The registration is the host's and outlives n64c_game_main: the host binds before calling it, the game's boot binds its
  * own flags-only host only when none is bound, and only n64c_settings_unbind removes a binding (the one who bound it
  * unbinds it). There is one public name for it, this one; no other store is consulted. */
 typedef bool (*N64cSettingsLoadFn)(void *context, N64cOptions *options);
-typedef bool (*N64cSettingsRequestFn)(void *context, const N64cOptions *requested, N64cDisplaySettings *effective, char *error,
+typedef bool (*N64cSettingsRequestFn)(void *context, const N64cOptions *requested, N64cOptions *effective, char *error,
                                       size_t capacity);
+typedef void (*N64cSettingsObserveFn)(void *context, const N64cOptions *realized);
 /* Binds the host. False, with nothing changed, when a callback is missing or a host is already bound: a binding is never
  * replaced, it is removed by n64c_settings_unbind first. */
-bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequestFn request);
+bool n64c_settings_bind(void *context, N64cSettingsLoadFn load, N64cSettingsRequestFn request, N64cSettingsObserveFn observe);
 /* Removes the binding (none: no effect). Afterwards n64c_settings_load is false and the screen refuses every change. */
 void n64c_settings_unbind(void);
 /* The starting options: *o as the bound load callback leaves it. False when nothing is bound or it has no config. */
 bool n64c_settings_load(N64cOptions *o);
+/* Hands the realized options to the bound host's observe callback (none bound: no effect). */
+void n64c_settings_observe(const N64cOptions *realized);
 
-/* Start: the options now in force, the display sizes the screen offers (largest first; may be empty) and whether the host
- * is a phone (render scale instead of window mode and resolution). */
-void n64c_menu_configure(const N64cOptions *now, const u32 (*sizes)[2], size_t size_count, int mobile);
+/* Start: the options now in force, the display sizes the screen offers (largest first; may be empty), whether the host
+ * is a phone (render scale instead of window mode and resolution) and what the window can present (a row the window
+ * cannot honour refuses to change). */
+void n64c_menu_configure(const N64cOptions *now, const u32 (*sizes)[2], size_t size_count, int mobile,
+                         const N64cPresentationCaps *caps);
 /* The port reports, every retrace, which game menu is up (N64C_MENU_*; 0 for neither). The screen opens only then. */
 void n64c_menu_context(unsigned menus);
 /* One input sample (the window owner's cadence): pad as read from the devices, hotkey the keyboard's open key held.

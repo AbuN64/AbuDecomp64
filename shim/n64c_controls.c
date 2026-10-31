@@ -2,6 +2,7 @@
 #ifdef N64C_INPUT_SDL3
 #include "n64c_controls.h"
 #include "n64c_input.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,6 +14,15 @@ static struct {
 static const char *const device_names[N64C_DEV_COUNT] = {"KEYBOARD", "GAMEPAD", "MOUSE"};
 
 static void say(const char *text) { snprintf(page.message, sizeof page.message, "%.*s", N64C_CONTROLS_COLUMNS, text); }
+/* The host refused an edit and the table is back as it was: the page says why (the font has capitals only). */
+static void refused(const char *reason)
+{
+    char text[N64C_CONTROLS_COLUMNS + 1] = "NOT KEPT: ";
+    size_t n = strlen(text);
+    for (const char *c = reason; *c && n < N64C_CONTROLS_COLUMNS; ++c) text[n++] = (char)toupper((unsigned char)*c);
+    text[n] = 0;
+    say(text);
+}
 void n64c_controls_open(void)
 {
     if (page.open) return;
@@ -25,7 +35,6 @@ void n64c_controls_close(void)
     if (!page.open) return;
     n64c_input_capture_cancel();
     page.open = page.waiting = 0;
-    n64c_input_binds_save();
 }
 int n64c_controls_active(void) { return page.open; }
 static int slot_of(void) { return page.device * N64C_SLOTS_PER_DEVICE + page.col; }
@@ -53,15 +62,18 @@ static void activate(void)
         return;
     }
     page.armed = 0;
-    n64c_input_binds_reset(page.row == ROW_RESET_ALL ? -1 : page.player);
-    say(page.row == ROW_RESET_ALL ? "ALL PLAYERS RESET" : "PLAYER RESET");
+    char error[N64C_CONTROLS_COLUMNS + 1];
+    if (n64c_input_binds_reset(page.row == ROW_RESET_ALL ? -1 : page.player, error, sizeof error))
+        say(page.row == ROW_RESET_ALL ? "ALL PLAYERS RESET" : "PLAYER RESET");
+    else refused(error);
 }
 static void clear_slot(void)
 {
     if (page.row >= N64C_ACT_COUNT) return;
     n64c_binds_set(n64c_input_binds(), page.player, page.row, slot_of(), (N64cBind){0});
-    n64c_input_binds_save();
-    say("CLEARED");
+    char error[N64C_CONTROLS_COLUMNS + 1];
+    if (n64c_input_binds_commit(error, sizeof error)) say("CLEARED");
+    else refused(error);
 }
 static void move(int rows, int cols)
 {
@@ -123,7 +135,8 @@ void n64c_controls_update(void)
     page.waiting = 0;
     if (state < 0) { say("CANCELLED"); return; }
     n64c_binds_set(n64c_input_binds(), page.player, page.row, slot_of(), bind);
-    n64c_input_binds_save();
+    char error[N64C_CONTROLS_COLUMNS + 1];
+    if (!n64c_input_binds_commit(error, sizeof error)) { refused(error); return; }
     conflict_message(page.player, page.row, slot_of());
     if (!page.message[0]) say("BOUND");
 }

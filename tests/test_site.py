@@ -52,7 +52,7 @@ class ContractTest(unittest.TestCase):
     def test_contract_names_the_three_run_kinds_and_the_card_of_every_region(self):
         got = site_core.contract()
         self.assertEqual(got["run_kinds"], ["unit", "set", "tas"])
-        self.assertEqual(set(got["regions"]), {"map", "fn", "stream", "feedback"})
+        self.assertEqual(set(got["regions"]), {"map", "fn", "stream", "feedback", "enhanced"})
         self.assertIn("crashed", got["feedback_categories"])
 
 

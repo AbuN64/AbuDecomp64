@@ -58,6 +58,7 @@ REGIONS = {
     "fn": ("site_fn", "RUNNER-FN"),
     "stream": ("site_stream", "RUNNER-STREAM"),
     "feedback": ("site_feedback", "RUNNER-PLAY"),
+    "enhanced": ("site_enhanced", "RUNNER-ENHANCED"),
 }
 
 

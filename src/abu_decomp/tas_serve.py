@@ -60,6 +60,7 @@ from abu_decomp import (
     evidence,
     inotify,
     site_core,
+    site_enhanced,
     site_stream,
     tas,
     tas_board,
@@ -86,6 +87,7 @@ _SERVE_KEYS = frozenset(
         "claims",
         "phase_frame_minutes",
         "port_source",
+        "enhanced",
     }
 )
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
@@ -249,6 +251,7 @@ class Server:
         self.port_source = (
             profile.path("tas.serve.port_source", serve["port_source"]) if "port_source" in serve else None
         )
+        self.enhanced = site_enhanced.settings(serve.get("enhanced"))  # the Enhanced page's ButlerMaster reading
         self.phase = tas_phasemap.Phase(
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
         )

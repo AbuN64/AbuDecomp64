@@ -485,7 +485,7 @@ def deploy(
         carry = carried(source, package, packages, run)
         build = content_name(specs, carry)
         if expect_name and build != expect_name:
-            raise DeployError("deploy.name", f"{live} would build {build}, not the expected {expect_name}: nothing built")
+            raise DeployError("deploy.name", f"{live} would build {build}, not the expected {expect_name}")
         venv = versioned_path(live, build)
         steps = install(venv, source, specs, carry, run)
         row: dict[str, Any] = {

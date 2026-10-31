@@ -67,7 +67,7 @@ def story_split(row: dict[str, Any] | None) -> dict[str, int]:
     got = SPLIT.search((row or {}).get("Progress", ""))
     if not got:
         raise DecompError("site.enhanced", "the story has no closed / working / open row in Eta List")
-    return dict(zip(("closed", "working", "open"), map(int, got.groups())))
+    return dict(zip(("closed", "working", "open"), map(int, got.groups()), strict=True))
 
 
 def item_row(name: str, card: str, row: dict[str, Any] | None) -> dict[str, Any]:

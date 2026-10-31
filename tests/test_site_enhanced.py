@@ -99,9 +99,11 @@ class Reading(unittest.TestCase):
 
     def test_a_fault_reply_is_refused_with_its_code(self):
         doc = {"Metadata": {"Result": "Fault"}, "Response": {"Error": {"Code": "ExecutionFailed", "Message": "no"}}}
-        with mock.patch("urllib.request.urlopen", return_value=self.reply(doc)):
-            with self.assertRaisesRegex(DecompError, "ExecutionFailed"):
-                site_enhanced.eta_rows("http://butler.example.lan:1", "b")
+        with (
+            mock.patch("urllib.request.urlopen", return_value=self.reply(doc)),
+            self.assertRaisesRegex(DecompError, "ExecutionFailed"),
+        ):
+            site_enhanced.eta_rows("http://butler.example.lan:1", "b")
 
 
 @unittest.skipUnless(shutil.which("node"), "node runs the page module's pure logic")

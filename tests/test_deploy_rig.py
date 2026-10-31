@@ -542,6 +542,11 @@ class ReadbackScriptTests(ScriptCase):
         self.toolkit.symlink_to(self.venv)
         self.dist("tiny-decomp", SHA)
         self.dist("tool-one", self.PIN)
+        self.seal()
+        self.addCleanup(subprocess.run, ["chmod", "-R", "u+w", str(self.venv)], check=False)
+
+    def seal(self):
+        subprocess.run(["chmod", "-R", "a-w", str(self.venv)], check=True)
 
     def dist(self, name, commit):
         info = self.site / f"{name.replace('-', '_')}-1.0.dist-info"
@@ -558,6 +563,16 @@ class ReadbackScriptTests(ScriptCase):
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn(f"readback-pin: tiny-decomp {SHA}", done.stdout)
         self.assertIn(f"readback-pin: tool-one {self.PIN}", done.stdout)
+
+    def test_a_read_only_live_tree_prints_the_refused_write_and_a_writable_one_exits_1(self):
+        done = self.readback()
+        self.assertIn("readback-readonly: a write into the live toolkit was refused", done.stdout)
+        self.assertFalse((self.venv / ".readonly-probe").exists())
+        subprocess.run(["chmod", "-R", "u+w", str(self.venv)], check=True)
+        done = self.readback()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("must be read-only", done.stderr)
+        self.assertFalse((self.venv / ".readonly-probe").exists())
 
     def test_a_pin_installed_at_another_commit_or_missing_exits_1_naming_it(self):
         self.dist("tool-one", "9" * 40)

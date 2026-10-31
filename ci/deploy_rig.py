@@ -20,13 +20,13 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      BUILD is linked to that venv, and the full test suite (pytest over tests/, unittest and pytest modules) runs
      in the Worktree with BUILD's python and the Worktree's src first on the import path. After the gate passes and
      before the flip, the built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place
-     and a job's pip install into it fails loudly. The imported abu_decomp
-     path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
+     and a job's pip install into it fails loudly. The
+     imported abu_decomp path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
      alone and the deploy refuses with one line naming the first failing test. On exit 0 Job Invoke switches the
      live link to BUILD and keeps the replaced venv as <toolkit>.previous.
      When the live link already names BUILD, Job Invoke answers Exit 0 with `<link> is <target>: already active` and
      runs nothing: that is a no-op success, the suite gate is skipped and the readback still decides;
-  3. the readback job: the live link resolves to BUILD, and the installed commit of AbuDecomp64 and of every direct
+  3. the readback job: the live link resolves to BUILD, and a write into the live tree is refused (it is read-only), the installed commit of AbuDecomp64 and of every direct
      git pin its pyproject still has at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
      fix forward, no rollback);
   4. the serve job, after the link flipped: the site unit ci/abu-decomp-tas.service of the Worktree (ExecStart in the
@@ -124,6 +124,11 @@ sha=$1 toolkit=$2 build=$3
 live=$(readlink -f "$toolkit") || exit 9
 want=$(readlink -f "$build") || exit 9
 [ "$live" = "$want" ] || { echo "readback: $toolkit reads $live, not $build ($want)" >&2; exit 1; }
+if touch "$toolkit/.readonly-probe" 2>/dev/null; then
+  rm -f "$toolkit/.readonly-probe"
+  echo "readback: a write into the live toolkit $toolkit succeeded, it must be read-only" >&2; exit 1
+fi
+echo "readback-readonly: a write into the live toolkit was refused"
 "$toolkit/bin/python" - "$sha" <<'PY'
 import importlib.metadata
 import json

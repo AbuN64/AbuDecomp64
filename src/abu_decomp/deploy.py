@@ -461,7 +461,11 @@ def deploy(
         row["seal"] = seal(venv, run)  # after the gate (smoke), before the flip
         if not row["seal"]["ok"]:
             findings.append(
-                {"key": "deploy.seal", "blocking": True, "message": f"{venv}: {row['seal']['check']} failed: {row['seal']['tail']}"}
+                {
+                    "key": "deploy.seal",
+                    "blocking": True,
+                    "message": f"{venv}: {row['seal']['check']} failed: {row['seal']['tail']}",
+                }
             )
             unseal(venv)  # built but never linked, so nothing uses it
             continue

@@ -60,3 +60,4 @@ Default order (a project's config may reorder it):
 - No toggles that fork the port forever: a plank may sit behind a build option while it is proven, then becomes the
   only path and the old one is deleted. The reference build is the one permanent second path.
 - Releases keep their stage rules: no player-facing change from a plank ships until its replay is clean everywhere.
+- A port that ships enhancements as its own fork applies this phase to that fork; see [04-enhanced-port](04-enhanced-port.md).

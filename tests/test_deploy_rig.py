@@ -552,7 +552,8 @@ class NameScriptTests(ScriptCase):
         live = self.root / "live-target"
         wrapper(
             live / "bin/python",
-            'test "$*" = "-m abu_decomp tools name --package abu-decomp-64 --sha ' + SHA
+            'test "$*" = "-m abu_decomp tools name --package abu-decomp-64 --sha '
+            + SHA
             + f' --carry-from {self.toolkit}" || exit 7\n'
             "case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n"
             f'echo \'{{"ok": true, "result": {{"name": "{NAME}"}}}}\'',

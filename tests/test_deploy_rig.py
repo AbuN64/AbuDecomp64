@@ -479,7 +479,10 @@ class SuiteScriptTests(ScriptCase):
 
 
 class BuildScriptTests(ScriptCase):
-    """The BUILD script with a stand-in toolkit python running `-m abu_decomp tools deploy` that builds `<stage>.<sha12>` and swaps the stage link."""
+    """The BUILD script with a stand-in toolkit python running `-m abu_decomp tools deploy`.
+
+    The stand-in builds `<stage>.<sha12>` and swaps the stage link.
+    """
 
     def setUp(self):
         super().setUp()
@@ -498,8 +501,9 @@ class BuildScriptTests(ScriptCase):
         live = self.root / "live-target"
         wrapper(
             live / "bin/python",
-            'test "$1 $2 $3 $4 $5 $6 $7 $8 $9" = "-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
-            'case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n'  # the landed commit's own code runs the install
+            'test "$1 $2 $3 $4 $5 $6 $7 $8 $9" = '
+            '"-m abu_decomp tools deploy --package abu-decomp-64 --sha ' + SHA + ' --venv" || exit 7\n'
+            "case $PYTHONPATH in */src) ;; *) exit 8 ;; esac\n"  # the landed commit's own code runs the install
             f'shift 9; test "$2 $3" = "--carry-from {self.toolkit}" || exit 6\n'  # the carried set is the live link's
             f'dir="$1.{SHA[:12]}"; mkdir -p "$dir/bin" && ln -sfn "$dir" "$1"',
         )

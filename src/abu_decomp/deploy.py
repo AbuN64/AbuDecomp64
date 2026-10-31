@@ -23,14 +23,15 @@ When the package is a tool, the checkout the seat names for it in `tools.checkou
 checkout) is brought to the deployed commit (fetch, detached checkout) and refused, untouched, when it has local
 changes.
 
-A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the carried
-packages and the package are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own python so console
-script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake symbols --version V`
-on the project) runs against the fresh venv, the fresh tree is made read-only (`chmod -R a-w`, so a job's pip install into the
-live toolkit fails loudly instead of rewriting it in place), and only then is the symlink swapped with rename(2). Processes started
-through PATH's console scripts keep their versioned tree; superseded versions stay until purge removes them (policy
-`venv_versions`: not the live target, not the newest rollback, no process using it). A live path that is still a real
-directory is refused (a deploy only swaps symlinks), and the link is read back.
+A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
+carried packages and the package are installed into a fresh venv beside it (`PATH.<sha12>`, pip run by that venv's own
+python so console script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake
+symbols --version V` on the project) runs against the fresh venv, the fresh tree is made read-only (`chmod -R a-w`, so
+a job's pip install into the live toolkit fails loudly instead of rewriting it in place), and only then is the symlink
+swapped with rename(2). Processes started through PATH's console scripts keep their versioned tree; superseded
+versions stay until purge removes them (policy `venv_versions`: not the live target, not the newest rollback, no
+process using it). A live path that is still a real directory is refused (a deploy only swaps symlinks), and the link
+is read back.
 
 The new tool's Makefile and local.mk are one contract with the trees that run them (a retired recipe variable or
 cc_cache.py mode in a tree's files fails every build there, 10-27), so a deploy ends by regenerating both in every
@@ -41,9 +42,9 @@ deploy: `resync` in the result lists every tree with its outcome.
 
 from __future__ import annotations
 
+import json
 import os
 import re
-import json
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
@@ -178,7 +179,7 @@ def seal(venv: Path, run: Run) -> dict[str, Any]:
 
 def unseal(venv: Path) -> None:
     """Give the owner write access again on our own never-linked tree, so it can be removed."""
-    for root, dirs, files in os.walk(venv):
+    for root, dirs, _files in os.walk(venv):
         for name in [".", *dirs]:
             if not (Path(root) / name).is_symlink():
                 (Path(root) / name).chmod(0o700)
@@ -236,9 +237,7 @@ for spec in sys.argv[1:]:
 """
 
 
-def install(
-    venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], run: Run
-) -> list[dict[str, Any]]:
+def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], run: Run) -> list[dict[str, Any]]:
     """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
     the carried requirements exactly as they are (`--no-deps`: they are already a resolved set), then `specs` (the
     package at its commit and the project's pinned packages) with their dependencies."""

@@ -75,7 +75,6 @@ class ToolTests(unittest.TestCase):
 
     def test_wrong_commit_missing_tool_are_refused(self):
         cases = {
-            "dependency.pin": {"unbake": Distribution("https://github.com/AbuN64/cake-unbake-64", "d" * 40)},
             "dependency.missing": {"cake-taste-64": None},
             "dependency.provenance": {"recipemaker": Distribution(requires=[UNBAKE])},
             "dependency.pin": {"recipemaker": Distribution("https://github.com/AbuN64/recipe-maker-64", "e" * 40)},

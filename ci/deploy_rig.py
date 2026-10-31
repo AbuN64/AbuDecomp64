@@ -21,13 +21,15 @@ at the exact SHA in a Worktree (the job runs in <Root>/<board>.<card>/<repo> wit
      in the Worktree with BUILD's python and the Worktree's src first on the import path. After the gate passes and
      before the flip, the built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place
      and a job's pip install into it fails loudly. The
-     imported abu_decomp path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the live and previous links
+     imported abu_decomp path must lie inside the Worktree. A failing suite exits non-zero: Job Invoke leaves the
+     live and previous links
      alone and the deploy refuses with one line naming the first failing test. On exit 0 Job Invoke switches the
      live link to BUILD and keeps the replaced venv as <toolkit>.previous.
      When the live link already names BUILD, Job Invoke answers Exit 0 with `<link> is <target>: already active` and
      runs nothing: that is a no-op success, the suite gate is skipped and the readback still decides;
-  3. the readback job: the live link resolves to BUILD, and a write into the live tree is refused (it is read-only), the installed commit of AbuDecomp64 and of every direct
-     git pin its pyproject still has at SHA equals the pinned one. Any mismatch refuses (the live link stays as switched:
+  3. the readback job: the live link resolves to BUILD, and a write into the live tree is refused (it is
+     read-only), the installed commit of AbuDecomp64 and of every direct git pin its pyproject still has at SHA
+     equals the pinned one. Any mismatch refuses (the live link stays as switched:
      fix forward, no rollback);
   4. the serve job, after the link flipped: the site unit ci/abu-decomp-tas.service of the Worktree (ExecStart in the
      live toolkit link, Type=notify) is installed and enabled, then `systemctl --user restart` runs; it returns when the

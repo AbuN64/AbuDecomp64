@@ -81,7 +81,11 @@ def pins() -> dict[str, Pin]:
         match = _REQUIREMENT.match(row)
         if match:
             found[_normal(match["name"])] = Pin(match["name"], match["url"], match["commit"])
-    return {command: found[_normal(tool.distribution)] for command, tool in TOOLS.items() if _normal(tool.distribution) in found}
+    return {
+        command: found[_normal(tool.distribution)]
+        for command, tool in TOOLS.items()
+        if _normal(tool.distribution) in found
+    }
 
 
 def installed_commit(distribution: str) -> str:
@@ -121,7 +125,8 @@ def version_text() -> str:
 
     lines = [f"decomp {installed(DISTRIBUTION)}"]
     for command, commit in commits().items():
-        lines.append(f"{command} {installed(TOOLS[command].distribution)} ({TOOLS[command].distribution} {commit[:12]})")
+        distribution = TOOLS[command].distribution
+        lines.append(f"{command} {installed(distribution)} ({distribution} {commit[:12]})")
     return "\n".join(lines) + "\n"
 
 
@@ -149,10 +154,16 @@ def verify_dependencies() -> dict[str, dict[str, str]]:
         pin = declared.get(command)
         if not valid or (pin and (url != pin.url or commit != pin.commit)):
             raise DependencyError(
-                "dependency.pin", f"{command} must come from {pin.url} at {pin.commit}" if pin else f"{command} is not a git install"
+                "dependency.pin",
+                f"{command} must come from {pin.url} at {pin.commit}" if pin else f"{command} is not a git install",
             )
         installed[command] = distribution
-        report[command] = {"distribution": tool.distribution, "version": distribution.version, "url": url, "commit": commit}
+        report[command] = {
+            "distribution": tool.distribution,
+            "version": distribution.version,
+            "url": url,
+            "commit": commit,
+        }
     stray = {_normal(row.split("@")[0]) for row in _requirements(installed["taste"])} & {
         _normal(TOOLS["unbake"].distribution),
         _normal(TOOLS["recipe"].distribution),

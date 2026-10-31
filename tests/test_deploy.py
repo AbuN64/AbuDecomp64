@@ -61,7 +61,8 @@ class DeployTests(unittest.TestCase):
 
     def runner(self, argv, cwd=None):
         self.commands.append(list(argv))
-        if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail and self.fail in deploy.CARRY):  # the live venv's python lists its packages
+        # the live venv's python lists its packages
+        if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail and self.fail in deploy.CARRY):
             return 0, json.dumps(self.carried)
         if "venv" in argv and "-m" in argv and not (self.fail and self.fail in " ".join(argv)):
             self.make_venv(Path(argv[-1]))
@@ -88,7 +89,9 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(len(installs), 4)  # per venv: the carried set, then the package
         carry, package = installs[0], installs[1]
         self.assertEqual(carry[carry.index("install") + 1 :], ["--no-deps", *CARRIED])  # as installed, not re-resolved
-        self.assertEqual(package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"])
+        self.assertEqual(
+            package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"]
+        )
         self.assertEqual(
             sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
         )  # per venv: fresh, then via the link
@@ -464,9 +467,7 @@ class CarryTests(DeployTests):
         )
         self.assertEqual(code, 0, err)
         rows = json.loads(out)
-        self.assertEqual(
-            rows, sorted([f"abucache @ {wheel}", f"gitpkg @ git+{URL['unbake']}@{U1}", "plain==1.0"])
-        )
+        self.assertEqual(rows, sorted([f"abucache @ {wheel}", f"gitpkg @ git+{URL['unbake']}@{U1}", "plain==1.0"]))
 
     def test_a_file_url_or_an_editable_install_refuses_naming_the_origin(self):
         for origin in (

@@ -10,37 +10,35 @@ static int failures, checks;
 #define CHECK(c) do { ++checks; if (!(c)) { ++failures; std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); } } while (0)
 static std::string calls;
 static bool reject;
-extern "C" bool SDLCALL SDL_GL_MakeCurrent(SDL_Window*, SDL_GLContext context)
-{
-    calls += context ? "bind;" : "release;";
-    return !reject;
-}
 extern "C" const char* SDLCALL SDL_GetError() { return "mock release refused"; }
-extern "C" bool SDLCALL SDL_GL_DestroyContext(SDL_GLContext) { calls += "context;"; return true; }
-extern "C" void SDLCALL SDL_DestroyWindow(SDL_Window*) { calls += "window;"; }
-extern "C" void SDLCALL SDL_QuitSubSystem(SDL_InitFlags flags) { calls += flags == SDL_INIT_VIDEO ? "video;" : "other;"; }
+static const N64c::F3dDisplayOps ops = {
+    [](SDL_Window*) { calls += "release;"; return !reject; },
+    [](SDL_GLContext) { calls += "context;"; },
+    [](SDL_Window*) { calls += "window;"; },
+    []() { calls += "video;"; },
+};
 
 static SDL_Window* window = reinterpret_cast<SDL_Window*>(0x1000);
 static SDL_GLContext context = reinterpret_cast<SDL_GLContext>(0x2000);
 
 int main()
 {
-    N64c::F3dReleaseDisplay(window, context, true);
+    N64c::F3dReleaseDisplay(ops, window, context, true);
     CHECK(calls == "release;context;window;video;");
     calls.clear();
-    N64c::F3dReleaseDisplay(window, context, false);
+    N64c::F3dReleaseDisplay(ops, window, context, false);
     CHECK(calls == "release;context;window;");
     calls.clear();
-    N64c::F3dReleaseDisplay(window, nullptr, false);
+    N64c::F3dReleaseDisplay(ops, window, nullptr, false);
     CHECK(calls == "window;");
     calls.clear();
-    N64c::F3dReleaseDisplay(nullptr, nullptr, false);
+    N64c::F3dReleaseDisplay(ops, nullptr, nullptr, false);
     CHECK(calls.empty());
     // A context that will not leave the thread is a failure, not something to destroy around.
     pid_t pid = fork();
     if (!pid) {
         reject = true;
-        N64c::F3dReleaseDisplay(window, context, true);
+        N64c::F3dReleaseDisplay(ops, window, context, true);
         _exit(0);
     }
     int status = 0;

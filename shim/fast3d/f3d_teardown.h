@@ -10,18 +10,40 @@
 #include <cstdlib>
 
 namespace N64c {
-inline void F3dReleaseDisplay(SDL_Window* window, SDL_GLContext context, bool unloadDriver)
+// The four SDL calls the order is made of, as a table so the unit drives the order with recording ops and the window
+// passes the real ones.
+struct F3dDisplayOps {
+    bool (*release_context)(SDL_Window*);
+    void (*destroy_context)(SDL_GLContext);
+    void (*destroy_window)(SDL_Window*);
+    void (*quit_video)();
+};
+inline const F3dDisplayOps& F3dSdlDisplayOps()
+{
+    static const F3dDisplayOps ops = {
+        [](SDL_Window* window) { return SDL_GL_MakeCurrent(window, nullptr); },
+        [](SDL_GLContext context) { SDL_GL_DestroyContext(context); },
+        [](SDL_Window* window) { SDL_DestroyWindow(window); },
+        []() { SDL_QuitSubSystem(SDL_INIT_VIDEO); },
+    };
+    return ops;
+}
+inline void F3dReleaseDisplay(const F3dDisplayOps& ops, SDL_Window* window, SDL_GLContext context, bool unloadDriver)
 {
     if (context) {
-        if (!SDL_GL_MakeCurrent(window, nullptr)) {
+        if (!ops.release_context(window)) {
             std::fprintf(stderr, "f3d teardown: release the context: %s\n", SDL_GetError());
             std::_Exit(78);
         }
-        SDL_GL_DestroyContext(context);
+        ops.destroy_context(context);
     }
     if (window)
-        SDL_DestroyWindow(window);
+        ops.destroy_window(window);
     if (unloadDriver)
-        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        ops.quit_video();
+}
+inline void F3dReleaseDisplay(SDL_Window* window, SDL_GLContext context, bool unloadDriver)
+{
+    F3dReleaseDisplay(F3dSdlDisplayOps(), window, context, unloadDriver);
 }
 } // namespace N64c

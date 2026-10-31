@@ -82,7 +82,9 @@ elseif(ANDROID)
     # is OpenGL ES 3 (LUS USE_OPENGLES; <GLES3/gl3.h>, libGLESv3).
     n64c_dep(nlohmann_json https://github.com/nlohmann/json.git v3.11.3 GIT_SHALLOW TRUE)
     n64c_dep(tinyxml2 https://github.com/leethomason/tinyxml2.git 10.0.0 GIT_SHALLOW TRUE)
-    n64c_dep(spdlog https://github.com/gabime/spdlog.git v1.14.1 GIT_SHALLOW TRUE)
+    # spdlog v1.15.2 (bundled fmt 11.0.2), the Windows pin (fast3d_win_deps.cmake): NDK r29's clang rejects the consteval
+    # format-string constructors of v1.14.1's fmt 10.2.1.
+    n64c_dep(spdlog https://github.com/gabime/spdlog.git v1.15.2 GIT_SHALLOW TRUE)
     n64c_dep(libzip https://github.com/nih-at/libzip.git v1.10.1 GIT_SHALLOW TRUE)
     set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
     set(JSON_Install OFF CACHE BOOL "" FORCE)

@@ -111,3 +111,6 @@ add_test(NAME n64c_win_space COMMAND n64c_test_win_space)
 add_executable(n64c_test_mesa_bundle test_mesa_bundle.c)
 target_compile_options(n64c_test_mesa_bundle PRIVATE -Wall -Wextra -Werror -UNDEBUG)
 add_test(NAME n64c_mesa_bundle COMMAND n64c_test_mesa_bundle)
+
+# Android and Windows build the same spdlog; the older one's bundled fmt fails under NDK r29 (cmake/fast3d.cmake).
+add_test(NAME n64c_spdlog_pin COMMAND "${CMAKE_COMMAND}" -DSHIM_DIR=${N64C_SHIM_DIR} -P "${CMAKE_CURRENT_SOURCE_DIR}/spdlog_pin_check.cmake")

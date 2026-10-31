@@ -26,13 +26,13 @@ export function render(rec) {
   return [node("h2", {}, "Enhanced"), split, bar, node("h3", {}, "MVP items"), items, node("h3", {}, "Latest build"), build];
 }
 
-export function mount(view, ctx) {
+export function mount(el, ctx) {
   let alive = true;
   async function load() {
     const got = await fetch("/api/enhanced");
     const rec = await got.json();
     if (!alive || ctx.route.name !== "enhanced") return;
-    view.replaceChildren(...(got.ok ? render(rec) : [node("h2", {}, "Enhanced"), node("p", { class: "stub" }, rec.error)]));
+    el.replaceChildren(...(got.ok ? render(rec) : [node("h2", {}, "Enhanced"), node("p", { class: "stub" }, rec.error)]));
   }
   for (const kind of LIVE_KINDS) ctx.on(kind, () => { if (alive) load(); });
   addEventListener("hashchange", () => { alive = false; }, { once: true });

@@ -74,11 +74,12 @@ class StartFailureTests(unittest.TestCase):
 
     def start(self, error):
         class Now:  # the start thread runs where the test can see its end
-            def __init__(self, target, daemon=False):
-                self.target = target
+            def __init__(self, target, daemon=False, name=""):
+                self.target, self.name = target, name
 
             def start(self):
-                self.target()
+                if not self.name.startswith("reach-"):  # the reach relay is not under test
+                    self.target()
 
         with (
             mock.patch.object(tas_serve.threading, "Thread", Now),

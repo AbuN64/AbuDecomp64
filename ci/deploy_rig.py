@@ -8,8 +8,8 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
              build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
              deploys its own toolkit, never this one), so the name digests all of them. It also makes the sealed old
-             builds `<toolkit>.<x>` that are neither live nor `.previous` writable (u+w) so the activation can delete
-             them; the deploy itself deletes nothing;
+             builds `<toolkit>.<x>` except the live one (the current `.previous` included: the activation deletes it)
+             writable (u+w, recursively) so the activation can delete them; the deploy itself deletes nothing;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
              SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of the live
              toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine swaps, starts
@@ -264,23 +264,23 @@ def bash(script: str, *args: str, capture: bool = False) -> tuple[int, str]:
 
 
 def unseal_old_builds(toolkit: str) -> list[str]:
-    """Make the sealed old builds `<toolkit>.<x>` that are neither the live toolkit nor `.previous` writable by their
-    owner (u+w on every folder), so the activation can delete them. Returns the folders opened. The deploy removes
-    nothing itself: the activation owns pruning."""
+    """Make every sealed build `<toolkit>.<x>` writable by its owner (u+w on every file and folder, recursively) except
+    the one the live toolkit link resolves to, so the activation can delete them: it deletes the current `.previous`
+    too, when it moves the live build into `.previous`. Returns the folders opened. The deploy removes nothing itself:
+    the activation owns pruning."""
     home, base = os.path.split(toolkit)
-    keep = {os.path.realpath(toolkit), os.path.realpath(f"{toolkit}.previous")}
-    opened = []
+    live = os.path.realpath(toolkit)
+    opened = set()
     for entry in sorted(os.listdir(home)):
-        path = os.path.join(home, entry)
-        folder = os.path.realpath(path)
-        if not entry.startswith(f"{base}.") or entry == f"{base}.previous" or folder in keep:
+        folder = os.path.realpath(os.path.join(home, entry))
+        if not entry.startswith(f"{base}.") or folder == live or not os.path.isdir(folder):
             continue
-        if not os.path.isdir(folder):
-            continue
-        for here, _dirs, _ in os.walk(folder):
-            os.chmod(here, os.stat(here).st_mode | stat.S_IWUSR)
-        opened.append(folder)
-    return sorted(set(opened))
+        for here, dirs, files in os.walk(folder):
+            for leaf in [here, *(os.path.join(here, n) for n in dirs + files)]:
+                if not os.path.islink(leaf):
+                    os.chmod(leaf, os.stat(leaf).st_mode | stat.S_IWUSR)
+        opened.add(folder)
+    return sorted(opened)
 
 
 def last_line(text: str, default: object) -> str:

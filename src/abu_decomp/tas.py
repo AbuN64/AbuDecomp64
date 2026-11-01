@@ -602,6 +602,16 @@ def classify(code: int | None, output: str) -> dict[str, Any]:
     return {"outcome": "exit", "subject": f"exit {code}"}
 
 
+def no_first_frame(code: int | None, text: str, result: dict[str, Any], stopped: bool) -> str | None:
+    """Why a live play ended before its port completed one poll (nothing was ever shown), else None: how it ended and
+    the last line the port printed, which the feed shows as run.refused. A stop or a clean finish is not one."""
+    if stopped or result.get("outcome") == "ok" or result.get("polls_reached"):
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    ended = result.get("subject") or f"exit {code}"
+    return f"the port ended before its first frame ({ended}): {lines[-1] if lines else 'it printed nothing'}"
+
+
 def movie_pak(cfg: dict[str, Any], name: str, start: str | None = None) -> str:
     """What the saved movie ran with: its header's `pak`, `on` for a movie from before the switch."""
     header = decode(_movie(cfg, name).read_text())[0]
@@ -1776,6 +1786,7 @@ def play(
             "status": "done",
             "stopped": stopped,
             "ended": time.time(),
+            **({"error": refusal} if human and (refusal := no_first_frame(code, text, result, stopped)) else {}),
         }
         _check_play_signal()
         _write_record(run, final)

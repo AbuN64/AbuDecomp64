@@ -469,6 +469,7 @@ class Server:
             if taken and (record.get("from") or record.get("input") != "human")
             else None,
             "stopped": bool(record.get("stopped")),
+            "error": record.get("error") or None,
             "from": record.get("from") or None,
             "at": record.get("at"),
             "saved": record.get("saved") or None,

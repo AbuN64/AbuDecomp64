@@ -152,7 +152,7 @@ class DeployTests(unittest.TestCase):
 
     def test_a_venv_that_cannot_import_a_declared_package_is_a_failed_deploy(self):
         self.requirements = "splat64==0.50.0\n"
-        self.fail_on = "-c"  # the import check is the one command run with python -c
+        self.fail_on = deploy.IMPORT_CHECK  # the import check's own source: a bare "-c" matched any run path holding it
         result, code, findings = self.deploy()
         self.assertEqual(code, 1)
         self.assertEqual([f["key"] for f in findings], ["deploy.smoke"])

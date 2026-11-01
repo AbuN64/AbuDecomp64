@@ -2,9 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
-from abu_decomp import DecompError, site_core, tas_serve
+from abu_decomp import DecompError, site_core, tas, tas_serve
 from abu_decomp.config import load_profile
 
 OWNS_SEAT = True  # the runners leave tas_seat.check real for this module
@@ -108,6 +109,48 @@ class StartFailureTests(unittest.TestCase):
         self.assertEqual(self.server.stop(got["id"]), {"id": got["id"], "stopped": False, "refused": self.REASON})
         with self.assertRaises(DecompError):
             self.server.stop("never-existed")
+
+
+class PortExitTests(unittest.TestCase):
+    """A port that exits before its first poll ends as run.refused with the reason (live 11-01 10:12:10Z: the seat held
+    no shader archive, the port printed so and exited 4 at once; the feed said only run.ended outcome exit, poll 0)."""
+
+    OUTPUT = (
+        "boot-config: com_expansionPak=1 rdram_bytes=0x00800000\n"
+        "ragewars: the renderer's shader archive is missing (/seat/fast3d-shaders.o2r); reinstall the game\n"
+    )
+    EXITED: ClassVar[dict[str, object]] = {"outcome": "exit", "subject": "exit 4", "polls_reached": 0}
+
+    def test_the_reason_is_the_exit_and_the_last_line_the_port_printed(self):
+        reason = tas.no_first_frame(4, self.OUTPUT, self.EXITED, False)
+        self.assertIn("(exit 4)", reason)
+        self.assertTrue(reason.endswith("shader archive is missing (/seat/fast3d-shaders.o2r); reinstall the game"))
+
+    def test_a_port_that_printed_nothing_says_so(self):
+        self.assertIn("it printed nothing", tas.no_first_frame(4, "\n", self.EXITED, False))
+
+    def test_a_stop_a_clean_finish_or_a_run_that_polled_is_not_a_refusal(self):
+        self.assertIsNone(tas.no_first_frame(0, self.OUTPUT, self.EXITED, True))
+        self.assertIsNone(tas.no_first_frame(0, self.OUTPUT, {**self.EXITED, "outcome": "ok"}, False))
+        self.assertIsNone(tas.no_first_frame(4, self.OUTPUT, {**self.EXITED, "polls_reached": 3}, False))
+
+    def test_the_record_error_reaches_the_feed_as_run_refused(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "game.z64").write_bytes(b"rom")
+        (root / "movies").mkdir()
+        profile = root / "seat.json"
+        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": []}
+        profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
+        server = tas_serve.Server(load_profile(profile))
+        run = root / "runs" / "plays" / "20261101T101210Z-play-20261101-101210"
+        run.mkdir(parents=True)
+        reason = tas.no_first_frame(4, self.OUTPUT, self.EXITED, False)
+        record = {**self.EXITED, "movie": "play-20261101-101210", "status": "done", "ended": 2.0, "error": reason}
+        events = site_core.run_events(site_core.run_record({**server.row(run, record), "started": 1.0}))
+        self.assertEqual([e["kind"] for e in events], ["run.refused"])
+        self.assertEqual(events[0]["fields"]["reason"], reason)
 
 
 if __name__ == "__main__":

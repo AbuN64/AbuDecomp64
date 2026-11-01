@@ -99,7 +99,7 @@ def in_gdb(out_dir):
                         for i, entry in enumerate(listing)
                         if entry.split()[:1] == [f"{pc:#010x}"] or f"{pc:#x} <" in entry
                     ),
-                    0,  # noqa: E501
+                    0,
                 )
             for entry in listing[max(at - 14, 0) : at + 10]:
                 m = re.match(r"^(=>)?\s*(0x[0-9a-f]+) <[^>]*>:\s*(.*)$", entry)

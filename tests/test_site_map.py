@@ -139,6 +139,31 @@ class BuildTest(unittest.TestCase):
             ],
         )
 
+    def test_blocks_cover_every_row_once_in_rom_order(self) -> None:
+        _, body = site_map.answer(self.server, "GET", "", "", b"")
+        blocks = body["blocks"]
+        self.assertEqual(blocks[0]["start"], 0)
+        self.assertEqual(blocks[-1]["end"], len(body["rows"]))
+        self.assertTrue(all(a["end"] == b["start"] for a, b in zip(blocks, blocks[1:])))
+        self.assertEqual(sum(b["bytes"] for b in blocks), sum(row[1] for row in body["rows"]))
+        self.assertEqual([b["rom"] for b in blocks], sorted(b["rom"] for b in blocks))
+
+    def test_blocks_hold_about_equal_bytes_and_never_exceed_the_count(self) -> None:
+        sizes = [10] * 100
+        blocks = site_map.blocks_of(sizes, list(range(0, 1000, 10)), [0] * 100, 10)
+        self.assertEqual(len(blocks), 10)
+        self.assertEqual({b["bytes"] for b in blocks}, {100})
+        self.assertEqual([(b["start"], b["end"]) for b in blocks][:2], [(0, 10), (10, 20)])
+        fewer = site_map.blocks_of([5, 7, 9], [0, 5, 12], [0, 1, 1], 160)
+        self.assertEqual([(b["start"], b["end"], b["rom"], b["regions"]) for b in fewer], [(0, 1, 0, [0]), (1, 2, 5, [1]), (2, 3, 12, [1])])
+        self.assertEqual(site_map.blocks_of([], [], [], 4), [])
+
+    def test_a_row_bigger_than_the_share_is_a_block_alone_and_regions_are_listed_once(self) -> None:
+        blocks = site_map.blocks_of([1000, 1, 1, 1], [0, 1000, 1001, 1002], [0, 1, 2, 1], 4)
+        self.assertEqual([(b["start"], b["end"], b["regions"]) for b in blocks], [(0, 1, [0]), (1, 4, [1, 2])])
+        merged = site_map.blocks_of([1, 1, 1, 1], [0, 1, 2, 3], [0, 1, 0, 1], 1)
+        self.assertEqual(merged[0]["regions"], [0, 1])
+
     def test_two_folders_with_one_last_part_are_told_apart_by_their_parent(self) -> None:
         files = ["src/game/UTIL/a.CPP", "src/os/UTIL/b.CPP"]
         rows = [["x", 0, 4, "asm", 0, "none", 0, ""], ["y", 8, 4, "asm", 1, "none", 0, ""]]
@@ -177,6 +202,8 @@ SCRIPT = """
 import * as m from %r;
 const filters = %s;
 const bit = Object.fromEntries(filters.map(f => [f.key, f.bit]));
+const rows = [["a", 30, "named", bit.named], ["b", 10, "asm", 0], ["c", 5, "exact", bit.differs]];
+const blocks = [{ start: 0, end: 2 }, { start: 2, end: 3 }];
 const out = {
   none: m.isLit(0xffff, m.maskOf(filters, new Set())),
   named: m.isLit(bit.named | bit.behaves, m.maskOf(filters, new Set(["named"]))),
@@ -187,13 +214,24 @@ const out = {
     m.colourKey("asm", bit.behaves | bit.differs, bit),
     m.colourKey("zzz", 0, bit),
   ],
-  layout: m.layout(25, 12 * m.CELL + 2),
+  cols: [m.gridCols(160), m.gridCols(1), m.gridCols(0)],
+  light: [
+    m.blockLight(rows, { start: 0, end: 2 }, bit, bit.named, false),
+    m.blockLight(rows, { start: 0, end: 2 }, bit, 0, true),
+    m.blockLight(rows, { start: 0, end: 2 }, bit, 0, false),
+    m.blockLight(rows, { start: 2, end: 3 }, bit, bit.named, false),
+  ],
+  full: [
+    m.fullyLit(rows, blocks, bit, 0, true),
+    m.fullyLit(rows, blocks, bit, bit.named, false),
+    m.fullyLit(rows, blocks, bit, 0, false),
+  ],
+  all: [m.allFrom("#/map?lit=all"), m.allFrom("#/map?lit=named"), m.allFrom("#/map")],
   lit: [
     m.litParam(filters, new Set(["differs", "named"])),
     [...m.litFrom("#/?lit=asm,zzz,exact", filters)],
     [...m.litFrom("#/fn/x", filters)],
   ],
-  box: m.boxAt(2 * m.CELL + 1, m.CELL + 1, 12),
 };
 console.log(JSON.stringify(out));
 """
@@ -220,9 +258,19 @@ class PageLogicTest(unittest.TestCase):
             site_map.colour_key("zzz", 0),
         ]
         self.assertEqual(got["colours"], server)
-        self.assertEqual(got["layout"], {"cols": 12, "rows": 3, "height": 48})
+        self.assertEqual(got["cols"], [16, 2, 1])
+        self.assertEqual(
+            got["light"],
+            [
+                {"share": 0.75, "key": "named"},
+                {"share": 1, "key": "named"},
+                {"share": 0, "key": "asm"},
+                {"share": 0, "key": "asm"},
+            ],
+        )
+        self.assertEqual(got["full"], [True, False, False])
+        self.assertEqual(got["all"], [True, False, False])
         self.assertEqual(got["lit"], ["named,differs", ["exact", "asm"], []])
-        self.assertEqual(got["box"], 12 + 2)
 
 
 if __name__ == "__main__":

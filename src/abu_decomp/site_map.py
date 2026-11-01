@@ -7,7 +7,9 @@ region's index. A label repeated by two folders is spelled with its parent folde
 `flags` is the bitmask of site_core.FILTER_BITS, built from the baked site (fns.json: decomp state, reach, behaviour)
 and the records beside it: a feedback record (`runs/feedback/ID/feedback.json`) sets `feedback` on every function its
 run reached, and a run with a packed stream (`runs/plays/ID/stream/index.json`) sets `streamed` on its reach. The
-rows are ROM-ordered and the version is a hash of them, so the same data gives the same answer. The page lights a box
+rows are ROM-ordered and `blocks` cuts them into at most BLOCKS runs of about equal bytes (`blocks_of`), each
+`{start, end, rom, bytes, regions}` over the row slice [start, end), which the page draws as one spaced block each (read
+top to bottom, left to right) and lights by the share of its bytes a checked filter selects. The version is a hash of them, so the same data gives the same answer. The page lights a box
 when its flags share a bit with the checked filters (`lit`); all unchecked = all dark. `colour_key` is the one rule
 for a box's colour (progress; behaves green, differs red) and `COLOURS` maps its key to the page's CSS variable.
 """
@@ -35,6 +37,7 @@ DECOMP_FILTERS = ("named", "exact", "asm")  # filter keys that a decomp state se
 REACH_FILTERS = {"port": ("exercised",), "both": ("exercised",), "oracle": ("original-only",)}
 BEHAVIOUR_PREFIX = {"behaves": "behaves", "differs": "differs"}  # behaviour column value -> filter key (prefix match)
 BIT = site_core.FILTER_BITS
+BLOCKS = 160  # blocks the ROM view cuts the rows into: 16 columns by 10 rows fits one screen
 
 
 def reach_rows(body: bytes, count: int) -> set[int]:
@@ -114,6 +117,25 @@ def regions_of(files: list[str], rows: list[list[Any]], at: dict[str, int]) -> t
     return regions, index
 
 
+def blocks_of(sizes: list[int], roms: list[int], region_of: list[int], count: int = BLOCKS) -> list[dict[str, Any]]:
+    """The ROM-ordered rows cut into at most `count` contiguous runs of about equal bytes; every row is in one block.
+
+    A run closes once it holds its share of the total (a row bigger than the share is a block alone), so no block is
+    empty and a ROM with fewer rows than `count` gets one block per row.
+    """
+    share = max(1, -(-sum(sizes) // max(1, count)))
+    blocks: list[dict[str, Any]] = []
+    for i, size in enumerate(sizes):
+        if not blocks or blocks[-1]["bytes"] >= share and len(blocks) < count:
+            blocks.append({"start": i, "end": i, "rom": roms[i], "bytes": 0, "regions": []})
+        block = blocks[-1]
+        block["end"] = i + 1
+        block["bytes"] += size
+        if region_of[i] not in block["regions"]:
+            block["regions"].append(region_of[i])
+    return blocks
+
+
 def build(site: Path, runs: Path, feedback: Path) -> dict[str, Any]:
     """The /api/map answer from the baked site and the run and feedback folders."""
     manifest = json.loads((site / "manifest.json").read_text())
@@ -150,13 +172,15 @@ def build(site: Path, runs: Path, feedback: Path) -> dict[str, Any]:
         ]
         for i, row in enumerate(rows)
     ]
-    version = hashlib.sha1(json.dumps(out, separators=(",", ":")).encode()).hexdigest()[:16]
+    blocks = blocks_of([row[at["size"]] for row in rows], [row[at["rom"]] for row in rows], region_of)
+    version = hashlib.sha1(json.dumps([out, blocks], separators=(",", ":")).encode()).hexdigest()[:16]
     return {
         "version": version,
         "ref": baked.get("ref"),
         "filters": [{"key": key, "bit": BIT[key]} for key in BIT],
         "colours": COLOURS,
         "regions": regions,
+        "blocks": blocks,
         "rows": out,
     }
 

@@ -127,7 +127,7 @@ def blocks_of(sizes: list[int], roms: list[int], region_of: list[int], count: in
     share = max(1, -(-sum(sizes) // max(1, count)))
     blocks: list[dict[str, Any]] = []
     for i, size in enumerate(sizes):
-        if not blocks or blocks[-1]["bytes"] >= share and len(blocks) < count:
+        if not blocks or (blocks[-1]["bytes"] >= share and len(blocks) < count):
             blocks.append({"start": i, "end": i, "rom": roms[i], "bytes": 0, "regions": []})
         block = blocks[-1]
         block["end"] = i + 1

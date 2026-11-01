@@ -1,5 +1,6 @@
 """The Runner site map region: flag bitmask, filter selection and colours (site_map, static/site/map.js)."""
 
+import itertools
 import json
 import subprocess
 import tempfile
@@ -144,7 +145,7 @@ class BuildTest(unittest.TestCase):
         blocks = body["blocks"]
         self.assertEqual(blocks[0]["start"], 0)
         self.assertEqual(blocks[-1]["end"], len(body["rows"]))
-        self.assertTrue(all(a["end"] == b["start"] for a, b in zip(blocks, blocks[1:])))
+        self.assertTrue(all(a["end"] == b["start"] for a, b in itertools.pairwise(blocks)))
         self.assertEqual(sum(b["bytes"] for b in blocks), sum(row[1] for row in body["rows"]))
         self.assertEqual([b["rom"] for b in blocks], sorted(b["rom"] for b in blocks))
 

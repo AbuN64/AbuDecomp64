@@ -233,8 +233,7 @@ def _display_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _invoke_display(shown: Any, size: str, argv: list[str]) -> dict[str, Any]:
-    """Run argv inside a fresh display and delete the display when it exits. Nothing is recorded; the page's viewer
-shows it live."""
+    """Run argv inside a fresh display and delete it when it exits. Nothing is recorded; the viewer shows it live."""
     import os
     import subprocess
 

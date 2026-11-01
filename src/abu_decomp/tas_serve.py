@@ -1353,8 +1353,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
         def viewer_socket(self, subject: str) -> None:
-            """Upgrade to a WebSocket and carry the display's RFB until either side closes; the connection is then
-done."""
+            """Upgrade to a WebSocket and carry the display's RFB until either side closes."""
             key = self.headers.get("Sec-WebSocket-Key")
             record = display.load(server.displays, subject)
             if not key or self.headers.get("Upgrade", "").lower() != "websocket":

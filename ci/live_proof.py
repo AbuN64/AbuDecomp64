@@ -43,8 +43,19 @@ stop = work / "stop.fifo"  # the stand-in blocks reading it; closing the write e
 stop.unlink(missing_ok=True)
 os.mkfifo(stop)
 cmd = [
-    sys.executable, "-m", "abu_decomp", "display", "--dir", str(displays),
-    "invoke", "--", "foot", "-e", "sh", "-c", f"echo replay; cat {stop}",
+    sys.executable,
+    "-m",
+    "abu_decomp",
+    "display",
+    "--dir",
+    str(displays),
+    "invoke",
+    "--",
+    "foot",
+    "-e",
+    "sh",
+    "-c",
+    f"echo replay; cat {stop}",
 ]
 step("invoke: starting the display and the replay stand-in")
 run = subprocess.Popen(cmd, cwd=repo / "src", stderr=subprocess.PIPE, text=True)
@@ -118,11 +129,13 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         else:
-            probe = ("<script>const c=document.querySelector('#screen');"
-                     "new MutationObserver(()=>(Number(c.dataset.live)>=2||c.dataset.error)"
-                     "&&fetch('/report',{method:'POST',body:JSON.stringify("
-                     "{live:c.dataset.live,error:c.dataset.error,width:c.width})}))"
-                     ".observe(c,{attributes:true})</script>")
+            probe = (
+                "<script>const c=document.querySelector('#screen');"
+                "new MutationObserver(()=>(Number(c.dataset.live)>=2||c.dataset.error)"
+                "&&fetch('/report',{method:'POST',body:JSON.stringify("
+                "{live:c.dataset.live,error:c.dataset.error,width:c.width})}))"
+                ".observe(c,{attributes:true})</script>"
+            )
             body = (viewer.viewer_page(display.load(displays, ident)) + probe).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -140,9 +153,20 @@ print("capture:", display.backend(displays).capture(ident, frame), flush=True)
 shot = work / "page.png"
 step("viewer: headless chromium opens the page")
 browser = subprocess.Popen(
-    ["chromium", "--headless", "--no-sandbox", "--disable-gpu", f"--user-data-dir={work}/chromium",
-     "--window-size=1280,720",
-     "--remote-debugging-port=9333", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    [
+        "chromium",
+        "--headless",
+        "--no-sandbox",
+        "--disable-gpu",
+        f"--user-data-dir={work}/chromium",
+        "--window-size=1280,720",
+        "--remote-debugging-port=9333",
+        "about:blank",
+    ],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.PIPE,
+    text=True,
+)
 timer = threading.Timer(CHROMIUM_SECONDS, browser.kill)
 timer.start()
 for line in browser.stderr:  # chromium announces the DevTools port once it listens

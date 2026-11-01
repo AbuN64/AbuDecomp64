@@ -107,16 +107,19 @@ class Check(unittest.TestCase):
         self.assertEqual(built, ["b.c"])
 
     def test_index_finds_column0_definitions(self):
-        idx = sweep.build_index({"u.c": "extern int x;\nint f(int a) {\n  return g(a);\n}\nINCLUDE_ASM(\"p\", h);\n"})
+        idx = sweep.build_index({"u.c": 'extern int x;\nint f(int a) {\n  return g(a);\n}\nINCLUDE_ASM("p", h);\n'})
         self.assertEqual((idx.get("f"), idx.get("h"), idx.get("x"), idx.get("g")), (["u.c"], ["u.c"], None, None))
 
     def test_stale_list_unit_resolves_to_the_tree(self):
-        idx = sweep.build_index({"src/particle/a.c": "int f(int a) {\n  return a;\n}\n", "src/b.c": "int g(void) {\n}\n"})
+        idx = sweep.build_index(
+            {"src/particle/a.c": "int f(int a) {\n  return a;\n}\n", "src/b.c": "int g(void) {\n}\n"}
+        )
         self.assertEqual(sweep.owner(idx, "f", "src/FX_2/a.c"), "src/particle/a.c")  # moved since the list
         self.assertEqual(sweep.owner(idx, "g", "src/b.c"), "src/b.c")
         self.assertEqual(sweep.owner(idx, "nowhere", "src/c.c"), "src/c.c")  # unknown: the row reports it as listed
         idx = sweep.build_index({"src/x.c": "int f(int a);\n", "src/y.c": "int f(int a) {\n  return a;\n}\n"})
         self.assertEqual(sweep.owner(idx, "f", "src/old.c", lambda s: ["src/y.c"]), "src/y.c")  # not the prototype
+
     def test_rows_appear_before_the_list_finishes(self):
         gate, seen = threading.Event(), []
         a = rec("a.c", {"f": "T", "slow": "T"}, {"f": [], "slow": []})
@@ -147,9 +150,11 @@ class Check(unittest.TestCase):
             sweep.check_function = orig
 
     def test_summary_orders_by_first_occurrence(self):
-        rows = [{"check": "body", "verdict": "x", "order": 9, "symbol": "s9"},
-                {"check": "body", "verdict": "x", "order": 3, "symbol": "s3"},
-                {"check": "ok", "verdict": "ok", "order": 1, "symbol": "s1"}]
+        rows = [
+            {"check": "body", "verdict": "x", "order": 9, "symbol": "s9"},
+            {"check": "body", "verdict": "x", "order": 3, "symbol": "s3"},
+            {"check": "ok", "verdict": "ok", "order": 1, "symbol": "s1"},
+        ]
         self.assertEqual(sweep.summarize(rows), [(("ok", "ok"), 1, 1, "s1"), (("body", "x"), 2, 3, "s3")])
 
     def sdk_graph(self, table):
@@ -162,8 +167,12 @@ class Check(unittest.TestCase):
         self.assertEqual(sweep.check_function(g, {}, "f", "a.c")[:2], ("ok", "ok"))
 
     def test_unbound_libultra_callee_is_the_blocker_not_its_body(self):
-        g = self.sdk_graph({"g": ("blocked", "shim-unidentified", "libultra g; not identified for the shim"),
-                            "osX": ("blocked", "shim-row-missing", "never walked")})
+        g = self.sdk_graph(
+            {
+                "g": ("blocked", "shim-unidentified", "libultra g; not identified for the shim"),
+                "osX": ("blocked", "shim-row-missing", "never walked"),
+            }
+        )
         check, verdict, why, n, _ = sweep.check_function(g, {}, "f", "a.c")
         self.assertEqual((check, verdict, n), ("callee", "shim-unidentified", 1))
         self.assertTrue(why.startswith("g: "))
@@ -180,7 +189,10 @@ class Check(unittest.TestCase):
     def test_router_sdk_and_rebind(self):
         class Facts:
             def __init__(self):
-                self.text = {"sdk/u.c": "void inner(void) { deep(); }", "g.c": "void f(void) { outer(); } /* inner() */"}
+                self.text = {
+                    "sdk/u.c": "void inner(void) { deep(); }",
+                    "g.c": "void f(void) { outer(); } /* inner() */",
+                }
 
             def sdk(self, sym):
                 return 0x802B0000 if sym == "osX" else None
@@ -190,8 +202,9 @@ class Check(unittest.TestCase):
 
         seen = []
         facts = Facts()
-        r = sweep.Router(facts, {"stops": {}, "bindings": {}, "data": {}}, {}, set(), None,
-                         lambda d, facts: seen.append(d))
+        r = sweep.Router(
+            facts, {"stops": {}, "bindings": {}, "data": {}}, {}, set(), None, lambda d, facts: seen.append(d)
+        )
         self.assertEqual(len(seen), 1)
         self.assertTrue(r.sdk("osX") and r.sdk("y", "sdk/u.c"))
         self.assertFalse(r.sdk("y", "g.c") or r.sdk("y", "missing.c") or r.sdk("y"))
@@ -200,21 +213,28 @@ class Check(unittest.TestCase):
             (facts.source / "include/sdk").mkdir(parents=True)
             (facts.source / "include/GAME.H").write_text("#define CALL hdr()\n")
             (facts.source / "include/sdk/os.h").write_text("void deep(void);\n")
-            (facts.source / "include/TYPES.H").write_text("extern void declared(s32);\nvoid *proto(void *, u64 n);\n"
-                                                          "extern u8 table[4];\n")
-            self.assertEqual([r.internal(s) for s in ("outer", "hdr", "inner", "deep", "declared", "proto")],
-                             [False, False, True, True, True, True])
+            (facts.source / "include/TYPES.H").write_text(
+                "extern void declared(s32);\nvoid *proto(void *, u64 n);\nextern u8 table[4];\n"
+            )
+            self.assertEqual(
+                [r.internal(s) for s in ("outer", "hdr", "inner", "deep", "declared", "proto")],
+                [False, False, True, True, True, True],
+            )
 
     def test_declarations_are_not_uses(self):
-        text = ("extern void a(s32);\nvoid b(void *, u64 size);\ns32 *c(int (*cb)(int), int);\nvoid g(void) {\n"
-                "    d(1);\n    return e(2);\n    x = f(3);\n    s32 v = h();\n    else i(1);\n}\n#define M() j()\n")
+        text = (
+            "extern void a(s32);\nvoid b(void *, u64 size);\ns32 *c(int (*cb)(int), int);\nvoid g(void) {\n"
+            "    d(1);\n    return e(2);\n    x = f(3);\n    s32 v = h();\n    else i(1);\n}\n#define M() j()\n"
+        )
         used = set(sweep.IDENT.findall(sweep.DECLARATION.sub(" ", text)))
         self.assertFalse({"a", "b", "c"} & used)
         self.assertLessEqual({"d", "e", "f", "h", "i", "j"}, used)
 
     def test_stop_class(self):
-        self.assertEqual(sweep.stop_class("libultra 0x1 = osX (e); shim lacks osX at p (SDK: shim binding decision)")[0],
-                         "shim-row-missing")
+        self.assertEqual(
+            sweep.stop_class("libultra 0x1 = osX (e); shim lacks osX at p (SDK: shim binding decision)")[0],
+            "shim-row-missing",
+        )
         self.assertEqual(sweep.stop_class("u.c:1 boom at p; RW NEEDS one declaration")[0], "callee-unit-uncompilable")
 
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compile the project's guest work declaration into the table the entry charge reads (n64c_charge.c)."""
+
 import argparse
 import json
 import pathlib
@@ -42,8 +43,11 @@ def charged_names(bound, native_names, functions):
     never of the SDK range (policy) or of a function the port runs natively (bound, or defined by the shim under its
     original name); both sides charge this same set (the oracle's cpu.native_code fact lists the same vrams)."""
     native_addresses = {functions[name] for name in set(bound) | (native_names & set(functions)) if name in functions}
-    names = sorted(name for name, address in functions.items()
-                   if not policy.SDK_LO <= address < policy.SDK_HI and address not in native_addresses)
+    names = sorted(
+        name
+        for name, address in functions.items()
+        if not policy.SDK_LO <= address < policy.SDK_HI and address not in native_addresses
+    )
     if not all(IDENT.fullmatch(name) for name in names):
         raise ValueError("unusable function name in symbol_addrs.txt")
     return names
@@ -62,8 +66,11 @@ def generate(manifest, source, ns_per_entry, output, port_dir):
     names = charged_names(bound, native_names, functions)
     if not names:
         raise ValueError("no charged function: the version's symbols hold no original code outside the SDK")
-    lines = ["/* Generated guest work declaration (charged.py): the work scale and the charged names. */",
-             f'const char n64c_guest_ns_per_entry[] = "{ns_per_entry}";', "const char *const n64c_charged_names[] = {"]
+    lines = [
+        "/* Generated guest work declaration (charged.py): the work scale and the charged names. */",
+        f'const char n64c_guest_ns_per_entry[] = "{ns_per_entry}";',
+        "const char *const n64c_charged_names[] = {",
+    ]
     lines += [f'    "{name}",' for name in names]
     lines += ["};", f"const unsigned n64c_charged_count = {len(names)};", ""]
     output.mkdir(parents=True, exist_ok=True)
@@ -78,7 +85,9 @@ if __name__ == "__main__":
     parser.add_argument("--source", type=pathlib.Path, required=True)
     parser.add_argument("--ns-per-entry", required=True, help="guest ns one charged entry costs, a positive decimal")
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    parser.add_argument("--port-dir", type=pathlib.Path, required=True, help="the port's facts directory (sched_glue.c)")
+    parser.add_argument(
+        "--port-dir", type=pathlib.Path, required=True, help="the port's facts directory (sched_glue.c)"
+    )
     args = parser.parse_args()
     try:
         generate(args.manifest, args.source, args.ns_per_entry, args.output, args.port_dir)

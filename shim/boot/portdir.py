@@ -2,6 +2,7 @@
 """Where the port keeps its facts: manifest.json, shim-bindings.txt, boot-trace.tsv, lockstep-accept.tsv,
 gates-baseline.tsv, known-fallback-units.txt, sched_glue.c. They belong to the port, never to the shim;
 N64C_PORT_DIR names the directory (without it the names resolve against the working directory)."""
+
 import os
 import pathlib
 

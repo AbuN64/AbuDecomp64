@@ -6,6 +6,7 @@ underscore, so a name read from nm or an object's symbol table loses it (strip) 
 script or an assembler line gains it (add); the binutils of the target do the archive and symbol work.
   N64C_SYMBOL_PREFIX  "_" on Windows/i386, empty on Linux
   N64C_NM, N64C_AR, N64C_RANLIB, N64C_CC   the target's tools (defaults nm, ar, ranlib, gcc)"""
+
 import os
 
 PREFIX = os.environ.get("N64C_SYMBOL_PREFIX", "")
@@ -19,7 +20,7 @@ COFF = bool(PREFIX)
 
 def strip(name):
     """C name of an object's symbol."""
-    return name[len(PREFIX):] if PREFIX and name.startswith(PREFIX) else name
+    return name[len(PREFIX) :] if PREFIX and name.startswith(PREFIX) else name
 
 
 def add(name):

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The shared digest memo: a warm file is not read again, a changed file is, and a damaged memo costs only speed."""
+
 import importlib.util
 import os
 import pathlib

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The generated charged table: original code outside the SDK range, never native code, and the declared work scale."""
+
 import importlib.util
 import json
 import pathlib
@@ -26,14 +27,21 @@ class ChargedTable(unittest.TestCase):
         (facts / "symbol_addrs.txt").write_text(
             "alpha = 0x80000010; // type:func\nbeta = 0x80000020; // type:func\nD_data = 0x80000030; //\n"
             "shimmed = 0x80000050; // type:func\nnative_api = 0x80000080; // type:func\n"
-            "osLib = 0x802B0000; // type:func\n")
-        project = {"version": "test", "sources": [],
-                   "bindings": {"shimmed": "host_shim", "game_alias": "alpha"}, "stops": {}}
+            "osLib = 0x802B0000; // type:func\n"
+        )
+        project = {
+            "version": "test",
+            "sources": [],
+            "bindings": {"shimmed": "host_shim", "game_alias": "alpha"},
+            "stops": {},
+        }
         (self.path / "input.json").write_text(json.dumps(project))
 
     def generate(self, scale="4702.010109321735"):
         with patch.object(module, "native_functions", return_value={"host_shim", "native_api"}):
-            module.generate(self.path / "input.json", self.path / "source", scale, self.path / "out", self.path / "facts")
+            module.generate(
+                self.path / "input.json", self.path / "source", scale, self.path / "out", self.path / "facts"
+            )
         return (self.path / "out/charged_table.c").read_text()
 
     def test_charged_set_is_original_code_the_port_compiles(self):
@@ -70,15 +78,32 @@ class PortDirArgument(unittest.TestCase):
         facts = self.path / "source/versions/test"
         facts.mkdir(parents=True)
         (facts / "symbol_addrs.txt").write_text(
-            "alpha = 0x80000010; // type:func\nglue_only = 0x80000020; // type:func\n")
+            "alpha = 0x80000010; // type:func\nglue_only = 0x80000020; // type:func\n"
+        )
         (self.path / "manifest").mkdir()
         (self.path / "manifest/input.json").write_text(json.dumps({"version": "test", "bindings": {}}))
 
     def run_cli(self, *port_dir, env=None):
         return subprocess.run(
-            [sys.executable, "-I", str(ROOT / "charged.py"), "--manifest", str(self.path / "manifest/input.json"),
-             "--source", str(self.path / "source"), "--ns-per-entry", "4702.01", "--output", str(self.path / "out"),
-             *port_dir], capture_output=True, text=True, env=env, check=False)
+            [
+                sys.executable,
+                "-I",
+                str(ROOT / "charged.py"),
+                "--manifest",
+                str(self.path / "manifest/input.json"),
+                "--source",
+                str(self.path / "source"),
+                "--ns-per-entry",
+                "4702.01",
+                "--output",
+                str(self.path / "out"),
+                *port_dir,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
 
     def test_the_given_dir_supplies_sched_glue(self):
         facts = self.path / "facts"

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """lockstep.py on synthetic oracle/port recordings, and the port recorder (trace.c, N64C_LOCKSTEP=1) on a fixture."""
+
 import argparse
 import contextlib
 import importlib.util
@@ -26,10 +27,14 @@ spec = importlib.util.spec_from_file_location("lockstep", ROOT / "lockstep.py")
 ls = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ls)
 PAGES = 4
-TRACE = "order\taddress\tsymbol\n1\t0x80001000\tfn_one\n2\t0x80001100\tfn_two\tfn_two_new\n" \
-        "3\t0x80001200\tfn_three\n4\t0x80001300\tfn_four\n5\t0x80001400\tfn_five\n"
-SYMBOLS = "fn_one = 0x80001000; //\nfn_two_new = 0x80001100; //\nD_80000100 = 0x80000100; //\n" \
-          "D_80001800 = 0x80001800; //\nD_80002000 = 0x80002000; //\nD_80003000 = 0x80003000; //\n"
+TRACE = (
+    "order\taddress\tsymbol\n1\t0x80001000\tfn_one\n2\t0x80001100\tfn_two\tfn_two_new\n"
+    "3\t0x80001200\tfn_three\n4\t0x80001300\tfn_four\n5\t0x80001400\tfn_five\n"
+)
+SYMBOLS = (
+    "fn_one = 0x80001000; //\nfn_two_new = 0x80001100; //\nD_80000100 = 0x80000100; //\n"
+    "D_80001800 = 0x80001800; //\nD_80002000 = 0x80002000; //\nD_80003000 = 0x80003000; //\n"
+)
 
 
 class Recorder:
@@ -39,14 +44,22 @@ class Recorder:
         self.path = path
         path.mkdir(parents=True)
         self.side = side
-        self.lines = [{"k": "meta", "side": side, "ram": PAGES * 4096, "page": 4096,
-                       "bytes": "canonical-be" if side == "oracle" else "native", "hash": "fnv1a64-le64"}]
+        self.lines = [
+            {
+                "k": "meta",
+                "side": side,
+                "ram": PAGES * 4096,
+                "page": 4096,
+                "bytes": "canonical-be" if side == "oracle" else "native",
+                "hash": "fnv1a64-le64",
+            }
+        ]
         self.last, self.stored, self.store, self.n = {}, set(), b"", 0
 
     def hit(self, key, ram, sp=0x80003F00, thr=1):
         pages = []
         for pg in range(PAGES):
-            data = bytes(ram[pg * 4096:(pg + 1) * 4096])
+            data = bytes(ram[pg * 4096 : (pg + 1) * 4096])
             h = ls.page_hash(data)
             if self.n and self.last.get(pg) == h:
                 continue
@@ -89,13 +102,13 @@ class Ram:
 
     def u32(self, address, value, port_value=None):
         at = address - 0x80000000
-        self.oracle[at:at + 4] = value.to_bytes(4, "big")
-        self.port[at:at + 4] = (value if port_value is None else port_value).to_bytes(4, "little")
+        self.oracle[at : at + 4] = value.to_bytes(4, "big")
+        self.port[at : at + 4] = (value if port_value is None else port_value).to_bytes(4, "little")
 
     def u16(self, address, value):
         at = address - 0x80000000
-        self.oracle[at:at + 2] = value.to_bytes(2, "big")
-        self.port[at:at + 2] = value.to_bytes(2, "little")
+        self.oracle[at : at + 2] = value.to_bytes(2, "big")
+        self.port[at : at + 2] = value.to_bytes(2, "little")
 
     def u8(self, address, value):
         at = address - 0x80000000
@@ -103,8 +116,8 @@ class Ram:
 
     def f64(self, address, value):
         at = address - 0x80000000
-        self.oracle[at:at + 8] = struct.pack(">d", value)
-        self.port[at:at + 8] = struct.pack("<d", value)
+        self.oracle[at : at + 8] = struct.pack(">d", value)
+        self.port[at : at + 8] = struct.pack("<d", value)
 
 
 class CompareTests(unittest.TestCase):
@@ -126,8 +139,20 @@ class CompareTests(unittest.TestCase):
     def run_compare(self, *extra):
         self.oracle.close()
         self.port.close()
-        argv = ["compare", "--oracle", str(self.path / "oracle"), "--port", str(self.path / "port"), "--trace",
-                str(self.path / "trace.tsv"), "--symbols", str(self.path / "symbols.txt"), "--pak", "5", *extra]
+        argv = [
+            "compare",
+            "--oracle",
+            str(self.path / "oracle"),
+            "--port",
+            str(self.path / "port"),
+            "--trace",
+            str(self.path / "trace.tsv"),
+            "--symbols",
+            str(self.path / "symbols.txt"),
+            "--pak",
+            "5",
+            *extra,
+        ]
         return ls.compare(ls.build_parser().parse_args(argv))
 
     def test_all_memory_arguments_and_returns_are_listed_with_exact_acceptance(self):
@@ -145,7 +170,9 @@ class CompareTests(unittest.TestCase):
         self.port.ret(3, 0, [9, 0])
         accepts = self.path / "accept.tsv"
         header = "\t".join(ls.ACCEPT_FIELDS) + "\n"
-        accepts.write_text(header + "memory\t2\tfn_two\t0x80001800\t00000001/00000002\tfixture reason\tfixture review\n")
+        accepts.write_text(
+            header + "memory\t2\tfn_two\t0x80001800\t00000001/00000002\tfixture reason\tfixture review\n"
+        )
         report = self.run_compare("--types", str(self.path / "types.tsv"), "--accept", str(accepts))
         self.assertEqual(len(report["memory"]), 210)
         self.assertEqual(len(report["calls"]), 3)
@@ -171,7 +198,13 @@ class CompareTests(unittest.TestCase):
         self.both(4)
         self.both(5)
         report = self.run_compare()
-        review = dict(zip(ls.ACCEPT_FIELDS, ["memory", 2, "fn_two", "0x80001800", "00000001/00000002", "known", "reviewer"], strict=False))
+        review = dict(
+            zip(
+                ls.ACCEPT_FIELDS,
+                ["memory", 2, "fn_two", "0x80001800", "00000001/00000002", "known", "reviewer"],
+                strict=False,
+            )
+        )
         ls.apply_acceptances(report, [review], [1, 2, 3, 4, 5])
         self.assertEqual(report["matched_through"], 1)
         self.assertEqual(report["matched_through_after_accepted"], 3)
@@ -187,9 +220,13 @@ class CompareTests(unittest.TestCase):
         path = self.path / "accept.tsv"
         header = "\t".join(ls.ACCEPT_FIELDS) + "\n"
         good = "memory\t2\tfn_two\t0x80001800\t00000001/00000002\treason\treviewer\n"
-        for bad in [good.replace("reason", ""), good.replace("reviewer", ""),
-                    good.replace("00000001/00000002", "*"), good + good,
-                    good.replace("0x80001800", "0x80001800-0x80001900")]:
+        for bad in [
+            good.replace("reason", ""),
+            good.replace("reviewer", ""),
+            good.replace("00000001/00000002", "*"),
+            good + good,
+            good.replace("0x80001800", "0x80001800-0x80001900"),
+        ]:
             with self.subTest(row=bad):
                 path.write_text(header + bad)
                 with self.assertRaises(ValueError):
@@ -255,8 +292,7 @@ class CompareTests(unittest.TestCase):
         self.assertIn(["0x80001800", "0x80002000", "shim-owned queue"], report["masked"])
 
     def test_return_divergence_needs_a_type_and_comes_first(self):
-        (self.path / "types.tsv").write_text("name\treturn\tparams\nfn_two\tint32\tint32,ptr,float\n"
-                                             "fn_three\tvoid\t\n")
+        (self.path / "types.tsv").write_text("name\treturn\tparams\nfn_two\tint32\tint32,ptr,float\nfn_three\tvoid\t\n")
         self.both(1)
         self.both(2)
         self.both(3)
@@ -278,11 +314,16 @@ class CompareTests(unittest.TestCase):
     def test_float_and_double_arguments_follow_o32(self):
         self.assertEqual(ls.o32_slots(["float", "float", "int32"]), ([("f", 12), ("f", 14), ("a", 2)], [0, 4, 8]))
         self.assertEqual(ls.o32_slots(["int32", "double"]), ([("a", 0), ("a", 2)], [0, 4]))
-        self.assertEqual(ls.o32_slots(["double", "int32", "int32", "int32"]),
-                         ([("f", 12), ("a", 2), ("a", 3), None], [0, 8, 12, 16]))
+        self.assertEqual(
+            ls.o32_slots(["double", "int32", "int32", "int32"]), ([("f", 12), ("a", 2), ("a", 3), None], [0, 8, 12, 16])
+        )
         matcher = ls.Matcher(PAGES * 4096, ([], {}), [])
-        oc = {"a": ["0", "0", "0", "0"], "f12": f"{struct.unpack('<Q', struct.pack('<d', 2.0))[0]:016x}",
-              "f14": "0", "sp": "80003f00"}
+        oc = {
+            "a": ["0", "0", "0", "0"],
+            "f12": f"{struct.unpack('<Q', struct.pack('<d', 2.0))[0]:016x}",
+            "f14": "0",
+            "sp": "80003f00",
+        }
         lo, hi = struct.unpack("<II", struct.pack("<d", 2.0))
         pc = {"a": [f"{lo:08x}", f"{hi:08x}"] + ["0"] * 6, "sp": "ffffd000"}
         self.assertEqual(ls.compare_call(matcher, ["double"], False, oc, pc), [])
@@ -290,8 +331,11 @@ class CompareTests(unittest.TestCase):
         self.assertIn("arg0 double", ls.compare_call(matcher, ["double"], False, oc, pc)[0])
 
     def test_function_pointers_match_by_original_address(self):
-        matcher = ls.Matcher(PAGES * 4096, ls.read_symbols(self.path / "symbols.txt"),
-                             [(0x08049000, 0x40, "fn_one", False), (0x08049100, 0x40, "fn_two_new", True)])
+        matcher = ls.Matcher(
+            PAGES * 4096,
+            ls.read_symbols(self.path / "symbols.txt"),
+            [(0x08049000, 0x40, "fn_one", False), (0x08049100, 0x40, "fn_two_new", True)],
+        )
         self.assertTrue(matcher.same_function(0x80001100, 0x08049100))
         self.assertFalse(matcher.same_function(0x80001000, 0x08049100))
         page_o, page_p = bytearray(4096), bytearray(4096)
@@ -301,8 +345,12 @@ class CompareTests(unittest.TestCase):
         self.assertTrue(matcher.is_local(["fn_two", "fn_two_new"]))
 
     def test_native_data_pointers_match_by_original_address(self):
-        matcher = ls.Matcher(PAGES * 4096, ls.read_symbols(self.path / "symbols.txt"), [],
-                             [(0x0805A000, 0x100, "D_80001800", True), (0x0805B000, 0x20, "rw_table.12", False)])
+        matcher = ls.Matcher(
+            PAGES * 4096,
+            ls.read_symbols(self.path / "symbols.txt"),
+            [],
+            [(0x0805A000, 0x100, "D_80001800", True), (0x0805B000, 0x20, "rw_table.12", False)],
+        )
         self.assertTrue(matcher.same_address(0x80001808, 0x0805A008))
         self.assertTrue(matcher.same_address(0x80001900, 0x0805A100))  # one past the end
         self.assertFalse(matcher.same_address(0x80001808, 0x0805A00C))
@@ -355,7 +403,7 @@ class CompareTests(unittest.TestCase):
     def test_rom_boot_copy_is_masked(self):
         rom = bytearray(0x1000 + 0x100000)
         rom[0:4] = bytes.fromhex("80371240")
-        rom[0x1000 + 0x1400:0x1000 + 0x1404] = bytes.fromhex("27bdffc8")  # IPL3 puts it at 0x80001800
+        rom[0x1000 + 0x1400 : 0x1000 + 0x1404] = bytes.fromhex("27bdffc8")  # IPL3 puts it at 0x80001800
         (self.path / "rom.z64").write_bytes(rom)
         self.ram.oracle[0x1800:0x1804] = bytes.fromhex("27bdffc8")
         self.ram.u32(0x80001900, 2, port_value=1)  # differs after the first point: counted
@@ -375,11 +423,19 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(ls.read_boot_copy(self.path / "rom.v64"), ls.read_boot_copy(self.path / "rom.z64"))
 
     def test_aux_info_kinds(self):
-        typedefs = {"s32": "int", "f32": "float", "u8": "unsigned char", "Vec": "struct", "OSTime": "u64",
-                    "u64": "unsigned long long"}
-        text = ("/* a.c:3:NF */ extern s32 fn_one (f32 x, u8 *p, OSTime t, ...); /* (x, p, t) */\n"
-                "/* a.c:9:OF */ extern void fn_two (); /* () */\n"
-                "/* a.c:12:NC */ extern Vec fn_three (Vec, int (*)(void));\n")
+        typedefs = {
+            "s32": "int",
+            "f32": "float",
+            "u8": "unsigned char",
+            "Vec": "struct",
+            "OSTime": "u64",
+            "u64": "unsigned long long",
+        }
+        text = (
+            "/* a.c:3:NF */ extern s32 fn_one (f32 x, u8 *p, OSTime t, ...); /* (x, p, t) */\n"
+            "/* a.c:9:OF */ extern void fn_two (); /* () */\n"
+            "/* a.c:12:NC */ extern Vec fn_three (Vec, int (*)(void));\n"
+        )
         out = {}
         ls.parse_aux(text, {"fn_one", "fn_two", "fn_three"}, typedefs, out)
         self.assertEqual(out["fn_one"], ("int32", ["float", "ptr", "int64", "var"]))
@@ -460,24 +516,69 @@ class PortRecorderTests(unittest.TestCase):
             (path / "table.c").write_text(FIXTURE_TABLE)
             (path / "driver.c").write_text(FIXTURE_DRIVER)
             objects = []
-            game = ["-O2", "-finstrument-functions", "-fno-omit-frame-pointer", "-fno-optimize-sibling-calls",
-                    "-msse2", "-mfpmath=sse"]
-            for source, extra in [(path / "game.c", game), (ROOT / "trace.c", ["-O2"]), (ROOT / "test_charge_stub.c", ["-O2"]), (path / "table.c", []),
-                                  (path / "driver.c", [])]:
+            game = [
+                "-O2",
+                "-finstrument-functions",
+                "-fno-omit-frame-pointer",
+                "-fno-optimize-sibling-calls",
+                "-msse2",
+                "-mfpmath=sse",
+            ]
+            for source, extra in [
+                (path / "game.c", game),
+                (ROOT / "trace.c", ["-O2"]),
+                (ROOT / "test_charge_stub.c", ["-O2"]),
+                (path / "table.c", []),
+                (path / "driver.c", []),
+            ]:
                 obj = path / (source.stem + ".o")
-                subprocess.run([args.compiler, "-m32", "-Wall", "-Werror", *extra, "-I" + str(ROOT), "-c",
-                                str(source), "-o", str(obj)], check=True, capture_output=True, text=True)
+                subprocess.run(
+                    [
+                        args.compiler,
+                        "-m32",
+                        "-Wall",
+                        "-Werror",
+                        *extra,
+                        "-I" + str(ROOT),
+                        "-c",
+                        str(source),
+                        "-o",
+                        str(obj),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
                 objects.append(str(obj))
             exe = path / "fixture"
-            subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)], check=True,
-                           capture_output=True, text=True)
+            subprocess.run(
+                [args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             out = path / "ls"
-            env = {"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(out), "N64C_LOCKSTEP_WATCH": "0x80001000",
-                   "PATH": "/usr/bin:/bin"}
+            env = {
+                "N64C_LOCKSTEP": "1",
+                "N64C_LOCKSTEP_DIR": str(out),
+                "N64C_LOCKSTEP_WATCH": "0x80001000",
+                "PATH": "/usr/bin:/bin",
+            }
             result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.split(), ["add=5", "half=1.5", "wide=900000005", "depth=43", "after=2",
-                                                   "inline=234", "indirect=10", "recursive_inline=102"])
+            self.assertEqual(
+                result.stdout.split(),
+                [
+                    "add=5",
+                    "half=1.5",
+                    "wide=900000005",
+                    "depth=43",
+                    "after=2",
+                    "inline=234",
+                    "indirect=10",
+                    "recursive_inline=102",
+                ],
+            )
             self.assertIn("boot-lockstep: on, 1024 pages", result.stderr)
             self.assertIn("boot-lockstep: 9 points written", result.stderr)
             self.assertNotIn("boot-shim-bind:", result.stderr)
@@ -489,13 +590,16 @@ class PortRecorderTests(unittest.TestCase):
             self.assertEqual(side.page(first[2])[:4], b"\x78\x56\x34\x12")
             self.assertEqual(ls.page_hash(side.page(first[2])), first[2])
             self.assertEqual(side.page(side.points[3][0][1])[0], 5)  # add wrote 5 before half's first hit
-            self.assertEqual([side.calls[2][i]["a"][:2] for i in range(3)],
-                             [["00000002", "00000003"], ["00000000", "00000028"], ["00000001", "00000001"]])
+            self.assertEqual(
+                [side.calls[2][i]["a"][:2] for i in range(3)],
+                [["00000002", "00000003"], ["00000000", "00000028"], ["00000001", "00000001"]],
+            )
             self.assertEqual([side.rets[2][i]["r"][0] for i in range(3)], ["00000005", "00000028", "00000002"])
             self.assertEqual(side.rets[3][0]["st0"], f"{struct.unpack('<Q', struct.pack('<d', 1.5))[0]:016x}")
             self.assertEqual(side.rets[4][0]["r"], ["00000005", "00000009"])
-            self.assertEqual([side.rets[5][i]["r"][0] for i in range(4)],
-                             ["0000002b", "0000002a", "00000029", "00000028"])
+            self.assertEqual(
+                [side.rets[5][i]["r"][0] for i in range(4)], ["0000002b", "0000002a", "00000029", "00000028"]
+            )
             self.assertNotIn(6, side.rets)  # longjmp left every leave frame without a return
             # Twelve inlined entries have no bump frame. They must not consume its
             # call budget or hijack inline_parent's return with fabricated samples.
@@ -505,17 +609,20 @@ class PortRecorderTests(unittest.TestCase):
             self.assertEqual(list(side.calls[7]), [0])
             self.assertEqual(side.calls[7][0]["a"][0], "00000007")
             self.assertEqual(side.rets[7][0]["r"][0], "0000000a")
-            self.assertEqual([side.calls[8][i]["a"][0] for i in range(8)],
-                             [f"{i:08x}" for i in range(8)])
-            self.assertEqual([side.rets[8][i]["r"][0] for i in range(8)],
-                             [f"{3 * i + 3:08x}" for i in range(8)])
-            self.assertEqual([side.calls[9][i]["a"][0] for i in range(8)],
-                             [f"{i:08x}" for i in range(8)])
-            self.assertEqual([side.rets[9][i]["r"][0] for i in range(8)],
-                             [f"{i + 3:08x}" for i in range(8)])
+            self.assertEqual([side.calls[8][i]["a"][0] for i in range(8)], [f"{i:08x}" for i in range(8)])
+            self.assertEqual([side.rets[8][i]["r"][0] for i in range(8)], [f"{3 * i + 3:08x}" for i in range(8)])
+            self.assertEqual([side.calls[9][i]["a"][0] for i in range(8)], [f"{i:08x}" for i in range(8)])
+            self.assertEqual([side.rets[9][i]["r"][0] for i in range(8)], [f"{i + 3:08x}" for i in range(8)])
             self.assertEqual([w["new"] for w in side.watch], ["00000005", "00000028", "00000002"])
-            plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30,
-                                   env={"PATH": "/usr/bin:/bin"}, cwd=path, check=False)
+            plain = subprocess.run(
+                [str(exe)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={"PATH": "/usr/bin:/bin"},
+                cwd=path,
+                check=False,
+            )
             self.assertEqual(plain.returncode, 0)
             self.assertNotIn("boot-lockstep", plain.stderr)
             self.assertFalse((path / "lockstep").exists())

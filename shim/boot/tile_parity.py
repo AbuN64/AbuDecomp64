@@ -6,6 +6,7 @@ SDL's offscreen driver; the tile one uses TILE_ARGS, the headless one advance.py
 tile census is below the headless census. With --seat it also fails (exit 2) when the seat profile's port command no
 longer equals TILE_ARGS, so a changed tile cannot escape the check.
   python3 -I tile_parity.py --binary ragewars --rom ragewars.z64 [--seat seat.json] [--output parity.json]"""
+
 import argparse
 import json
 import os
@@ -18,8 +19,21 @@ import tempfile
 sys.dont_write_bytecode = True  # the cycle snapshot refuses stray .pyc files
 
 TILE_ARGS = ["--no-dialog", "--user-dir", "{user}", "--rom", "{rom}", "--fb", "284x222", "--window", "640x480"]
-HEADLESS_ARGS = ["--no-dialog", "--user-dir", "{user}", "--rom", "{rom}", "--capture", "{picture}", "--retrace", "180",
-                 "--fb", "284x222", "--window", "320x240"]
+HEADLESS_ARGS = [
+    "--no-dialog",
+    "--user-dir",
+    "{user}",
+    "--rom",
+    "{rom}",
+    "--capture",
+    "{picture}",
+    "--retrace",
+    "180",
+    "--fb",
+    "284x222",
+    "--window",
+    "320x240",
+]
 END = re.compile(r"boot-diag: end (\d+) failures \(.*?\), census (\d+)/(\d+)")
 STEP = re.compile(r"boot-step: census (\d+)/(\d+) hit")
 
@@ -44,8 +58,11 @@ def seat_args(seat_json, rom):
     if not release.is_absolute():
         release = path.parent / release
     release = release.resolve(strict=True)
-    mapping = {"release": str(release), "runtime_root": supervisor["runtime_root"],
-               "run_dir": str(path.parent / "parity-run")}
+    mapping = {
+        "release": str(release),
+        "runtime_root": supervisor["runtime_root"],
+        "run_dir": str(path.parent / "parity-run"),
+    }
     command = [arg.format_map(mapping) for arg in role["command"]][1:]
 
     out = list(command)
@@ -54,16 +71,22 @@ def seat_args(seat_json, rom):
     return out
 
 
-
 def verdict(headless, tile):
     return {"ok": tile >= headless, "headless": headless, "tile": tile}
 
 
 def run(binary, args, rom, seconds, picture):
     argv = [a.format(rom=rom, picture=picture, user=pathlib.Path(picture).parent / "user") for a in args]
-    env = {**os.environ, "SDL_VIDEODRIVER": "offscreen", "SDL_AUDIODRIVER": "dummy", "N64C_RUN_ON": "1",
-           "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10))}
-    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), *argv], env=env, capture_output=True, text=True, check=False)
+    env = {
+        **os.environ,
+        "SDL_VIDEODRIVER": "offscreen",
+        "SDL_AUDIODRIVER": "dummy",
+        "N64C_RUN_ON": "1",
+        "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10)),
+    }
+    r = subprocess.run(
+        ["timeout", "-k", "10", str(seconds), str(binary), *argv], env=env, capture_output=True, text=True, check=False
+    )
     return census(r.stderr), r.returncode
 
 
@@ -76,7 +99,10 @@ def main(argv=None):
     p.add_argument("--output", type=pathlib.Path)
     a = p.parse_args(argv)
     if a.seat and seat_args(a.seat, a.rom) != TILE_ARGS:
-        print(f"tile_parity: the seat port command {seat_args(a.seat, a.rom)} differs from TILE_ARGS {TILE_ARGS}", file=sys.stderr)
+        print(
+            f"tile_parity: the seat port command {seat_args(a.seat, a.rom)} differs from TILE_ARGS {TILE_ARGS}",
+            file=sys.stderr,
+        )
         return 2
     with tempfile.TemporaryDirectory() as work:
         picture = pathlib.Path(work) / "boot.ppm"

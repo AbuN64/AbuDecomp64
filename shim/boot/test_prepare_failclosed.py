@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Mock the compiler; exercise prepare's failure boundary and real cache IO."""
+
 import argparse
 import contextlib
 import importlib.util
@@ -38,8 +39,9 @@ class FailClosedTests(unittest.TestCase):
 
     def run_prepare(self, flags=None):
         with contextlib.redirect_stderr(self.stderr):
-            return prepare.prepare(sys.executable, self.source, *self.files,
-                                   self.flags if flags is None else flags, cache=self.cache)
+            return prepare.prepare(
+                sys.executable, self.source, *self.files, self.flags if flags is None else flags, cache=self.cache
+            )
 
     def assert_no_outputs(self):
         self.assertFalse(any(path.exists() for path in self.files[:-1]))
@@ -53,8 +55,11 @@ class FailClosedTests(unittest.TestCase):
             argv += ["--" + option, str(path)]
         argv += ["--cache", str(self.cache), "--", *self.flags]
         failed = subprocess.CompletedProcess([], 2, "", diagnostic)
-        with mock.patch.object(prepare.subprocess, "run", return_value=failed) as compiler, \
-                mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(self.stderr):
+        with (
+            mock.patch.object(prepare.subprocess, "run", return_value=failed) as compiler,
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stderr(self.stderr),
+        ):
             self.assertEqual(prepare.main(), 2)
         compiler.assert_called_once()
         command = compiler.call_args.args[0]
@@ -68,7 +73,9 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(list(self.cache.rglob("*")), [])
 
     def broken_unit(self):
-        self.source.write_text("#ifdef NON_MATCHING\nint fuzzy(void) { return undeclared; }\n#endif\nint matched(void) { return 1; }\n")
+        self.source.write_text(
+            "#ifdef NON_MATCHING\nint fuzzy(void) { return undeclared; }\n#endif\nint matched(void) { return 1; }\n"
+        )
         self.flags = ["-std=gnu89", "-DNON_MATCHING"]
 
     def test_listed_known_failure_keeps_its_matched_c_with_the_diagnostics(self):
@@ -96,8 +103,16 @@ class FailClosedTests(unittest.TestCase):
 
     def seed_cache(self, inventory):
         cache = prepare.Cache(self.cache, sys.executable, self.source, self.flags, ())
-        cache.store({"i": "degraded unit", "stubs": "degraded stops", "inventory": inventory,
-                     "stderr": "old fallback warning\n", "deps": [[str(self.source), ""]]}, [str(self.source)])
+        cache.store(
+            {
+                "i": "degraded unit",
+                "stubs": "degraded stops",
+                "inventory": inventory,
+                "stderr": "old fallback warning\n",
+                "deps": [[str(self.source), ""]],
+            },
+            [str(self.source)],
+        )
         return {p: p.read_bytes() for p in self.cache.rglob("*") if p.is_file()}
 
     def test_poisoned_cache_is_refused_without_replay_recompile_or_rewrite(self):
@@ -126,8 +141,9 @@ class FailClosedTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "", "")
         self.assertIn("-E", command)
         self.files[3].write_text(f"{self.files[0]}: {self.source}\n")
-        return subprocess.CompletedProcess(command, 0,
-            'extern void n64c_missing_marker_absent(void);\nint actual(void) { return 7; }\n', "")
+        return subprocess.CompletedProcess(
+            command, 0, "extern void n64c_missing_marker_absent(void);\nint actual(void) { return 7; }\n", ""
+        )
 
     def test_success_and_cache_hit_preserve_outputs_flags_inventory_and_dependencies(self):
         with mock.patch.object(prepare.subprocess, "run", side_effect=self.preprocessing) as compiler:
@@ -135,9 +151,16 @@ class FailClosedTests(unittest.TestCase):
         self.assertEqual(compiler.call_count, 2)
         for call in compiler.call_args_list:
             self.assertIn("-DNON_MATCHING", call.args[0])
-        self.assertEqual(json.loads(self.files[2].read_text()), {
-            "missing": ["absent"], "data": [], "mode": "NON_MATCHING",
-            "non_matching_errors": [], "source": str(self.source)})
+        self.assertEqual(
+            json.loads(self.files[2].read_text()),
+            {
+                "missing": ["absent"],
+                "data": [],
+                "mode": "NON_MATCHING",
+                "non_matching_errors": [],
+                "source": str(self.source),
+            },
+        )
         self.assertIn('return n64c_boot_missing("absent");', self.files[1].read_text())
         self.assertIn("int actual(void) { return 7; }", self.files[0].read_text())
         expected = [path.read_bytes() for path in self.files]
@@ -163,8 +186,10 @@ class FailClosedTests(unittest.TestCase):
         compiler.assert_not_called()
 
     def test_preprocessing_failure_caches_nothing(self):
-        results = [subprocess.CompletedProcess([], 0, "", ""),
-                   subprocess.CompletedProcess([], 1, "", "source: error: preprocessing failed\n")]
+        results = [
+            subprocess.CompletedProcess([], 0, "", ""),
+            subprocess.CompletedProcess([], 1, "", "source: error: preprocessing failed\n"),
+        ]
         with mock.patch.object(prepare.subprocess, "run", side_effect=results) as compiler:
             self.assertEqual(self.run_prepare(), 1)
         self.assertEqual(compiler.call_count, 2)

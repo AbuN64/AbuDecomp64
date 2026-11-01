@@ -27,6 +27,7 @@ that code natively and never copies it) are masked. A memory divergence is persi
 still differs at the next --persist compared points. Words holding a host pointer (outside RDRAM, not a function)
 are shim-owned state, and floats within 4 ulp are rounding (MIPS single vs x87): listed, never counted. Exit 0 when nothing diverges, 1 when something does, 2 on bad input.
 """
+
 import argparse
 import array
 import bisect
@@ -121,17 +122,17 @@ def read_boot_copy(path):
     """IPL3's boot copy as canonical big-endian bytes, from a z64/v64/n64 ROM, or None."""
     if not path:
         return None
-    rom = bytearray(pathlib.Path(path).read_bytes()[:BOOT_COPY[1] + BOOT_COPY[2]])
+    rom = bytearray(pathlib.Path(path).read_bytes()[: BOOT_COPY[1] + BOOT_COPY[2]])
     magic = bytes(rom[:4])
     if magic == bytes.fromhex("37804012"):
         rom[0::2], rom[1::2] = rom[1::2], rom[0::2]
     elif magic == bytes.fromhex("40123780"):
-        words = array.array("I", bytes(rom[:len(rom) // 4 * 4]))
+        words = array.array("I", bytes(rom[: len(rom) // 4 * 4]))
         words.byteswap()
         rom = bytearray(words.tobytes())
     elif magic != bytes.fromhex("80371240"):
         raise ValueError(f"{path}: not an N64 ROM")
-    return bytes(rom[BOOT_COPY[1]:])
+    return bytes(rom[BOOT_COPY[1] :])
 
 
 class Side:
@@ -188,7 +189,7 @@ class Side:
             return bytes(PAGE)
         if at < 0:
             raise ValueError(f"{self.dir}: page {h:016x} listed but not stored")
-        return self.store[at:at + PAGE]
+        return self.store[at : at + PAGE]
 
 
 # ---- word equivalence -------------------------------------------------------------------------------------------
@@ -221,13 +222,16 @@ class Matcher:
 
     def set_stacks(self, oracle_sps, port_sps):
         """Every thread's stack span on each side, so a pointer to any thread's locals matches the other's."""
+
         def spans(sps, below, above):
             return [(min(v) - below, max(v) + above) for v in sps.values() if v and max(v) - min(v) < 0x100000]
+
         self.stacks = (spans(oracle_sps, PAGE, ORACLE_STACK), spans(port_sps, PAGE, PORT_STACK))
 
     def both_stack(self, oracle_value, port_value):
-        return (any(lo <= oracle_value < hi for lo, hi in self.stacks[0])
-                and any(lo <= port_value < hi for lo, hi in self.stacks[1]))
+        return any(lo <= oracle_value < hi for lo, hi in self.stacks[0]) and any(
+            lo <= port_value < hi for lo, hi in self.stacks[1]
+        )
 
     def original_address(self, name):
         """The original address of a native data object: its symbol_addrs entry or its D_XXXXXXXX name."""
@@ -248,7 +252,8 @@ class Matcher:
     def same_address(self, oracle_value, port_value):
         """The port value is the oracle's code or data address in native form."""
         return self.same_function(oracle_value, port_value) or (
-            RDRAM <= oracle_value < RDRAM + self.ram and self.port_data(port_value) == oracle_value)
+            RDRAM <= oracle_value < RDRAM + self.ram and self.port_data(port_value) == oracle_value
+        )
 
     def port_function(self, value):
         """The original address of the port function at native address value, or None."""
@@ -285,9 +290,13 @@ class Matcher:
 
     def host_pointer(self, oracle_value, port_value):
         in_ram = RDRAM <= port_value < RDRAM + self.ram
-        return (not in_ram and port_value > 0xFFFF and self.port_function(port_value) is None
-                and self.port_data(port_value) is None
-                and (oracle_value == 0 or RDRAM <= oracle_value < RDRAM + self.ram))
+        return (
+            not in_ram
+            and port_value > 0xFFFF
+            and self.port_function(port_value) is None
+            and self.port_data(port_value) is None
+            and (oracle_value == 0 or RDRAM <= oracle_value < RDRAM + self.ram)
+        )
 
     def symbol(self, address):
         i = bisect.bisect_right(self.sym_keys, address) - 1
@@ -310,16 +319,16 @@ class Matcher:
             if skip:
                 skip = False
                 continue
-            c, q = oracle[4 * w:4 * w + 4], port[4 * w:4 * w + 4]
+            c, q = oracle[4 * w : 4 * w + 4], port[4 * w : 4 * w + 4]
             if q == c or q == c[::-1] or q == c[1::-1] + c[2:] or q == c[:2] + c[:1:-1] or q == c[1::-1] + c[:1:-1]:
                 continue
             ov, pv = int.from_bytes(c, "big"), int.from_bytes(q, "little")
             if self.same_address(ov, pv):
                 continue
-            if w % 2 == 0 and w + 1 < WORDS and port[4 * w:4 * w + 8] == oracle[4 * w:4 * w + 8][::-1]:
+            if w % 2 == 0 and w + 1 < WORDS and port[4 * w : 4 * w + 8] == oracle[4 * w : 4 * w + 8][::-1]:
                 skip = True
                 continue
-            if w % 2 == 1 and port[4 * w - 4:4 * w + 4] == oracle[4 * w - 4:4 * w + 4][::-1]:
+            if w % 2 == 1 and port[4 * w - 4 : 4 * w + 4] == oracle[4 * w - 4 : 4 * w + 4][::-1]:
                 continue
             result[w] = "host-pointer" if self.host_pointer(ov, pv) else "fp-ulp" if near_float(ov, pv) else "value"
         return result
@@ -327,13 +336,33 @@ class Matcher:
 
 # ---- types (gcc -aux-info over the boot units) --------------------------------------------------------------------
 BUILTIN = {
-    "void": "void", "float": "float", "double": "double", "long double": "agg",
-    "char": "int8", "signed char": "int8", "unsigned char": "uint8",
-    "short": "int16", "short int": "int16", "signed short": "int16", "unsigned short": "uint16",
-    "unsigned short int": "uint16", "int": "int32", "signed": "int32", "signed int": "int32", "unsigned": "int32",
-    "unsigned int": "int32", "long": "int32", "long int": "int32", "unsigned long": "int32",
-    "long unsigned int": "int32", "unsigned long int": "int32", "long long": "int64", "long long int": "int64",
-    "unsigned long long": "int64", "long long unsigned int": "int64", "unsigned long long int": "int64",
+    "void": "void",
+    "float": "float",
+    "double": "double",
+    "long double": "agg",
+    "char": "int8",
+    "signed char": "int8",
+    "unsigned char": "uint8",
+    "short": "int16",
+    "short int": "int16",
+    "signed short": "int16",
+    "unsigned short": "uint16",
+    "unsigned short int": "uint16",
+    "int": "int32",
+    "signed": "int32",
+    "signed int": "int32",
+    "unsigned": "int32",
+    "unsigned int": "int32",
+    "long": "int32",
+    "long int": "int32",
+    "unsigned long": "int32",
+    "long unsigned int": "int32",
+    "unsigned long int": "int32",
+    "long long": "int64",
+    "long long int": "int64",
+    "unsigned long long": "int64",
+    "long long unsigned int": "int64",
+    "unsigned long long int": "int64",
     "_Bool": "uint8",
 }
 QUALIFIERS = {"const", "volatile", "register", "extern", "static", "inline", "__inline__", "__restrict", "restrict"}
@@ -378,8 +407,14 @@ def param_type(text, typedefs):
     if "(" in text:
         return "ptr"
     words = text.replace("*", " * ").split()
-    if len(words) >= 2 and words[-1] != "*" and re.fullmatch(r"\w+", words[-1]) and words[-1] not in BUILTIN \
-            and not any(words[-1] in k.split() for k in BUILTIN) and words[-2] not in ("struct", "union", "enum"):
+    if (
+        len(words) >= 2
+        and words[-1] != "*"
+        and re.fullmatch(r"\w+", words[-1])
+        and words[-1] not in BUILTIN
+        and not any(words[-1] in k.split() for k in BUILTIN)
+        and words[-2] not in ("struct", "union", "enum")
+    ):
         words = words[:-1]
     return kind_of(" ".join(words), typedefs)
 
@@ -390,11 +425,11 @@ def parse_aux(text, wanted, typedefs, out):
         lp = decl.find("(")
         if lp < 0:
             continue
-        head, params = decl[:lp].strip(), decl[lp + 1:decl.rfind(")")]
+        head, params = decl[:lp].strip(), decl[lp + 1 : decl.rfind(")")]
         name = head.split()[-1].lstrip("*") if head.split() else ""
         if name not in wanted or (name in out and m[4] == "C"):
             continue
-        ret = kind_of(head[:len(head) - len(name)].strip(), typedefs)
+        ret = kind_of(head[: len(head) - len(name)].strip(), typedefs)
         if m[3] == "O" or not params.strip():
             kinds = None if m[3] == "O" else []
         elif params.strip() == "void":
@@ -427,8 +462,23 @@ def build_types(build, trace, out_path, compiler, jobs):
         # Match the native decompilation build's language contract. GCC's newer
         # default rejects conversions accepted by that build, dropping its types.
         target.unlink(missing_ok=True)
-        subprocess.run([compiler, "-m32", "-std=gnu89", "-fsyntax-only", "-w", "-aux-info", str(target), "-x", "cpp-output",
-                        str(unit)], capture_output=True, text=True, check=True)
+        subprocess.run(
+            [
+                compiler,
+                "-m32",
+                "-std=gnu89",
+                "-fsyntax-only",
+                "-w",
+                "-aux-info",
+                str(target),
+                "-x",
+                "cpp-output",
+                str(unit),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         return unit, target
 
     typedefs, found = {}, {}
@@ -638,7 +688,7 @@ def boot_unmask(diff, pg, oracle_page, boot, seen):
     out = {}
     for w, cls in diff.items():
         at = base + 4 * w
-        if at >= 0 and at + 4 <= len(boot) and oracle_page[4 * w:4 * w + 4] == boot[at:at + 4]:
+        if at >= 0 and at + 4 <= len(boot) and oracle_page[4 * w : 4 * w + 4] == boot[at : at + 4]:
             seen.add(pg * WORDS + w)
         else:
             out[w] = cls
@@ -648,7 +698,7 @@ def boot_unmask(diff, pg, oracle_page, boot, seen):
 def words_text(data, w, big):
     out = []
     for k in range(w, min(w + 4, WORDS)):
-        out.append(f"{int.from_bytes(data[4 * k:4 * k + 4], 'big' if big else 'little'):08x}")
+        out.append(f"{int.from_bytes(data[4 * k : 4 * k + 4], 'big' if big else 'little'):08x}")
     return " ".join(out)
 
 
@@ -669,7 +719,9 @@ def read_acceptances(path):
             if row["order"] < 1 or row["kind"] not in ("memory", "call"):
                 raise ValueError("invalid accept kind or order")
             if row["kind"] == "memory":
-                if not re.fullmatch(r"0x[0-9a-f]{8}", row["site"]) or not re.fullmatch(r"[0-9a-f]{8}/[0-9a-f]{8}", row["detail"]):
+                if not re.fullmatch(r"0x[0-9a-f]{8}", row["site"]) or not re.fullmatch(
+                    r"[0-9a-f]{8}/[0-9a-f]{8}", row["detail"]
+                ):
                     raise ValueError("memory acceptance needs an address and exact oracle/port words")
             elif not row["site"].isdigit():
                 raise ValueError("call acceptance needs a call index")
@@ -736,7 +788,9 @@ def compare(args):
             for pg in range(ram // PAGE):
                 if a[pg] != b[pg]:
                     x, y = oracle.page(a[pg]), other.page(b[pg])
-                    volatile.update(pg * WORDS + w for w in range(WORDS) if x[4 * w:4 * w + 4] != y[4 * w:4 * w + 4])
+                    volatile.update(
+                        pg * WORDS + w for w in range(WORDS) if x[4 * w : 4 * w + 4] != y[4 * w : 4 * w + 4]
+                    )
     common = sorted(set(oracle.points) & set(port.points))
     cache = {}
     per_point, boot_words = [], set()
@@ -758,11 +812,11 @@ def compare(args):
 
     def oracle_word(index, pair):
         w = index % WORDS
-        return oracle.page(pair[0])[4 * w:4 * w + 4]
+        return oracle.page(pair[0])[4 * w : 4 * w + 4]
 
     for j, key in enumerate(common):
         previous = per_point[j - 1] if j else {}
-        later = per_point[j + 1:j + 1 + args.persist]
+        later = per_point[j + 1 : j + 1 + args.persist]
         for index, (cls, pair) in sorted(per_point[j].items()):
             if j == 0 and key == min(names):
                 # before the first game function: loader (IPL3) vs shim setup, not game behaviour; re-armed once
@@ -794,18 +848,32 @@ def compare(args):
         for i in sorted(set(oracle.calls.get(key, {})) & set(port.calls.get(key, {}))):
             differences = compare_call(matcher, kinds, local, oracle.calls[key][i], port.calls[key][i])
             if i in oracle.rets.get(key, {}) and i in port.rets.get(key, {}):
-                why = compare_return(matcher, ret_kind, oracle.rets[key][i], port.rets[key][i],
-                                     int(oracle.calls[key][i]["sp"], 16), int(port.calls[key][i]["sp"], 16))
+                why = compare_return(
+                    matcher,
+                    ret_kind,
+                    oracle.rets[key][i],
+                    port.rets[key][i],
+                    int(oracle.calls[key][i]["sp"], 16),
+                    int(port.calls[key][i]["sp"], 16),
+                )
                 if why:
                     differences.append(why)
-            changes = reference_call_changes(
-                kinds, ret_kind, oracle.calls[key][i], other.calls.get(key, {}).get(i),
-                oracle.rets.get(key, {}).get(i), other.rets.get(key, {}).get(i)) if other else {}
+            changes = (
+                reference_call_changes(
+                    kinds,
+                    ret_kind,
+                    oracle.calls[key][i],
+                    other.calls.get(key, {}).get(i),
+                    oracle.rets.get(key, {}).get(i),
+                    other.rets.get(key, {}).get(i),
+                )
+                if other
+                else {}
+            )
             for why in differences:
                 field = why.split()[0]
                 if field in changes:
-                    volatile_calls.append(dict(order=key, function=row[0], call=i, why=why,
-                                               **changes[field]))
+                    volatile_calls.append(dict(order=key, function=row[0], call=i, why=why, **changes[field]))
                 else:
                     calls.append((key, i, why))
     first_mem = memory[0][0] if memory else None
@@ -813,20 +881,41 @@ def compare(args):
     bad = min(x for x in (first_mem, first_call) if x is not None) if memory or calls else None
     matched = max([k for k in common if bad is None or k < bad], default=0)
     report = {
-        "matched_through": matched, "of": args.pak, "port_points": len(port.points), "oracle_points": len(oracle.points),
-        "compared": len(common), "trace": len(names), "first": None, "memory": [], "calls": [],
-        "shim_words": len(shim), "transient_words": transient, "masked": [[f"0x{lo:08x}", f"0x{hi:08x}", why]
-                                                                         for lo, hi, why in ranges],
-        "volatile_words": len(volatile), "volatile_calls": volatile_calls, "boot_copy_words": len(boot_words),
-        "setup_words": len(setup), "fp_ulp_words": len(ulp), "first_memory": None, "first_call": None, "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
+        "matched_through": matched,
+        "of": args.pak,
+        "port_points": len(port.points),
+        "oracle_points": len(oracle.points),
+        "compared": len(common),
+        "trace": len(names),
+        "first": None,
+        "memory": [],
+        "calls": [],
+        "shim_words": len(shim),
+        "transient_words": transient,
+        "masked": [[f"0x{lo:08x}", f"0x{hi:08x}", why] for lo, hi, why in ranges],
+        "volatile_words": len(volatile),
+        "volatile_calls": volatile_calls,
+        "boot_copy_words": len(boot_words),
+        "setup_words": len(setup),
+        "fp_ulp_words": len(ulp),
+        "first_memory": None,
+        "first_call": None,
+        "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
     }
     for key, index, (oh, ph) in memory:
         address = RDRAM + index * 4
         w = index % WORDS
-        report["memory"].append({
-            "order": key, "function": names.get(key, ["?"])[0], "page": f"0x{address & ~(PAGE - 1):08x}",
-            "address": f"0x{address:08x}", "symbol": matcher.symbol(address),
-            "oracle": words_text(oracle.page(oh), w, True), "port": words_text(port.page(ph), w, False)})
+        report["memory"].append(
+            {
+                "order": key,
+                "function": names.get(key, ["?"])[0],
+                "page": f"0x{address & ~(PAGE - 1):08x}",
+                "address": f"0x{address:08x}",
+                "symbol": matcher.symbol(address),
+                "oracle": words_text(oracle.page(oh), w, True),
+                "port": words_text(port.page(ph), w, False),
+            }
+        )
     for key, i, why in calls:
         report["calls"].append({"order": key, "function": names.get(key, ["?"])[0], "call": i, "why": why})
     report["first_memory"] = dict(report["memory"][0], kind="memory") if report["memory"] else None
@@ -841,44 +930,63 @@ def compare(args):
 
 
 def print_report(report):
-    print(f"lockstep: matched-through {report['matched_through']}/{report['of']} "
-          f"(port {report['port_points']} of {report['trace']} first hits, {report['compared']} compared, "
-          f"oracle {report['oracle_points']})")
+    print(
+        f"lockstep: matched-through {report['matched_through']}/{report['of']} "
+        f"(port {report['port_points']} of {report['trace']} first hits, {report['compared']} compared, "
+        f"oracle {report['oracle_points']})"
+    )
     first = report["first"]
     if first is None:
         print("lockstep: no divergence")
     elif first["kind"] == "call":
-        print(f"lockstep: first divergence at order {first['order']} {first['function']} call {first['call']}: "
-              f"{first['why']}")
+        print(
+            f"lockstep: first divergence at order {first['order']} {first['function']} call {first['call']}: "
+            f"{first['why']}"
+        )
     else:
-        print(f"lockstep: first divergence at order {first['order']} {first['function']}: page {first['page']} "
-              f"{first['symbol']}: oracle {first['oracle']} | port {first['port']}")
+        print(
+            f"lockstep: first divergence at order {first['order']} {first['function']}: page {first['page']} "
+            f"{first['symbol']}: oracle {first['oracle']} | port {first['port']}"
+        )
     if first is not None and first["kind"] == "memory" and report["first_call"]:
         c = report["first_call"]
         print(f"lockstep: first call divergence at order {c['order']} {c['function']} call {c['call']}: {c['why']}")
     after = report["first_after_accepted"]
-    print("lockstep: first after accepted rows: " +
-          (f"order {after['order']} {after['function']} {after.get('symbol', after.get('why', ''))}"
-           if after else "none"))
+    print(
+        "lockstep: first after accepted rows: "
+        + (
+            f"order {after['order']} {after['function']} {after.get('symbol', after.get('why', ''))}"
+            if after
+            else "none"
+        )
+    )
     print(f"lockstep: matched-through after accepted rows {report['matched_through_after_accepted']}/{report['of']}")
     for row in report["memory"]:
-        print(f"lockstep: memory order {row['order']} {row['function']} {row['symbol']} ({row['address']}): "
-              f"oracle {row['oracle']} | port {row['port']}" + acceptance_text(row))
+        print(
+            f"lockstep: memory order {row['order']} {row['function']} {row['symbol']} ({row['address']}): "
+            f"oracle {row['oracle']} | port {row['port']}" + acceptance_text(row)
+        )
     for category in ("argument", "return"):
         for row in report["calls"]:
             if ("return" if row["why"].startswith("return ") else "argument") == category:
-                print(f"lockstep: {category} order {row['order']} {row['function']} #{row['call']}: "
-                      f"{row['why']}" + acceptance_text(row))
+                print(
+                    f"lockstep: {category} order {row['order']} {row['function']} #{row['call']}: "
+                    f"{row['why']}" + acceptance_text(row)
+                )
     for row in report.get("volatile_calls", []):
-        print(f"lockstep: volatile call order {row['order']} {row['function']} #{row['call']}: "
-              f"{row['why']} (independent references: {row['oracle']} vs {row['oracle2']})")
+        print(
+            f"lockstep: volatile call order {row['order']} {row['function']} #{row['call']}: "
+            f"{row['why']} (independent references: {row['oracle']} vs {row['oracle2']})"
+        )
     for row in report["unmatched_accepts"]:
         print(f"lockstep: acceptance not observed: {row['kind']} order {row['order']} {row['function']} {row['site']}")
-    print(f"lockstep: {len(report['memory'])} persistent memory words, {len(report['calls'])} call divergences listed; "
-          f"{report['shim_words']} shim-owned words, {report['transient_words']} transient, "
-          f"{report['volatile_words']} volatile, {report['boot_copy_words']} boot-copy masked, "
-          f"{report['setup_words']} setup words (differ before the first game function), "
-          f"{report['fp_ulp_words']} float words within 4 ulp")
+    print(
+        f"lockstep: {len(report['memory'])} persistent memory words, {len(report['calls'])} call divergences listed; "
+        f"{report['shim_words']} shim-owned words, {report['transient_words']} transient, "
+        f"{report['volatile_words']} volatile, {report['boot_copy_words']} boot-copy masked, "
+        f"{report['setup_words']} setup words (differ before the first game function), "
+        f"{report['fp_ulp_words']} float words within 4 ulp"
+    )
 
 
 def build_parser():
@@ -902,8 +1010,11 @@ def build_parser():
     c.add_argument("--rom", help="the ROM, to mask IPL3's boot copy the port never makes")
     c.add_argument("--persist", type=int, default=2)
     c.add_argument("--pak", type=int, default=708)
-    c.add_argument("--accept", default=str(portdir.fact("lockstep-accept.tsv")),
-                   help="reviewed exact differences with reasons (kept visible in the report)")
+    c.add_argument(
+        "--accept",
+        default=str(portdir.fact("lockstep-accept.tsv")),
+        help="reviewed exact differences with reasons (kept visible in the report)",
+    )
     c.add_argument("--json")
     return parser
 

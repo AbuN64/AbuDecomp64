@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Select clean boot inputs; original SDK bodies are never executable inputs."""
+
 import argparse
 import json
 import pathlib
@@ -21,7 +22,7 @@ def pinned(source, version):
     so aliases never move a function into or out of the libultra range."""
     table = {}
     for line in (source / "versions" / version / "symbol_addrs.txt").read_text().splitlines():
-        if (match := PIN.match(line)):
+        if match := PIN.match(line):
             table[match[1]] = (match[2], match[3])
     aliases = source / "versions" / version / "aliases.txt"
     functions = {int(address, 16) for address, comment in table.values() if "type:func" in comment}
@@ -29,7 +30,8 @@ def pinned(source, version):
         # A data alias: a D_ name, or a cleanly named one (rspbootTextEnd) outside the libultra range at an address no
         # function starts at.
         if (match := PIN.match(line)) and (
-            match[1].startswith("D_") or (int(match[2], 16) not in functions and not SDK_LO <= int(match[2], 16) < SDK_HI)
+            match[1].startswith("D_")
+            or (int(match[2], 16) not in functions and not SDK_LO <= int(match[2], 16) < SDK_HI)
         ):
             if match[1] in table and int(table[match[1]][0], 16) != int(match[2], 16):
                 raise ValueError("conflicting pinned address: " + match[1])
@@ -69,7 +71,11 @@ def sdk_unit(unit, text, addresses, game=frozenset(), library=""):
     names = functions(text)
     if names and set(names) <= game:
         return False  # a unit holding only project-declared game code, wherever the decomp filed it
-    return "/sdk/" in unit.lower() or (bool(library) and unit.lower().startswith(library)) or any(sdk_address(fn, addresses, game) for fn in names)
+    return (
+        "/sdk/" in unit.lower()
+        or (bool(library) and unit.lower().startswith(library))
+        or any(sdk_address(fn, addresses, game) for fn in names)
+    )
 
 
 def sanitize(project, source, addresses, bindings, shim_text):

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build a resident data image from compiled fixture units and execute it."""
+
 import argparse
 import importlib.util
 import json
@@ -52,11 +53,13 @@ absent = 0x80200100; // type:func rom:0x5100
 """
 UNITS = {
     "A.CPP": "unsigned int table[4] = {0x11223344, 2, 3, 4};\n"
-             "extern void callback(void); extern void absent(void);\n"
-             "void (*words[2])(void) = {callback, absent};\n",
+    "extern void callback(void); extern void absent(void);\n"
+    "void (*words[2])(void) = {callback, absent};\n",
     "B.CPP": "unsigned int grown[2] = {5, 6};\nunsigned char next[4] = {7};\n",
     "CODE.CPP": "int code(void) { return 1; }\n",
-    "O1.CPP": "int o1 = 1;\n", "ASM.s": "nop\n", "O2.CPP": "int o2 = 2;\n",
+    "O1.CPP": "int o1 = 1;\n",
+    "ASM.s": "nop\n",
+    "O2.CPP": "int o2 = 2;\n",
 }
 LINKED = """extern unsigned int D_table_alias; extern void (*words[2])(void);
 int calls; void callback(void) { calls++; }
@@ -137,8 +140,10 @@ func_80200000 = 0x80200000; // type:func
 func_80200010 = 0x80200010; // type:func
 func_80200020 = 0x80200020; // type:func
 """
-MISSING = '#include <stdio.h>\n#include <stdlib.h>\nvoid n64c_boot_missing(const char *s) ' \
-          '{ printf("boot-missing: %s\\n", s); exit(78); }\n'
+MISSING = (
+    "#include <stdio.h>\n#include <stdlib.h>\nvoid n64c_boot_missing(const char *s) "
+    '{ printf("boot-missing: %s\\n", s); exit(78); }\n'
+)
 
 
 class ImageTests(unittest.TestCase):
@@ -154,11 +159,30 @@ class ImageTests(unittest.TestCase):
         for unit, text in UNITS.items():
             (self.source / "src" / unit).write_text(text)
         self.manifest = self.path / "project.json"
-        self.manifest.write_text(json.dumps({"version": "test", "rdram_bytes": "0x400000",
-            "sources": ["src/CODE.CPP"], "data": {}, "bindings": {}, "stops": {}}))
+        self.manifest.write_text(
+            json.dumps(
+                {
+                    "version": "test",
+                    "rdram_bytes": "0x400000",
+                    "sources": ["src/CODE.CPP"],
+                    "data": {},
+                    "bindings": {},
+                    "stops": {},
+                }
+            )
+        )
 
     def compile(self, source, output, *extra):
-        command = [args.compiler, "-c", "-fdata-sections", "-ffunction-sections", *extra, str(source), "-o", str(output)]
+        command = [
+            args.compiler,
+            "-c",
+            "-fdata-sections",
+            "-ffunction-sections",
+            *extra,
+            str(source),
+            "-o",
+            str(output),
+        ]
         if args.m32:
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
@@ -167,16 +191,23 @@ class ImageTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which("i686-w64-mingw32-gcc"), "needs the mingw-w64 cross compiler")
     def test_semantic_kuseg_record_classification(self):
         import addrscan
+
         targets = addrscan.Targets({"g_collisionSetupTableResource": (0x0044B4A0, "data")})
         self.assertEqual(targets.classify(0x0044B4A0), ("tlb-data", "g_collisionSetupTableResource"))
 
     def test_windows_object_reads_like_elf(self):
         """A Windows/i386 object gives the image the same view as an ELF one: stripped names, sizes, relocations."""
         source = self.path / "w.c"
-        source.write_text("unsigned int table[4] = {1, 2, 3, 4};\nextern int ext;\nint *pp = &ext;\nint fn(void) { return 1; }\n")
+        source.write_text(
+            "unsigned int table[4] = {1, 2, 3, 4};\nextern int ext;\nint *pp = &ext;\nint fn(void) { return 1; }\n"
+        )
         output = self.path / "w.o"
-        subprocess.run(["i686-w64-mingw32-gcc", "-ffunction-sections", "-fdata-sections", "-c", str(source), "-o", str(output)],
-                       check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["i686-w64-mingw32-gcc", "-ffunction-sections", "-fdata-sections", "-c", str(source), "-o", str(output)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         old = image.hostabi.PREFIX
         image.hostabi.PREFIX = "_"
         try:
@@ -190,15 +221,23 @@ class ImageTests(unittest.TestCase):
         self.assertEqual((by_name["ext"]["shndx"], by_name["ext"]["bind"]), (0, 1))
         self.assertTrue(coff.data_section(by_name["table"]["shndx"]))
         self.assertFalse(coff.data_section(by_name["fn"]["shndx"]))
-        relocations = [(where, coff.symbols[index]["name"], kind) for kind_list in coff.relocations.values()
-                       for where, index, kind in kind_list]
+        relocations = [
+            (where, coff.symbols[index]["name"], kind)
+            for kind_list in coff.relocations.values()
+            for where, index, kind in kind_list
+        ]
         self.assertIn((0, "ext", image.R_386_32), relocations)
 
     def test_unit_that_does_not_compile_contributes_nothing(self):
         (self.source / "src" / "BAD.CPP").write_text("int broken = ;\n")
         output = self.path / "bad" / "BAD.CPP.o"
-        image.compile_unit(ROOT / "prepare.py", args.compiler, self.source / "src" / "BAD.CPP", output,
-                           (["-m32"] if args.m32 else []) + ["-std=gnu89"])
+        image.compile_unit(
+            ROOT / "prepare.py",
+            args.compiler,
+            self.source / "src" / "BAD.CPP",
+            output,
+            (["-m32"] if args.m32 else []) + ["-std=gnu89"],
+        )
         self.assertEqual(output.read_bytes(), b"")
         self.assertTrue(pathlib.Path(f"{output}.err").read_text())
         image.build(self.manifest, self.source, [output], [], self.path / "out")
@@ -211,18 +250,21 @@ class ImageTests(unittest.TestCase):
         (self.source / "versions/test/symbol_addrs.txt").write_text(
             "func_80239FCC_de = 0x80239FBC; // type:func\nD_00239FCC = 0x00239FBC; //\n"
             "rw_paged_func_80239FCC_de = 0x00239FBC; //\n"
-            "D_00239FD0 = 0x00239FD0; //\nD_00900000 = 0x00900000; //\nfunc_80900000 = 0x80900000; // type:func\n")
+            "D_00239FD0 = 0x00239FD0; //\nD_00900000 = 0x00900000; //\nfunc_80900000 = 0x80900000; // type:func\n"
+        )
         table = image.facts(self.source, "test")
         self.assertEqual(table["D_00239FCC"], (0x00239FBC, "func"))
         self.assertEqual(table["rw_paged_func_80239FCC_de"], (0x00239FBC, "func"))  # any name at a function's alias
         self.assertEqual(table["D_00239FD0"], (0x00239FD0, "data"))
         self.assertEqual(table["D_00900000"], (0x00900000, "data"))
         # a word naming the alias binds to the function itself (a stop on the function while nothing links it)
-        (self.source / "src" / "ALIAS.CPP").write_text("extern char D_00239FCC[]; unsigned int table[1] = "
-                                                       "{(unsigned int)D_00239FCC};\n")
+        (self.source / "src" / "ALIAS.CPP").write_text(
+            "extern char D_00239FCC[]; unsigned int table[1] = {(unsigned int)D_00239FCC};\n"
+        )
         (self.source / "versions/test/symbol_addrs.txt").write_text(
             "func_80239FCC_de = 0x80239FBC; // type:func\nD_00239FCC = 0x00239FBC; //\n"
-            "table = 0x80001000; // rom:0x1000\n")
+            "table = 0x80001000; // rom:0x1000\n"
+        )
         unit = self.compile(self.source / "src" / "ALIAS.CPP", self.path / "ALIAS.CPP.o", "-x", "c")
         image.build(self.manifest, self.source, [unit], [], self.path / "alias")
         report = json.loads((self.path / "alias" / "image.json").read_text())
@@ -232,8 +274,12 @@ class ImageTests(unittest.TestCase):
     def test_data_of_a_unit_that_also_holds_functions_is_imaged(self):
         # the decomp folds data units into code modules: such a unit's initialised data is imaged at its pinned
         # address even when the unit is linked as code, its functions are not
-        (self.source / "RageWars.ld").write_text(LAYOUT.replace("src/B.CPP.o(.data);", "src/B.CPP.o(.data);\n        src/M.CPP.o(.data);"))
-        (self.source / "src" / "M.CPP").write_text("int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n")
+        (self.source / "RageWars.ld").write_text(
+            LAYOUT.replace("src/B.CPP.o(.data);", "src/B.CPP.o(.data);\n        src/M.CPP.o(.data);")
+        )
+        (self.source / "src" / "M.CPP").write_text(
+            "int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n"
+        )
         (self.source / "versions/test/symbol_addrs.txt").write_text(FACTS + "D_folded = 0x80001030; // rom:0x1030\n")
         linked_code = {"src/CODE.CPP", "src/M.CPP"}
         self.assertIn("src/M.CPP", image.select(self.source, linked_code, "test"))
@@ -245,12 +291,17 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(report["code_units"], [str(unit)])
         self.assertEqual(report["extents"], 1)
         self.assertNotIn("D_folded", report["refused"])
+
     def test_resident_data_of_a_unit_with_bss_in_an_overlay_is_imaged(self):
         # a unit whose code and zero-initialised sections sit in a shared-address overlay still has its resident data
         layout = LAYOUT.replace("src/B.CPP.o(.data);", "src/B.CPP.o(.data);\n        src/M.CPP.o(.data);")
-        layout = layout.replace("src/O1.CPP.o(.data);", "src/O1.CPP.o(.data);\n        src/M.CPP.o(.text);\n        src/M.CPP.o(.bss);")
+        layout = layout.replace(
+            "src/O1.CPP.o(.data);", "src/O1.CPP.o(.data);\n        src/M.CPP.o(.text);\n        src/M.CPP.o(.bss);"
+        )
         (self.source / "RageWars.ld").write_text(layout)
-        (self.source / "src" / "M.CPP").write_text("int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n")
+        (self.source / "src" / "M.CPP").write_text(
+            "int fold(void) { return 1; }\nunsigned int D_folded[1] = {0x3F800000};\n"
+        )
         self.assertIn("src/M.CPP", image.select(self.source, {"src/CODE.CPP", "src/M.CPP"}, "test"))
 
     def test_select_keeps_resident_function_free_units(self):
@@ -267,8 +318,9 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(image.select(self.source, {"src/CODE.CPP"}, "test"), ["src/SETUP.CPP"])
         self.assertEqual(image.select(self.source, set(), "other"), ["src/OTHER.CPP"])
         (self.path / "src").mkdir()
-        unit = self.compile(self.source / "src" / "SETUP.CPP", self.path / "src" / "SETUP.CPP.o", "-x", "c",
-                            "-fno-common")
+        unit = self.compile(
+            self.source / "src" / "SETUP.CPP", self.path / "src" / "SETUP.CPP.o", "-x", "c", "-fno-common"
+        )
         out = self.path / "out"
         image.build(self.manifest, self.source, [unit], [], out)
         report = json.loads((out / "image.json").read_text())
@@ -288,7 +340,7 @@ class ImageTests(unittest.TestCase):
         rom = bytearray(0x2000)
         for at, values in words.items():
             for i, value in enumerate(values):
-                rom[at + 4 * i:at + 4 * i + 4] = value.to_bytes(4, "big")
+                rom[at + 4 * i : at + 4 * i + 4] = value.to_bytes(4, "big")
         return bytes(rom)
 
     def test_raw_code_addresses_bind_to_their_functions(self):
@@ -298,14 +350,17 @@ class ImageTests(unittest.TestCase):
         (self.source / "versions/test/symbol_addrs.txt").write_text(RAW_FACTS)
         (self.source / "src" / "RAW.CPP").write_text(RAW)
         unit = self.compile(self.source / "src" / "RAW.CPP", self.path / "RAW.CPP.o", "-x", "c")
-        rom = self.cartridge({0x1100: [0x00200010, 0x80001000, 0x80200020, 7], 0x1200: [0x00200000, 1, 2, 3],
-                              0x1300: [0x00200010]})
+        rom = self.cartridge(
+            {0x1100: [0x00200010, 0x80001000, 0x80200020, 7], 0x1200: [0x00200000, 1, 2, 3], 0x1300: [0x00200010]}
+        )
         out = self.path / "out"
         image.build(self.manifest, self.source, [unit], [], out, rom)
         report = json.loads((out / "image.json").read_text())
         self.assertTrue(report["rom_checked"])
-        self.assertEqual([(row["address"], row["word"], row["function"]) for row in report["code_words"]],
-                         [("0x80001100", "0x00200010", "func_80200010"), ("0x80001108", "0x80200020", "func_80200020")])
+        self.assertEqual(
+            [(row["address"], row["word"], row["function"]) for row in report["code_words"]],
+            [("0x80001100", "0x00200010", "func_80200010"), ("0x80001108", "0x80200020", "func_80200020")],
+        )
         self.assertEqual(report["function_stops"], ["func_80200010", "func_80200020"])
         self.assertIn(".long func_80200010", (out / "image.c").read_text())
         image.build(self.manifest, self.source, [unit], [], self.path / "plain")
@@ -316,9 +371,11 @@ class ImageTests(unittest.TestCase):
         # a typed resident symbol's ROM bytes are also an image range: a game DMA of them (a TLB window over the
         # cartridge) sees its native bytes; an untyped emitter placeholder keeps the cartridge's bytes there
         (self.source / "versions/test/symbol_addrs.txt").write_text(
-            "typed = 0x80001100; // rom:0x1100\nD_blob_00aa = 0x80001200; // rom:0x1200\n")
+            "typed = 0x80001100; // rom:0x1100\nD_blob_00aa = 0x80001200; // rom:0x1200\n"
+        )
         (self.source / "src" / "TYPED.CPP").write_text(
-            "unsigned short typed[4] = {1, 2, 3, 4};\nunsigned int D_blob_00aa[2] = {5, 6};\n")
+            "unsigned short typed[4] = {1, 2, 3, 4};\nunsigned int D_blob_00aa[2] = {5, 6};\n"
+        )
         unit = self.compile(self.source / "src" / "TYPED.CPP", self.path / "TYPED.CPP.o", "-x", "c")
         out = self.path / "out"
         image.build(self.manifest, self.source, [unit], [], out, self.cartridge({}))
@@ -326,23 +383,34 @@ class ImageTests(unittest.TestCase):
         self.assertEqual(report["rom_extents"], [["0x1100", 8]])
         self.assertEqual(report["extents"], 2)
         self.assertIn("{0x1100u, 0u, 8u},", (out / "image.c").read_text())
+
     def test_address_scan_lists_code_words_and_guards_commands(self):
         # addrscan.code_word: a display-list command argument is never a code word; a KUSEG alias needs a pointer
         # within 6 words; a KUSEG data record (D_00XXXXXX) is tlb-data
         sys.path.insert(0, str(ROOT))
         import addrscan
-        table = {"func_80200000": (0x80200000, "func"), "func_80200010": (0x80200010, "func"),
-                 "D_0044B4A0": (0x0044B4A0, "data")}
+
+        table = {
+            "func_80200000": (0x80200000, "func"),
+            "func_80200010": (0x80200010, "func"),
+            "D_0044B4A0": (0x0044B4A0, "data"),
+        }
         targets = addrscan.Targets(table)
-        rom = self.cartridge({0x100: [0x00200010, 0x80001000], 0x200: [0xDE000000, 0x80200010],
-                              0x300: [0x80200010], 0x400: [0x00200000], 0x500: [0x00200010]})
+        rom = self.cartridge(
+            {
+                0x100: [0x00200010, 0x80001000],
+                0x200: [0xDE000000, 0x80200010],
+                0x300: [0x80200010],
+                0x400: [0x00200000],
+                0x500: [0x00200010],
+            }
+        )
         self.assertEqual(addrscan.code_word(rom, 0x100, targets), "func_80200010")
         self.assertIsNone(addrscan.code_word(rom, 0x204, targets))
         self.assertEqual(addrscan.code_word(rom, 0x300, targets), "func_80200010")
         self.assertIsNone(addrscan.code_word(rom, 0x400, targets))  # a lone page-aligned value stays a size
         self.assertEqual(addrscan.code_word(rom, 0x500, targets), "func_80200010")  # a lone off-page start is code
-        self.assertIsNone(
-                          addrscan.code_class(rom, 0x500, targets, lone=False))  # unless in raw binary
+        self.assertIsNone(addrscan.code_class(rom, 0x500, targets, lone=False))  # unless in raw binary
         self.assertEqual(targets.classify(0x0044B4A0), ("tlb-data", "D_0044B4A0"))
         self.assertIsNone(targets.classify(0x00300000))
 
@@ -351,15 +419,21 @@ class ImageTests(unittest.TestCase):
         # a register-only ALU op; a load, branch or call among them, or too deep an entry, leaves the word unbound
         sys.path.insert(0, str(ROOT))
         import addrscan
+
         sll, addiu, lw, jal = 0x00051080, 0x27BDFFC0, 0x8FA20010, 0x0C000000
         table = {"func_80200010": (0x80200010, "func")}
         targets = addrscan.Targets(table, roms={"func_80200010": 0x1000})
         rom = bytearray(0x2000)
         for at, word in ((0x1000, sll), (0x1004, addiu), (0x1008, lw), (0x100C, sll), (0x1010, sll), (0x1014, sll)):
-            rom[at:at + 4] = word.to_bytes(4, "big")
-        for at, word in ((0x100, 0x00200014), (0x104, 0x00200018), (0x108, 0x0020001C), (0x10C, 0x00200024),
-                         (0x110, 0x00200010)):
-            rom[at:at + 4] = word.to_bytes(4, "big")
+            rom[at : at + 4] = word.to_bytes(4, "big")
+        for at, word in (
+            (0x100, 0x00200014),
+            (0x104, 0x00200018),
+            (0x108, 0x0020001C),
+            (0x10C, 0x00200024),
+            (0x110, 0x00200010),
+        ):
+            rom[at : at + 4] = word.to_bytes(4, "big")
         self.assertEqual(addrscan.code_class(rom, 0x100, targets), ("func_80200010", "entry"))
         self.assertEqual(addrscan.code_class(rom, 0x104, targets), ("func_80200010", "entry"))  # sll, addiu
         self.assertIsNone(addrscan.code_class(rom, 0x108, targets))  # skips a load
@@ -371,7 +445,8 @@ class ImageTests(unittest.TestCase):
 
     def test_entry_alias_in_a_typed_blob_is_bound_by_the_image(self):
         (self.source / "versions/test/symbol_addrs.txt").write_text(
-            "D_blob_0123abcd = 0x80001100; // rom:0x1100\nfunc_80200010 = 0x80200010; // type:func rom:0x1500\n")
+            "D_blob_0123abcd = 0x80001100; // rom:0x1100\nfunc_80200010 = 0x80200010; // type:func rom:0x1500\n"
+        )
         (self.source / "src" / "RAW.CPP").write_text("unsigned int D_blob_0123abcd[3] = {0xE06, 0x13, 0x00200014};\n")
         unit = self.compile(self.source / "src" / "RAW.CPP", self.path / "RAW.CPP.o", "-x", "c")
         rom = bytearray(self.cartridge({0x1100: [0xE06, 0x13, 0x00200014]}))
@@ -379,17 +454,21 @@ class ImageTests(unittest.TestCase):
         out = self.path / "out"
         image.build(self.manifest, self.source, [unit], [], out, bytes(rom))
         report = json.loads((out / "image.json").read_text())
-        self.assertEqual([(row["word"], row["function"], row["class"]) for row in report["code_words"]],
-                         [("0x00200014", "func_80200010", "entry")])
+        self.assertEqual(
+            [(row["word"], row["function"], row["class"]) for row in report["code_words"]],
+            [("0x00200014", "func_80200010", "entry")],
+        )
 
     def test_named_alias_into_a_function_binds_to_its_entry(self):
         # a type:func D_00XXXXXX name at a function's second instruction (a named reference, not a raw word) binds to
         # that function when the skipped instruction is register-only; without the cartridge it stays a stop on the name
         (self.source / "versions/test/symbol_addrs.txt").write_text(
             "func_80200010 = 0x80200010; // type:func rom:0x1500\nD_00200014 = 0x00200014; // type:func\n"
-            "table = 0x80001100; // rom:0x1100\n")
-        (self.source / "src" / "NAMED.CPP").write_text("extern char D_00200014[]; unsigned int table[1] = "
-                                                       "{(unsigned int)D_00200014};\n")
+            "table = 0x80001100; // rom:0x1100\n"
+        )
+        (self.source / "src" / "NAMED.CPP").write_text(
+            "extern char D_00200014[]; unsigned int table[1] = {(unsigned int)D_00200014};\n"
+        )
         unit = self.compile(self.source / "src" / "NAMED.CPP", self.path / "NAMED.CPP.o", "-x", "c")
         rom = bytearray(self.cartridge({0x1100: [0]}))
         rom[0x1500:0x1504] = (0x00051080).to_bytes(4, "big")
@@ -405,8 +484,10 @@ class ImageTests(unittest.TestCase):
             image.placements(self.source, "test")
 
     def test_image_places_relocates_refuses_and_binds(self):
-        objects = [self.compile(self.source / "src" / unit, self.path / (unit + ".o"), "-x", "c")
-                   for unit in ("A.CPP", "B.CPP")]
+        objects = [
+            self.compile(self.source / "src" / unit, self.path / (unit + ".o"), "-x", "c")
+            for unit in ("A.CPP", "B.CPP")
+        ]
         (self.path / "linked.c").write_text(LINKED)
         linked = self.compile(self.path / "linked.c", self.path / "linked.o")
         out = self.path / "out"
@@ -422,15 +503,24 @@ class ImageTests(unittest.TestCase):
         (self.path / "missing.c").write_text(MISSING)
         (self.path / "main.c").write_text(MAIN)
         executable = self.path / "probe"
-        command = [args.compiler, "-no-pie", "-I" + str(self.path), str(out / "image.c"), str(linked),
-                   str(self.path / "missing.c"), str(self.path / "main.c"), "-Wl,-T," + str(out / "image.ld"), "-o", str(executable)]
+        command = [
+            args.compiler,
+            "-no-pie",
+            "-I" + str(self.path),
+            str(out / "image.c"),
+            str(linked),
+            str(self.path / "missing.c"),
+            str(self.path / "main.c"),
+            "-Wl,-T," + str(out / "image.ld"),
+            "-o",
+            str(executable),
+        ]
         if args.m32:
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
         result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 78)
-        self.assertEqual(result.stdout.splitlines(),
-                         ["1000 0 24", "11223344 4 1", "boot-missing: absent"])
+        self.assertEqual(result.stdout.splitlines(), ["1000 0 24", "11223344 4 1", "boot-missing: absent"])
 
 
 if __name__ == "__main__":

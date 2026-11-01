@@ -5,6 +5,7 @@ headers are all seen. Never hard-code `*.CPP`.
 
 `python srcfiles.py --cmake-patterns` emits CMake glob patterns from the same source suffixes.
 """
+
 import pathlib
 
 SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".cxx")
@@ -42,7 +43,9 @@ def library_prefix(source):
 def include_flags(source):
     """-I of each header root of the tree (layout header_roots), then of its libgcc folder (its own headers)."""
     source = pathlib.Path(source)
-    return [f"-I{source / h}" for h in layout(source)["header_roots"]] + [f"-I{source / library_folder(source, 'libgcc')}"]
+    return [f"-I{source / h}" for h in layout(source)["header_roots"]] + [
+        f"-I{source / library_folder(source, 'libgcc')}"
+    ]
 
 
 def sources(source, folder=None):
@@ -53,8 +56,11 @@ def sources(source, folder=None):
     found = []
     for f in folders:
         root = source / f
-        found += [p for p in root.rglob("*") if p.is_file() and is_source(p)
-                  and "libgcc" not in p.relative_to(root).parts[:-1]]
+        found += [
+            p
+            for p in root.rglob("*")
+            if p.is_file() and is_source(p) and "libgcc" not in p.relative_to(root).parts[:-1]
+        ]
     return sorted(found, key=str)
 
 
@@ -66,15 +72,15 @@ def headers(source, folder=None):
 
 
 def cmake_patterns():
-    return ["*" + "".join(f"[{c}{c.upper()}]" if c.isalpha() else c for c in suffix)
-            for suffix in SOURCE_SUFFIXES]
+    return ["*" + "".join(f"[{c}{c.upper()}]" if c.isalpha() else c for c in suffix) for suffix in SOURCE_SUFFIXES]
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cmake-patterns", action="store_true", required=True,
-                        help="emit semicolon-separated case-blind source globs")
+    parser.add_argument(
+        "--cmake-patterns", action="store_true", required=True, help="emit semicolon-separated case-blind source globs"
+    )
     parser.parse_args()
     print(";".join(cmake_patterns()))

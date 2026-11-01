@@ -31,6 +31,7 @@ refuses a new site (a class whose count rises above the baseline's) while the ol
 (`--update-baseline` rewrites the file; lower it as batches land).
 The runtime half is the RAGE_DECOMP_UBSAN flavour in cmake/decomp.cmake (diagnostic, never shipped).
 """
+
 import argparse
 import collections
 import concurrent.futures
@@ -56,8 +57,12 @@ sys.dont_write_bytecode = True
 HOST_FLAGS = ["-m32", "-std=gnu89", "-fno-strict-aliasing", "-fwrapv", "-msse2", "-mfpmath=sse"]
 MIPS_FLAGS = ["-mabi=32", "-EB"]
 WARNINGS = ["-Wreturn-type", "-Wimplicit-function-declaration", "-Wuninitialized", "-Wmaybe-uninitialized"]
-CLASS_OF_WARNING = {"return-type": "gate-return-type", "implicit-function-declaration": "gate-implicit-decl",
-                    "uninitialized": "gate-uninit", "maybe-uninitialized": "gate-uninit"}
+CLASS_OF_WARNING = {
+    "return-type": "gate-return-type",
+    "implicit-function-declaration": "gate-implicit-decl",
+    "uninitialized": "gate-uninit",
+    "maybe-uninitialized": "gate-uninit",
+}
 INFORMATIONAL = {"gate-knr-extra"}
 TIMEOUT = 180
 SCAN_VERSION = 3  # bump when scan_one's result shape or the checks it runs change (invalidates the cache)
@@ -65,6 +70,7 @@ PROBE_VERSION = 1  # bump when probe_source/probe_unit change what a struct's pr
 
 
 # ---------------------------------------------------------------- units
+
 
 def unit_list(source):
     """Every original unit, as the cmake glob sees it (libgcc excluded), sorted src-relative paths."""
@@ -76,6 +82,7 @@ def load_policy(adapter=HERE):
     sys.path.insert(0, str(adapter))
     try:
         import policy
+
         return policy
     finally:
         sys.path.pop(0)
@@ -92,8 +99,21 @@ def boot_units(source, manifest, adapter=HERE):
         filtered.write_text(json.dumps(project))
         project = load_policy(adapter).load_project(filtered, source)
         units = set(project.get("sources", []))
-        image = subprocess.run([sys.executable, "-I", str(adapter / "image.py"), "select", "--source", str(source),
-                                "--manifest", str(filtered)], capture_output=True, text=True, check=False)
+        image = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(adapter / "image.py"),
+                "select",
+                "--source",
+                str(source),
+                "--manifest",
+                str(filtered),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
     if image.returncode == 0:
         units |= {u for u in re.split(r"[;\s]+", image.stdout.strip()) if u}
     return {u for u in units if (source / u).exists()}
@@ -101,25 +121,43 @@ def boot_units(source, manifest, adapter=HERE):
 
 def preprocess_flags(source, adapter=HERE):
     source = pathlib.Path(source)
-    return ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
-            str(pathlib.Path(adapter) / "native.h"), *srcfiles.include_flags(source)]
+    return [
+        "-DNON_MATCHING",
+        "-DVERSION_US_REV1",
+        "-D_LANGUAGE_C",
+        "-DF3DEX_GBI_2",
+        "-include",
+        str(pathlib.Path(adapter) / "native.h"),
+        *srcfiles.include_flags(source),
+    ]
 
 
 def run(command, timeout=TIMEOUT):
     """(returncode, stdout, stderr); a timeout is returncode -9."""
     try:
-        done = subprocess.run(["nice", "-n", "10", *command], capture_output=True, text=True, errors="replace", timeout=timeout,
-                              env=dict(os.environ, LC_ALL="C"), check=False)
+        done = subprocess.run(
+            ["nice", "-n", "10", *command],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout,
+            env=dict(os.environ, LC_ALL="C"),
+            check=False,
+        )
         return done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired:
-        return -9, "", f'timeout after {timeout:d}s'
+        return -9, "", f"timeout after {timeout:d}s"
 
 
 def read_depfile(path):
     """The prerequisites of a make-format depfile (the source and every header the unit read)."""
     text = pathlib.Path(path).read_text(errors="replace").replace("\\\n", " ")
     return sorted(set(text.split(":", 1)[-1].split()))
+
+
 _STATE = {}
+
+
 def file_state(path):
     """[size, mtime_ns, sha1] of a file, memoised per process; [] when it is gone."""
     if path not in _STATE:
@@ -129,6 +167,8 @@ def file_state(path):
         except OSError:
             _STATE[path] = []
     return _STATE[path]
+
+
 def deps_unchanged(recorded):
     """True when every recorded {path: [size, mtime_ns, sha1]} still holds (the stat pair is the fast path, the
     content hash the fallback, so a touched file with the same bytes stays valid)."""
@@ -142,15 +182,33 @@ def deps_unchanged(recorded):
         if file_state(path)[2:] != old[2:]:
             return False
     return True
+
+
 def unit_fingerprint(ctx, unit):
     """What a cached scan also depends on besides the files it read: flags, the checks, the unit's class."""
     # Layout adds DWARF structs to boot units only, so a --no-layout seed slice warms every other unit.
     prep = pathlib.Path(ctx["adapter"]) / "prepare.py"
-    return hashlib.sha1(json.dumps([SCAN_VERSION, HOST_FLAGS, WARNINGS, preprocess_flags(ctx["source"], ctx["adapter"]),
-                                    bool(ctx["layout"]) and unit in ctx["boot"], unit in ctx["boot"], unit in ctx["sdk"], bool(ctx.get("build")),
-                                    file_state(str(prep))[2:]]).encode()).hexdigest()
+    return hashlib.sha1(
+        json.dumps(
+            [
+                SCAN_VERSION,
+                HOST_FLAGS,
+                WARNINGS,
+                preprocess_flags(ctx["source"], ctx["adapter"]),
+                bool(ctx["layout"]) and unit in ctx["boot"],
+                unit in ctx["boot"],
+                unit in ctx["sdk"],
+                bool(ctx.get("build")),
+                file_state(str(prep))[2:],
+            ]
+        ).encode()
+    ).hexdigest()
+
+
 def cache_file(ctx, unit):
     return pathlib.Path(ctx["cache"]) / "u" / (unit + ".json")
+
+
 def cache_load(ctx, unit):
     """The cached scan result of a unit whose files, flags and prepared .i are all unchanged, else None."""
     try:
@@ -165,15 +223,19 @@ def cache_load(ctx, unit):
         return result
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
 def cache_store(ctx, unit, deps, result):
     state = {d: file_state(d) for d in deps}
     if not all(state.values()):
         return
     target = cache_file(ctx, unit)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + f'.{os.getpid():d}.tmp')
+    tmp = target.with_name(target.name + f".{os.getpid():d}.tmp")
     tmp.write_text(json.dumps({"fp": unit_fingerprint(ctx, unit), "deps": state, "result": result}))
     tmp.replace(target)
+
+
 def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=True):
     """The unit's prepared translation unit (prepare.py's output, or the fl build's own .i when it holds one);
     returns (path, mode) or (None, error). exact=False is the cheap path: prepare.py's own `gcc -E` and nothing else
@@ -197,7 +259,22 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=
     out.parent.mkdir(parents=True, exist_ok=True)
     if not exact:
         dep = out.with_name(out.name + ".d")
-        code, text, _ = run(["gcc", *HOST_FLAGS, *preprocess_flags(source, adapter), "-x", "c", "-E", "-MD", "-MF", str(dep), "-MT", str(out), str(pathlib.Path(source) / unit)])
+        code, text, _ = run(
+            [
+                "gcc",
+                *HOST_FLAGS,
+                *preprocess_flags(source, adapter),
+                "-x",
+                "c",
+                "-E",
+                "-MD",
+                "-MF",
+                str(dep),
+                "-MT",
+                str(out),
+                str(pathlib.Path(source) / unit),
+            ]
+        )
         if not code:
             out.write_text(text)
             if deps is not None and dep.exists():
@@ -205,7 +282,28 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=
             dep.unlink(missing_ok=True)
             return out, "NON_MATCHING"
         dep.unlink(missing_ok=True)
-    code, _, err = run([sys.executable, "-I", str(adapter / "prepare.py"), "--compiler", "gcc", "--source", str(pathlib.Path(source) / unit), "--output", str(out), "--stubs", str(stubs), "--inventory", str(inv), "--depfile", str(dep), "--", *HOST_FLAGS, *preprocess_flags(source, adapter)])
+    code, _, err = run(
+        [
+            sys.executable,
+            "-I",
+            str(adapter / "prepare.py"),
+            "--compiler",
+            "gcc",
+            "--source",
+            str(pathlib.Path(source) / unit),
+            "--output",
+            str(out),
+            "--stubs",
+            str(stubs),
+            "--inventory",
+            str(inv),
+            "--depfile",
+            str(dep),
+            "--",
+            *HOST_FLAGS,
+            *preprocess_flags(source, adapter),
+        ]
+    )
     mode = "NON_MATCHING"
     if not code and inv.exists():
         mode = json.loads(inv.read_text()).get("mode", mode)
@@ -268,7 +366,7 @@ def strip_attributes(text):
         while i < len(text) and depth:
             depth += {"(": 1, ")": -1}.get(text[i], 0)
             i += 1
-        text = text[:m.start()] + " " + text[i:]
+        text = text[: m.start()] + " " + text[i:]
 
 
 def top_level(text):
@@ -303,8 +401,11 @@ def top_level(text):
                 if depth == 0:
                     start = start or (file, line)
                     text_head = strip_attributes("".join(head)).strip()
-                    if text_head.endswith(")") and "=" not in text_head and not re.match(
-                            r"(typedef|struct|union|enum)\b", text_head):
+                    if (
+                        text_head.endswith(")")
+                        and "=" not in text_head
+                        and not re.match(r"(typedef|struct|union|enum)\b", text_head)
+                    ):
                         yield text_head, "".join(body), start[0], start[1]
                         head, start = [], None
                     else:
@@ -345,7 +446,7 @@ def declarator(head):
             m = re.search(r"(\w+)$", before)
             if not m or before.endswith(")"):
                 return None
-            return m.group(1), head[i + 1:-1]
+            return m.group(1), head[i + 1 : -1]
     return None
 
 
@@ -368,8 +469,13 @@ def scan_text(text, unit_is_sdk=False):
             if td:
                 kind = td.group(1)
                 words = kind.split()
-                if "(" not in kind and "*" not in kind and "[" not in h and "{" not in h and (
-                        LL.search(kind) or (words and words[-1] in ll_types)):
+                if (
+                    "(" not in kind
+                    and "*" not in kind
+                    and "[" not in h
+                    and "{" not in h
+                    and (LL.search(kind) or (words and words[-1] in ll_types))
+                ):
                     ll_types.add(td.group(2))
                 continue
             d = declarator(h)
@@ -421,8 +527,8 @@ def calls_of(scan, names):
     pattern = re.compile(r"(?<![\w.>])(" + "|".join(map(re.escape, sorted(names))) + r")\s*\(")
     for caller, body, file, line in scan["bodies"]:
         for m in pattern.finditer(body):
-            before = body[:m.start()].rstrip()
-            args = split_args(body[m.end():])
+            before = body[: m.start()].rstrip()
+            args = split_args(body[m.end() :])
             word = re.search(r"(\w+)$", before)
             if not args and (before.endswith("*") or (word and word.group(1) not in KEYWORDS)):
                 continue  # a local `type f();` declaration, not a call
@@ -453,12 +559,22 @@ def knr_rows(scans, source, pin, boot):
             if n < 0 or n == nargs:
                 continue
             cls = "gate-knr-args" if nargs < n else "gate-knr-extra"
-            rows.append(row(cls, callee, unit, f'{relative(file, source)!s}:{line:d}', pin, unit in boot,
-                            f'{caller!s} calls {callee!s} with {nargs:d} argument(s), the definition in {where!s} takes {n:d}'))
+            rows.append(
+                row(
+                    cls,
+                    callee,
+                    unit,
+                    f"{relative(file, source)!s}:{line:d}",
+                    pin,
+                    unit in boot,
+                    f"{caller!s} calls {callee!s} with {nargs:d} argument(s), the definition in {where!s} takes {n:d}",
+                )
+            )
     return rows
 
 
 # ---------------------------------------------------------------- struct layout
+
 
 def die_tree(dump):
     """readelf --debug-dump=info -> {offset: {tag, attrs, children, depth}}."""
@@ -521,13 +637,20 @@ def anonymous_members(dies, die, depth=0):
         target = ref(member["attrs"].get("DW_AT_type"))
         for _ in range(12):
             inner = dies.get(target)
-            if inner is None or inner["tag"] not in ("DW_TAG_typedef", "DW_TAG_const_type", "DW_TAG_volatile_type",
-                                                     "DW_TAG_array_type"):
+            if inner is None or inner["tag"] not in (
+                "DW_TAG_typedef",
+                "DW_TAG_const_type",
+                "DW_TAG_volatile_type",
+                "DW_TAG_array_type",
+            ):
                 break
             target = ref(inner["attrs"].get("DW_AT_type"))
         inner = dies.get(target)
-        if inner and inner["tag"] in ("DW_TAG_structure_type", "DW_TAG_union_type") and not inner["attrs"].get(
-                "DW_AT_name"):
+        if (
+            inner
+            and inner["tag"] in ("DW_TAG_structure_type", "DW_TAG_union_type")
+            and not inner["attrs"].get("DW_AT_name")
+        ):
             out += [m for c in inner["children"] for m in [dies[c]] if m["tag"] == "DW_TAG_member"]
             out += anonymous_members(dies, inner, depth + 1)
     return out
@@ -553,7 +676,7 @@ def dwarf_structs(dump):
             continue
         kind = "struct" if die["tag"] == "DW_TAG_structure_type" else "union"
         name = die["attrs"].get("DW_AT_name")
-        expr = f'{kind!s} {name!s}' if name else typedef_of.get(off)
+        expr = f"{kind!s} {name!s}" if name else typedef_of.get(off)
         if not expr:
             continue
         members, wide, bitfields = [], 0, 0
@@ -570,8 +693,16 @@ def dwarf_structs(dump):
             wide += w
             if member["attrs"].get("DW_AT_name"):
                 members.append({"name": member["attrs"]["DW_AT_name"], "bit": bit, "wide": w})
-        out.append({"expr": expr, "size": size, "members": members, "wide": wide, "bitfields": bitfields,
-                    "shape": hashlib.sha1(json.dumps(type_shape(dies, off)).encode()).hexdigest()})
+        out.append(
+            {
+                "expr": expr,
+                "size": size,
+                "members": members,
+                "wide": wide,
+                "bitfields": bitfields,
+                "shape": hashlib.sha1(json.dumps(type_shape(dies, off)).encode()).hexdigest(),
+            }
+        )
     return out
 
 
@@ -593,14 +724,29 @@ def type_shape(dies, off, depth=0):
     if tag == "DW_TAG_enumeration_type":
         return ["e", number(a.get("DW_AT_byte_size"))]
     if tag == "DW_TAG_array_type":
-        dims = [[dies[c]["attrs"].get("DW_AT_upper_bound"), dies[c]["attrs"].get("DW_AT_count")]
-                for c in die["children"] if dies[c]["tag"] == "DW_TAG_subrange_type"]
+        dims = [
+            [dies[c]["attrs"].get("DW_AT_upper_bound"), dies[c]["attrs"].get("DW_AT_count")]
+            for c in die["children"]
+            if dies[c]["tag"] == "DW_TAG_subrange_type"
+        ]
         return ["a", dims, type_shape(dies, ref(a.get("DW_AT_type")), depth + 1)]
     if tag in ("DW_TAG_structure_type", "DW_TAG_union_type"):
-        members = [[m["attrs"].get(k) for k in ("DW_AT_name", "DW_AT_data_member_location", "DW_AT_bit_size",
-                                               "DW_AT_data_bit_offset", "DW_AT_bit_offset")]
-                   + [type_shape(dies, ref(m["attrs"].get("DW_AT_type")), depth + 1)]
-                   for c in die["children"] for m in [dies[c]] if m["tag"] == "DW_TAG_member"]
+        members = [
+            [
+                m["attrs"].get(k)
+                for k in (
+                    "DW_AT_name",
+                    "DW_AT_data_member_location",
+                    "DW_AT_bit_size",
+                    "DW_AT_data_bit_offset",
+                    "DW_AT_bit_offset",
+                )
+            ]
+            + [type_shape(dies, ref(m["attrs"].get("DW_AT_type")), depth + 1)]
+            for c in die["children"]
+            for m in [dies[c]]
+            if m["tag"] == "DW_TAG_member"
+        ]
         return [tag[7], number(a.get("DW_AT_byte_size")), "DW_AT_declaration" in a, members]
     return [tag]
 
@@ -614,10 +760,10 @@ def probe_source(structs):
     sizeof, alignof, then the offset of every named non-bit-field member."""
     lines = ["\n"]
     for i, s in enumerate(structs):
-        facts = ['sizeof({!s})'.format(s["expr"]), '__alignof__({!s})'.format(s["expr"])]
-        facts += ['__builtin_offsetof({!s}, {!s})'.format(s["expr"], m["name"]) for m in s["members"] if not m["bit"]]
+        facts = ["sizeof({!s})".format(s["expr"]), "__alignof__({!s})".format(s["expr"])]
+        facts += ["__builtin_offsetof({!s}, {!s})".format(s["expr"], m["name"]) for m in s["members"] if not m["bit"]]
         for j, fact in enumerate(facts):
-            lines.append(f'unsigned __gp{i:d}_{j:d} = (unsigned)({fact!s}) + 1;\n')
+            lines.append(f"unsigned __gp{i:d}_{j:d} = (unsigned)({fact!s}) + 1;\n")
     return "".join(lines)
 
 
@@ -660,7 +806,7 @@ def probe_unit(ipath, structs, compilers, scratch):
         batches = [list(range(len(structs)))]
         while batches:
             batch = batches.pop()
-            src = pathlib.Path(scratch) / (f'probe_{label!s}_{serial:d}.i')
+            src = pathlib.Path(scratch) / (f"probe_{label!s}_{serial:d}.i")
             serial += 1
             src.write_text(base + "\n" + probe_source([structs[i] for i in batch]))
             code, out, _ = run([*argv, "-w", "-O0", "-S", "-x", "cpp-output", str(src), "-o", "-"])
@@ -676,6 +822,7 @@ def probe_unit(ipath, structs, compilers, scratch):
 
 
 # ---------------------------------------------------------------- the sub-word view class
+
 
 def subword_rows(source, version, pin):
     """Data symbols the C reads as a 1/2-byte view inside a 4-byte scalar another symbol names (the sub-word
@@ -693,8 +840,17 @@ def subword_rows(source, version, pin):
     for name, a in addr.items():
         by_addr.setdefault(a, []).append(name)
     wide = {"u32", "s32", "int", "unsigned int", "signed int", "f32", "float", "long", "unsigned long", "OSTime"}
-    narrow = {"u16": 2, "s16": 2, "short": 2, "unsigned short": 2, "u8": 1, "s8": 1, "char": 1, "unsigned char": 1,
-              "signed char": 1}
+    narrow = {
+        "u16": 2,
+        "s16": 2,
+        "short": 2,
+        "unsigned short": 2,
+        "u8": 1,
+        "s8": 1,
+        "char": 1,
+        "unsigned char": 1,
+        "signed char": 1,
+    }
     decl = re.compile(r"\bextern\s+(?:volatile\s+)?((?:unsigned |signed )?\w+)\s+(\*?)\s*(D_\w+)\s*;")
     types, users = {}, {}
     for p in srcfiles.sources(source) + srcfiles.headers(source):
@@ -712,20 +868,41 @@ def subword_rows(source, version, pin):
             if ctypes & (wide | {"ptr"}):
                 files = sorted(users[view])
                 unit = next((f for f in files if f.startswith("src/")), files[0])
-                rows.append(row("gate-subword", view, unit, files[0], pin, None,
-                                '{!s} ({!s}) views +{:d} of {!s} ({!s})'.format(view, "/".join(sorted(vtypes)), a & 3, container, "/".join(sorted(ctypes)))))
+                rows.append(
+                    row(
+                        "gate-subword",
+                        view,
+                        unit,
+                        files[0],
+                        pin,
+                        None,
+                        "{!s} ({!s}) views +{:d} of {!s} ({!s})".format(
+                            view, "/".join(sorted(vtypes)), a & 3, container, "/".join(sorted(ctypes))
+                        ),
+                    )
+                )
     return rows
 
 
 # ---------------------------------------------------------------- rows, classes, baseline
 
+
 def row(cls, symbol, unit, file_line, pin, boot, error):
-    return {"symbol": symbol, "class": cls, "unit": unit, "file_line": file_line, "first_error": error,
-            "pin": pin, "trace_order": None, "halt": False, "boot": boot}
+    return {
+        "symbol": symbol,
+        "class": cls,
+        "unit": unit,
+        "file_line": file_line,
+        "first_error": error,
+        "pin": pin,
+        "trace_order": None,
+        "halt": False,
+        "boot": boot,
+    }
 
 
 def key(r):
-    return '{!s}\t{!s}\t{!s}'.format(r["class"], r["unit"], r["symbol"])
+    return "{!s}\t{!s}\t{!s}".format(r["class"], r["unit"], r["symbol"])
 
 
 def read_baseline(path):
@@ -748,26 +925,53 @@ def render_classes(rows, meta):
     by = collections.defaultdict(list)
     for r in rows:
         by[r["class"]].append(r)
-    lines = ['# GATES-1 classes ({!s})'.format(meta.get("when", "")), "",
-             'RW {!s}, pin {!s}; {:d} units swept, {:d} boot units. One needs.jsonl row per site; folder = first path component under src/. A subword row carries no boot flag (symbol-level).'.format(meta.get("rw", "?"), meta.get("pin", "?"), meta.get("units", 0), meta.get("boot_units", 0)), "",
-             "| class | sites | boot sites | boot units | units | folder split (sites) |", "|---|---|---|---|---|---|"]
+    lines = [
+        "# GATES-1 classes ({!s})".format(meta.get("when", "")),
+        "",
+        "RW {!s}, pin {!s}; {:d} units swept, {:d} boot units. One needs.jsonl row per site; folder = first path component under src/. A subword row carries no boot flag (symbol-level).".format(
+            meta.get("rw", "?"), meta.get("pin", "?"), meta.get("units", 0), meta.get("boot_units", 0)
+        ),
+        "",
+        "| class | sites | boot sites | boot units | units | folder split (sites) |",
+        "|---|---|---|---|---|---|",
+    ]
     for cls in sorted(by):
         rs = by[cls]
-        split = collections.Counter(r["unit"].split("/")[1] if r["unit"].startswith("src/") else r["unit"].split("/")[0]
-                                    for r in rs)
-        lines.append('| {!s} | {:d} | {:d} | {:d} | {:d} | {!s} |'.format(cls, len(rs), sum(1 for r in rs if r["boot"]), len({r["unit"] for r in rs if r["boot"]}), len({r["unit"] for r in rs}), ", ".join('{!s} {:d}'.format(*(kv)) for kv in split.most_common())))
+        split = collections.Counter(
+            r["unit"].split("/")[1] if r["unit"].startswith("src/") else r["unit"].split("/")[0] for r in rs
+        )
+        lines.append(
+            "| {!s} | {:d} | {:d} | {:d} | {:d} | {!s} |".format(
+                cls,
+                len(rs),
+                sum(1 for r in rs if r["boot"]),
+                len({r["unit"] for r in rs if r["boot"]}),
+                len({r["unit"] for r in rs}),
+                ", ".join("{!s} {:d}".format(*(kv)) for kv in split.most_common()),
+            )
+        )
     return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------- the sweep
+
 
 def scan_one(args):
     """Worker: prepare one unit, compile it with the warning classes, read its text facts and (boot units) its
     struct list. Returns a picklable dict."""
     unit, ctx = args
     source, work = ctx["source"], ctx["work"]
-    result = {"unit": unit, "boot": unit in ctx["boot"], "warnings": [], "prepare_error": None,
-              "dwarf_error": None, "structs": [], "defs": {}, "calls": [], "u64": []}
+    result = {
+        "unit": unit,
+        "boot": unit in ctx["boot"],
+        "warnings": [],
+        "prepare_error": None,
+        "dwarf_error": None,
+        "structs": [],
+        "defs": {},
+        "calls": [],
+        "u64": [],
+    }
     if ctx.get("cache"):
         hit = cache_load(ctx, unit)
         if hit is not None:
@@ -775,7 +979,9 @@ def scan_one(args):
     deps = [] if ctx.get("cache") else None
     path, mode = prepare_unit(unit, source, work, ctx["adapter"], ctx.get("build"), deps, exact=False)
     if path is not None and not ctx.get("build"):
-        code, _, err = run(["gcc", *HOST_FLAGS, "-O1", *WARNINGS, "-x", "cpp-output", "-c", str(path), "-o", os.devnull])
+        code, _, err = run(
+            ["gcc", *HOST_FLAGS, "-O1", *WARNINGS, "-x", "cpp-output", "-c", str(path), "-o", os.devnull]
+        )
         if code and "error:" in err:  # the fuzzy NON_MATCHING C does not compile: prepare.py's matched-C fallback
             path, mode = prepare_unit(unit, source, work, ctx["adapter"], None, deps)
             code = None
@@ -797,7 +1003,23 @@ def scan_one(args):
     if result["boot"] and ctx["layout"]:
         obj = pathlib.Path(work) / "o" / (unit + ".o")
         obj.parent.mkdir(parents=True, exist_ok=True)
-        code, _, err = run(["gcc", *HOST_FLAGS, "-g1", "-gdwarf-4", "-fno-eliminate-unused-debug-types", "-O0", "-w", "-x", "cpp-output", "-c", str(path), "-o", str(obj)])
+        code, _, err = run(
+            [
+                "gcc",
+                *HOST_FLAGS,
+                "-g1",
+                "-gdwarf-4",
+                "-fno-eliminate-unused-debug-types",
+                "-O0",
+                "-w",
+                "-x",
+                "cpp-output",
+                "-c",
+                str(path),
+                "-o",
+                str(obj),
+            ]
+        )
         if code == 0:
             code, dump, _ = run(["readelf", "--debug-dump=info", str(obj)])
             result["structs"] = dwarf_structs(dump)
@@ -819,8 +1041,11 @@ def probe_one(args):
         ipath = pathlib.Path(ctx["work"]) / "i" / (unit + ".i")
         if ctx.get("build") and (pathlib.Path(ctx["build"]) / "decomp" / (unit + ".i")).exists():
             ipath = pathlib.Path(ctx["build"]) / "decomp" / (unit + ".i")
-        compilers = {"host": ["gcc", *HOST_FLAGS], "aligned": ["gcc", *HOST_FLAGS, "-malign-double"],
-                     "mips": [ctx["mips_gcc"], *MIPS_FLAGS]}
+        compilers = {
+            "host": ["gcc", *HOST_FLAGS],
+            "aligned": ["gcc", *HOST_FLAGS, "-malign-double"],
+            "mips": [ctx["mips_gcc"], *MIPS_FLAGS],
+        }
         return unit, wanted, probe_unit(ipath, wanted, compilers, scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -848,9 +1073,12 @@ def layout_rows(boot_scans, pin, ctx, pool):
         saved = {}
     tools = [file_state(shutil.which(c) or c)[2:] for c in ("gcc", ctx["mips_gcc"])]
     keep = {}
+
     def pkey(unit, s):
-        return hashlib.sha1(json.dumps([PROBE_VERSION, HOST_FLAGS, MIPS_FLAGS, tools, signature(s),
-                                        s.get("shape")]).encode()).hexdigest()
+        return hashlib.sha1(
+            json.dumps([PROBE_VERSION, HOST_FLAGS, MIPS_FLAGS, tools, signature(s), s.get("shape")]).encode()
+        ).hexdigest()
+
     jobs, cached = [], {}
     for unit, structs in sorted(by_unit.items()):
         todo = [s for s in structs if pkey(unit, s) not in saved]
@@ -870,7 +1098,7 @@ def layout_rows(boot_scans, pin, ctx, pool):
             live = {pkey(u, s) for u, ss in by_unit.items() for s in ss}
             saved = {k: v for k, v in saved.items() if k in live}
         store.write_text(json.dumps(saved))
-    print(f'layout: {len(cached):d} structs from cache, {len(fresh):d} probed', file=sys.stderr, flush=True)
+    print(f"layout: {len(cached):d} structs from cache, {len(fresh):d} probed", file=sys.stderr, flush=True)
     for unit, structs in sorted(by_unit.items()):
         for s in structs:
             res = fresh.get((unit, signature(s))) or cached[(unit, signature(s))]
@@ -879,22 +1107,61 @@ def layout_rows(boot_scans, pin, ctx, pool):
             if not host or not mips:
                 unprobed += 1
                 continue
-            rec = {"expr": s["expr"], "unit": unit, "users": len(users[signature(s)]), "wide": s["wide"],
-                   "bitfields": s["bitfields"], "host_size": host.get(0), "mips_size": mips.get(0),
-                   "host_vs_mips": differences(s, host, mips), "aligned_vs_mips": differences(s, aligned, mips)}
+            rec = {
+                "expr": s["expr"],
+                "unit": unit,
+                "users": len(users[signature(s)]),
+                "wide": s["wide"],
+                "bitfields": s["bitfields"],
+                "host_size": host.get(0),
+                "mips_size": mips.get(0),
+                "host_vs_mips": differences(s, host, mips),
+                "aligned_vs_mips": differences(s, aligned, mips),
+            }
             evidence.append(rec)
             if s["bitfields"]:
-                rows.append(row("gate-layout-bitfield", s["expr"], unit, unit, pin, True,
-                                '{:d} bit-field member(s); size host {!s} / mips {!s}; bit order differs by endianness'.format(s["bitfields"], rec["host_size"], rec["mips_size"])))
+                rows.append(
+                    row(
+                        "gate-layout-bitfield",
+                        s["expr"],
+                        unit,
+                        unit,
+                        pin,
+                        True,
+                        "{:d} bit-field member(s); size host {!s} / mips {!s}; bit order differs by endianness".format(
+                            s["bitfields"], rec["host_size"], rec["mips_size"]
+                        ),
+                    )
+                )
             if rec["host_vs_mips"]:
-                shown = ", ".join('{!s} host {!s} mips {!s}'.format(*(d)) for d in rec["host_vs_mips"][:6])
-                rows.append(row("gate-layout", s["expr"], unit, unit, pin, True,
-                                'layout differs ({:d} facts, {:d} 64-bit members): {!s}'.format(len(rec["host_vs_mips"]), s["wide"], shown)))
+                shown = ", ".join("{!s} host {!s} mips {!s}".format(*(d)) for d in rec["host_vs_mips"][:6])
+                rows.append(
+                    row(
+                        "gate-layout",
+                        s["expr"],
+                        unit,
+                        unit,
+                        pin,
+                        True,
+                        "layout differs ({:d} facts, {:d} 64-bit members): {!s}".format(
+                            len(rec["host_vs_mips"]), s["wide"], shown
+                        ),
+                    )
+                )
     for expr, sigs in sorted(layouts.items()):
         if len(sigs) > 1:
             unit = first[min(sigs)][0]
-            rows.append(row("gate-struct-conflict", expr, unit, unit, pin, True,
-                            f'{len(sigs):d} layouts across {len({u for s in sigs for u in users[s]}):d} boot units'))
+            rows.append(
+                row(
+                    "gate-struct-conflict",
+                    expr,
+                    unit,
+                    unit,
+                    pin,
+                    True,
+                    f"{len(sigs):d} layouts across {len({u for s in sigs for u in users[s]}):d} boot units",
+                )
+            )
     return rows, evidence, unprobed
 
 
@@ -903,12 +1170,17 @@ def decision(evidence, shim_text, unprobed):
     differ = [e for e in evidence if e["host_vs_mips"]]
     residual = [e for e in differ if e["aligned_vs_mips"]]
     shared = sorted(e["expr"] for e in differ if re.search(r"\b" + re.escape(e["expr"].split()[-1]) + r"\b", shim_text))
-    return {"structs_probed": len(evidence), "unprobed": unprobed, "differ_without_flag": len(differ),
-            "fixed_by_malign_double": len(differ) - len(residual), "still_differ_with_flag": len(residual),
-            "bitfield_structs": sorted(e["expr"] for e in evidence if e["bitfields"]),
-            "differ_and_named_in_shim": shared,
-            "still_differ_examples": [(e["expr"], e["aligned_vs_mips"][:3]) for e in residual[:10]],
-            "recommend": "flag" if differ and not residual and not shared else "per-struct"}
+    return {
+        "structs_probed": len(evidence),
+        "unprobed": unprobed,
+        "differ_without_flag": len(differ),
+        "fixed_by_malign_double": len(differ) - len(residual),
+        "still_differ_with_flag": len(residual),
+        "bitfield_structs": sorted(e["expr"] for e in evidence if e["bitfields"]),
+        "differ_and_named_in_shim": shared,
+        "still_differ_examples": [(e["expr"], e["aligned_vs_mips"][:3]) for e in residual[:10]],
+        "recommend": "flag" if differ and not residual and not shared else "per-struct",
+    }
 
 
 def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
@@ -917,8 +1189,11 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
     a unit still does not reach the link, so a shorter object list never reads as fewer mismatch sites."""
     outdir = pathlib.Path(work) / "lto"
     outdir.mkdir(parents=True, exist_ok=True)
-    todo = [(u, str(pathlib.Path(work) / "i" / (u + ".i")), str(outdir / (u.replace("/", "_") + ".o")))
-            for u, s in sorted(scans.items()) if not s["prepare_error"]]
+    todo = [
+        (u, str(pathlib.Path(work) / "i" / (u + ".i")), str(outdir / (u.replace("/", "_") + ".o")))
+        for u, s in sorted(scans.items())
+        if not s["prepare_error"]
+    ]
 
     def compile_one(item):
         unit, ipath, obj = item
@@ -928,30 +1203,63 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
         stampf = pathlib.Path(obj + ".sha")
         if cache and os.path.exists(obj) and stampf.exists() and stampf.read_text() == json.dumps(sha):
             return obj  # same prepared unit as the last LTO object: reuse it
-        code, _, _ = run(["gcc", *HOST_FLAGS, "-flto", "-fno-fat-lto-objects", "-O0", "-w", "-x", "cpp-output", "-c", ipath, "-o", obj])
+        code, _, _ = run(
+            [
+                "gcc",
+                *HOST_FLAGS,
+                "-flto",
+                "-fno-fat-lto-objects",
+                "-O0",
+                "-w",
+                "-x",
+                "cpp-output",
+                "-c",
+                ipath,
+                "-o",
+                obj,
+            ]
+        )
         if code == 0:
             stampf.write_text(json.dumps(sha))
         return obj if code == 0 else None
+
     with concurrent.futures.ThreadPoolExecutor(jobs) as tp:
         objs = [o for o in tp.map(compile_one, todo) if o]
     listing = outdir / "objects.txt"
     listing.write_text("\n".join(objs) + "\n")
     if len(objs) < len(todo):
-        print(f'lto: {len(objs):d} of {len(todo):d} units reached the link ({len(todo) - len(objs):d} dropped by prepare/compile)', file=sys.stderr, flush=True)
+        print(
+            f"lto: {len(objs):d} of {len(todo):d} units reached the link ({len(todo) - len(objs):d} dropped by prepare/compile)",
+            file=sys.stderr,
+            flush=True,
+        )
     memo = pathlib.Path(cache) / "lto.json" if cache else None
     link_key = hashlib.sha1(json.dumps([[o, file_state(o + ".sha")[2:]] for o in objs]).encode()).hexdigest()
     if memo and memo.exists():
         old = json.loads(memo.read_text())
         if old["key"] == link_key:
             return [tuple(r) for r in old["rows"]], old["code"], old["err"]
-    code, _, err = run(["gcc", "-m32", f'-flto={jobs:d}', "-flinker-output=nolto-rel", "-r", "-nostdlib",
-                        "-Wlto-type-mismatch", "@" + str(listing), "-o", str(outdir / "linked.o")], timeout=3600)
+    code, _, err = run(
+        [
+            "gcc",
+            "-m32",
+            f"-flto={jobs:d}",
+            "-flinker-output=nolto-rel",
+            "-r",
+            "-nostdlib",
+            "-Wlto-type-mismatch",
+            "@" + str(listing),
+            "-o",
+            str(outdir / "linked.o"),
+        ],
+        timeout=3600,
+    )
     rows, lines = [], err.splitlines()
     for i, line in enumerate(lines):
         m = re.match(r"^(?P<file>[^:\s][^:]*):(?P<line>\d+):\d+: warning: (?P<msg>.*) \[-Wlto-type-mismatch\]$", line)
         if m:
             names = QUOTED.findall(m["msg"])
-            notes = [x.split("note: ", 1)[1].strip() for x in lines[i + 1:i + 4] if "note:" in x]
+            notes = [x.split("note: ", 1)[1].strip() for x in lines[i + 1 : i + 4] if "note:" in x]
             rows.append((names[0] if names else "", m["file"], int(m["line"]), " ".join([m["msg"], *notes])))
     if memo:
         memo.write_text(json.dumps({"key": link_key, "rows": rows, "code": code, "err": err}))
@@ -974,11 +1282,25 @@ def sweep(args):
     addresses = {n: int(a, 16) for n, (a, _) in policy.pinned(source, version).items()}
     game = policy.game_code(project)
     library = srcfiles.library_prefix(source)
-    sdk = {u for u in units if "/sdk/" in u.lower() or u.lower().startswith(library) or policy.sdk_unit(
-        u, (source / u).read_text(errors="replace"), addresses, game, library)}
-    ctx = {"source": str(source), "work": str(work), "adapter": HERE, "boot": boot, "sdk": sdk,
-           "build": args.build, "layout": not args.no_layout, "mips_gcc": args.mips_gcc, "partial": bool(args.units),
-           "cache": None if args.fresh else str(out / "cache")}
+    sdk = {
+        u
+        for u in units
+        if "/sdk/" in u.lower()
+        or u.lower().startswith(library)
+        or policy.sdk_unit(u, (source / u).read_text(errors="replace"), addresses, game, library)
+    }
+    ctx = {
+        "source": str(source),
+        "work": str(work),
+        "adapter": HERE,
+        "boot": boot,
+        "sdk": sdk,
+        "build": args.build,
+        "layout": not args.no_layout,
+        "mips_gcc": args.mips_gcc,
+        "partial": bool(args.units),
+        "cache": None if args.fresh else str(out / "cache"),
+    }
     if args.fresh:
         shutil.rmtree(out / "cache", ignore_errors=True)
     scans, rows, evidence, deci, hits = {}, [], [], None, 0
@@ -987,17 +1309,29 @@ def sweep(args):
             scans[res["unit"]] = res
             hits += bool(res.get("cached"))
             if i % 500 == 0:
-                print(f'scan {i:d}/{len(units):d}', file=sys.stderr, flush=True)
+                print(f"scan {i:d}/{len(units):d}", file=sys.stderr, flush=True)
         for unit, res in sorted(scans.items()):
             if res["prepare_error"]:
                 rows.append(row("gate-prepare-failed", unit, unit, unit, pin, res["boot"], res["prepare_error"]))
             for cls, symbol, file, line, message in res["warnings"]:
-                rows.append(row(cls, symbol, unit, f'{file!s}:{line:d}', pin, res["boot"], message))
+                rows.append(row(cls, symbol, unit, f"{file!s}:{line:d}", pin, res["boot"], message))
             for name, index, param, file, line in res["u64"]:
-                rows.append(row("gate-u64-param", name, unit, f'{relative(file, source)!s}:{line:d}', pin,
-                                res["boot"], f'parameter {index:d} `{param!s}` is a 64-bit integer in non-SDK code'))
-        print(f'scan: {hits:d} of {len(units):d} units from cache, {len(units) - hits:d} rescanned',
-              file=sys.stderr, flush=True)
+                rows.append(
+                    row(
+                        "gate-u64-param",
+                        name,
+                        unit,
+                        f"{relative(file, source)!s}:{line:d}",
+                        pin,
+                        res["boot"],
+                        f"parameter {index:d} `{param!s}` is a 64-bit integer in non-SDK code",
+                    )
+                )
+        print(
+            f"scan: {hits:d} of {len(units):d} units from cache, {len(units) - hits:d} rescanned",
+            file=sys.stderr,
+            flush=True,
+        )
         rows += knr_rows({u: {"defs": r["defs"], "calls": r["calls"]} for u, r in scans.items()}, source, pin, boot)
         rows += subword_rows(source, version, pin)
         if not args.no_layout:
@@ -1013,19 +1347,24 @@ def sweep(args):
             names.update(c for c in line.split("\t")[2:4] if c)
         listed = sorted(u for u, r in scans.items() if names & set(r["defs"]))
         pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
-        print(f'ubsan units: {len(listed):d} of {len(scans):d} define a boot-trace function', file=sys.stderr)
+        print(f"ubsan units: {len(listed):d} of {len(scans):d} define a boot-trace function", file=sys.stderr)
     if args.lto:
         lrows, _code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"], ctx)
         for symbol, file, line, message in lrows:
             f = relative(file, source)
-            rows.append(row("gate-lto-type", symbol, f, f'{f!s}:{line:d}', pin, f in boot, message))
+            rows.append(row("gate-lto-type", symbol, f, f"{f!s}:{line:d}", pin, f in boot, message))
         (out / "lto.log").write_text(err)
     rows.sort(key=lambda r: (r["class"], r["unit"], r["symbol"], r["file_line"]))
     (out / "needs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
-    meta = {"when": time.strftime("%Y-%m-%d %H:%M"), "pin": pin, "units": len(units),
-            "boot_units": len(boot & set(units)), "rw": subprocess.run(
-                ["git", "-C", str(source), "rev-parse", "--short", "HEAD"], stdout=subprocess.PIPE,
-                text=True, check=False).stdout.strip()}
+    meta = {
+        "when": time.strftime("%Y-%m-%d %H:%M"),
+        "pin": pin,
+        "units": len(units),
+        "boot_units": len(boot & set(units)),
+        "rw": subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "--short", "HEAD"], stdout=subprocess.PIPE, text=True, check=False
+        ).stdout.strip(),
+    }
     (out / "meta.json").write_text(json.dumps(meta) + "\n")
     if args.classes_md:
         pathlib.Path(args.classes_md).write_text(render_classes(rows, meta))
@@ -1042,14 +1381,20 @@ def main(argv=None):
     ap.add_argument("--source", type=pathlib.Path, help="ragewars-decomp tree to sweep")
     ap.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
     ap.add_argument("--out", type=pathlib.Path, help="result directory (needs.jsonl, layout evidence, work files)")
-    ap.add_argument("--build", help="an fl build directory whose prepared units (decomp/<unit>.i) are read when present")
+    ap.add_argument(
+        "--build", help="an fl build directory whose prepared units (decomp/<unit>.i) are read when present"
+    )
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2))
     ap.add_argument("--mips-gcc", default=shutil.which("mips-linux-gnu-gcc") or "mips-linux-gnu-gcc")
     ap.add_argument("--units", help="a file of src/... paths to sweep instead of every unit")
     ap.add_argument("--no-layout", action="store_true", help="skip the struct layout parity stage")
     ap.add_argument("--lto", action="store_true", help="add the -flto -Wlto-type-mismatch stage over every unit")
-    ap.add_argument("--ubsan-units", help="write the units that define a boot-trace function here (RAGE_DECOMP_UBSAN_UNITS)")
-    ap.add_argument("--fresh", action="store_true", help="ignore and drop the cache (OUT/cache, OUT/work/i): a cold sweep")
+    ap.add_argument(
+        "--ubsan-units", help="write the units that define a boot-trace function here (RAGE_DECOMP_UBSAN_UNITS)"
+    )
+    ap.add_argument(
+        "--fresh", action="store_true", help="ignore and drop the cache (OUT/cache, OUT/work/i): a cold sweep"
+    )
     ap.add_argument("--keep-work", action="store_true", help="keep the prepared units under OUT/work")
     ap.add_argument("--classes-md", help="write the class table (count, boot units, folder split) here")
     ap.add_argument("--baseline", type=pathlib.Path, default=portdir.fact("gates-baseline.tsv"))
@@ -1064,17 +1409,17 @@ def main(argv=None):
             ap.error("--source and --out are required")
         rows = sweep(args)
     for cls, n in sorted(collections.Counter(r["class"] for r in rows).items()):
-        print(f'{n:6d}  {cls!s}')
+        print(f"{n:6d}  {cls!s}")
     if args.update_baseline:
         keys = sorted({key(r) for r in rows if r["class"] not in INFORMATIONAL})
         args.baseline.write_text("".join(k + "\n" for k in keys))
-        print(f'baseline: {len(keys):d} sites -> {args.baseline!s}')
+        print(f"baseline: {len(keys):d} sites -> {args.baseline!s}")
     if args.check:
         fresh = new_sites(rows, read_baseline(args.baseline))
         for k in fresh:
             print("NEW SITE\t" + k, file=sys.stderr)
         if fresh:
-            print(f'gates: {len(fresh):d} new site(s) not in {args.baseline!s}', file=sys.stderr)
+            print(f"gates: {len(fresh):d} new site(s) not in {args.baseline!s}", file=sys.stderr)
             return 1
     return 0
 

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exercise real preprocessing, compilation, ABI calls and terminal stops."""
+
 import argparse
 import contextlib
 import importlib.util
@@ -38,8 +39,12 @@ class PrepareTests(unittest.TestCase):
         src = self.path / "source.c"
         src.write_text(code)
         files = [self.path / n for n in ("source.i", "stubs.c", "inventory.json", "source.d")]
-        status = module.prepare(args.compiler, src, *files,
-            [*self.flags, "-DNON_MATCHING", "-DVERSION_US_REV1", "-include", str(ROOT / "native.h")])
+        status = module.prepare(
+            args.compiler,
+            src,
+            *files,
+            [*self.flags, "-DNON_MATCHING", "-DVERSION_US_REV1", "-include", str(ROOT / "native.h")],
+        )
         self.assertEqual(status, 0)
         return files, json.loads(files[2].read_text())
 
@@ -47,9 +52,22 @@ class PrepareTests(unittest.TestCase):
         driver = self.path / "main.c"
         driver.write_text(main)
         exe = self.path / "check"
-        subprocess.run([args.compiler, *self.flags, "-I" + str(ROOT.parent), str(files[0]), str(files[1]),
-                        str(ROOT / "missing.c"), str(driver), "-o", str(exe)],
-                       check=True, capture_output=True, text=True)
+        subprocess.run(
+            [
+                args.compiler,
+                *self.flags,
+                "-I" + str(ROOT.parent),
+                str(files[0]),
+                str(files[1]),
+                str(ROOT / "missing.c"),
+                str(driver),
+                "-o",
+                str(exe),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         return exe
 
     def test_failed_header_records_dependencies_for_repair(self):
@@ -83,8 +101,13 @@ INCLUDE_ASM("text", fuzzy);
         cache = self.path / "cache"
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
-            status = module.prepare(args.compiler, src, *files,
-                [*self.flags, "-DNON_MATCHING", "-include", str(ROOT / "native.h")], cache=cache)
+            status = module.prepare(
+                args.compiler,
+                src,
+                *files,
+                [*self.flags, "-DNON_MATCHING", "-include", str(ROOT / "native.h")],
+                cache=cache,
+            )
         self.assertNotEqual(status, 0)
         self.assertIn("conflicting types", stderr.getvalue())
         self.assertIn("unit conflict.c", stderr.getvalue())
@@ -111,7 +134,9 @@ const char *literal = "extern void n64c_missing_marker_fake(void);";
 """)
         self.assertEqual(data["missing"], ["absent"])
         self.assertIn("native.h", files[3].read_text())
-        exe = self.executable(files, """
+        exe = self.executable(
+            files,
+            """
 extern int actual(void);
 extern long absent(int, double);
 int main(int argc, char **argv) {
@@ -119,7 +144,8 @@ int main(int argc, char **argv) {
     if (argc > 1) absent(7, 2.5);
     return 0;
 }
-""")
+""",
+        )
         self.assertEqual(subprocess.run([exe], check=False).returncode, 0)
         stopped = subprocess.run([exe, "stop"], capture_output=True, text=True, check=False)
         self.assertEqual((stopped.returncode, stopped.stderr), (78, "boot-missing: absent\n"))
@@ -136,8 +162,12 @@ int read_table(void) { return table[0]; }
         self.assertEqual(data["missing"], [])
         driver = self.path / "main.c"
         driver.write_text("extern int read_table(void); int main(void) { return read_table(); }")
-        result = subprocess.run([args.compiler, *self.flags, str(files[0]), str(files[1]),
-            str(driver), "-o", str(self.path / "invalid")], capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            [args.compiler, *self.flags, str(files[0]), str(files[1]), str(driver), "-o", str(self.path / "invalid")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("table", result.stderr)
 
@@ -152,16 +182,26 @@ int read_table(void) { return table[0]; }
 
     def test_cache_serves_another_tree_and_follows_headers(self):
         cache = self.path / "cache"
+
         def tree(name):
             root = self.path / name
             (root / "include").mkdir(parents=True)
             (root / "include" / "h.h").write_text("#define VALUE 5\n")
             (root / "u.c").write_text('#include "h.h"\nint value(void) { return VALUE; }\nconst char *f = __FILE__;\n')
             files = [root / n for n in ("u.i", "u.stubs.c", "u.json", "u.d")]
+
             def run():
-                return module.prepare(args.compiler, root / "u.c", *files, [*self.flags, "-I" + str(root / "include")],
-                                      [(str(root), "tree")], cache)
+                return module.prepare(
+                    args.compiler,
+                    root / "u.c",
+                    *files,
+                    [*self.flags, "-I" + str(root / "include")],
+                    [(str(root), "tree")],
+                    cache,
+                )
+
             return root, files, run
+
         a, files_a, run_a = tree("a")
         self.assertEqual(run_a(), 0)
         b, files_b, run_b = tree("b")
@@ -193,20 +233,26 @@ double sum(int count, ...) {
     return value;
 }
 """)
-        exe = self.executable(files, """
+        exe = self.executable(
+            files,
+            """
 extern double sum(int count, ...);
 int main(void) { return sum(2, 3.25, 7) != 10.25; }
-""")
+""",
+        )
         self.assertEqual(subprocess.run([exe], check=False).returncode, 0)
 
 
 class ObjectCacheTests(unittest.TestCase):
     """unitstep.py --objcache: a restored unit runs no step; an edited header or another tree's paths behave."""
-    STEP = ("import pathlib, sys\n"
-            "out = pathlib.Path(sys.argv[1])\n"
-            "out.write_text(open(sys.argv[2]).read())\n"
-            "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
-            "(out.parent / 'ran').write_text('x')\n")
+
+    STEP = (
+        "import pathlib, sys\n"
+        "out = pathlib.Path(sys.argv[1])\n"
+        "out.write_text(open(sys.argv[2]).read())\n"
+        "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
+        "(out.parent / 'ran').write_text('x')\n"
+    )
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=args.work)
@@ -226,11 +272,38 @@ class ObjectCacheTests(unittest.TestCase):
         obj = build / "u.o"
         (build / "ran").unlink(missing_ok=True)
         (build / "u.i").write_text("stale")
-        subprocess.run([sys.executable, "-I", str(ROOT / "unitstep.py"), "--base", str(build / "u"), "--source", "u",
-                        "--objcache", str(self.path / "cache"), "--root", str(build),
-                        "--map", f"{self.path}/src=SRC", "--out", str(obj), "--drop", str(build / "u.i"),
-                        "--depfile", str(build / "u.d"), "--dep-target", str(obj), "--",
-                        sys.executable, str(step), str(obj), str(header_file), str(build / "u.d")], check=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                str(ROOT / "unitstep.py"),
+                "--base",
+                str(build / "u"),
+                "--source",
+                "u",
+                "--objcache",
+                str(self.path / "cache"),
+                "--root",
+                str(build),
+                "--map",
+                f"{self.path}/src=SRC",
+                "--out",
+                str(obj),
+                "--drop",
+                str(build / "u.i"),
+                "--depfile",
+                str(build / "u.d"),
+                "--dep-target",
+                str(obj),
+                "--",
+                sys.executable,
+                str(step),
+                str(obj),
+                str(header_file),
+                str(build / "u.d"),
+            ],
+            check=True,
+        )
         return build, obj.read_text(), (build / "ran").exists()
 
     def test_restore_invalidate_share(self):
@@ -246,14 +319,16 @@ class ObjectCacheTests(unittest.TestCase):
         build, text, ran = self.unit("b", header="22")
         self.assertEqual((text, ran), ("22", False))  # another tree: the same key through --root and --map
 
-    GCNO_STEP = ("import os, pathlib, sys\n"
-                 "out = pathlib.Path(sys.argv[1])\n"
-                 "out.write_text(open(sys.argv[2]).read())\n"
-                 "cwd = os.getcwd().encode() + b'\\0'\n"
-                 "head = b'oncg' + b'*24B' + b'stmp' + bytes(4) + len(cwd).to_bytes(4, 'little')\n"
-                 "out.with_suffix('.gcno').write_bytes(head + cwd + b'rest')\n"
-                 "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
-                 "(out.parent / 'ran').write_text('x')\n")
+    GCNO_STEP = (
+        "import os, pathlib, sys\n"
+        "out = pathlib.Path(sys.argv[1])\n"
+        "out.write_text(open(sys.argv[2]).read())\n"
+        "cwd = os.getcwd().encode() + b'\\0'\n"
+        "head = b'oncg' + b'*24B' + b'stmp' + bytes(4) + len(cwd).to_bytes(4, 'little')\n"
+        "out.with_suffix('.gcno').write_bytes(head + cwd + b'rest')\n"
+        "pathlib.Path(sys.argv[3]).write_text(str(out) + ': ' + sys.argv[2] + '\\n')\n"
+        "(out.parent / 'ran').write_text('x')\n"
+    )
 
     def gcno_restored(self, trees):
         """Builds the coverage unit in each of TREES (name -> directory, the second restored from the first's cache)
@@ -264,12 +339,39 @@ class ObjectCacheTests(unittest.TestCase):
         for build in trees:
             (build / "step.py").write_text(self.GCNO_STEP)
             obj = build / "u.o"
-            subprocess.run([sys.executable, "-I", str(ROOT / "unitstep.py"), "--base", str(build / "u"), "--source",
-                            "u", "--objcache", str(self.path / "cache"), "--root", str(build),
-                            "--map", f"{self.path}/src=SRC", "--out", str(obj), "--out", str(build / "u.gcno"),
-                            "--depfile", str(build / "u.d"), "--dep-target", str(obj), "--", sys.executable,
-                            str(build / "step.py"), str(obj), str(header_file), str(build / "u.d")],
-                           check=True, cwd=build)
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    str(ROOT / "unitstep.py"),
+                    "--base",
+                    str(build / "u"),
+                    "--source",
+                    "u",
+                    "--objcache",
+                    str(self.path / "cache"),
+                    "--root",
+                    str(build),
+                    "--map",
+                    f"{self.path}/src=SRC",
+                    "--out",
+                    str(obj),
+                    "--out",
+                    str(build / "u.gcno"),
+                    "--depfile",
+                    str(build / "u.d"),
+                    "--dep-target",
+                    str(obj),
+                    "--",
+                    sys.executable,
+                    str(build / "step.py"),
+                    str(obj),
+                    str(header_file),
+                    str(build / "u.d"),
+                ],
+                check=True,
+                cwd=build,
+            )
             found.append(((build / "ran").exists(), (build / "u.gcno").read_bytes()))
         return found
 
@@ -326,14 +428,16 @@ class ObjectCacheTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("boot_unitstep_keys", ROOT / "unitstep.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        value = [1, ["a b", "caf\u00e9 \"q\" \\ \n", "/x/y.h"], ["0f" * 32], ["/usr/bin/cc", 123, 456789], None, []]
+        value = [1, ["a b", 'caf\u00e9 "q" \\ \n', "/x/y.h"], ["0f" * 32], ["/usr/bin/cc", 123, 456789], None, []]
         self.assertEqual(module.dumps(value), json.dumps(value))
         _build, text, ran = self.unit("a")
         manifest = next((self.path / "cache").glob("??/*.json"))
         entries = module.load_manifest(manifest)[0]
         self.assertTrue(manifest.read_bytes().startswith(module.MAGIC))
-        old = [dict(e, files=[None if f is None else __import__("base64").b64encode(f).decode() for f in e["files"]])
-               for e in entries]
+        old = [
+            dict(e, files=[None if f is None else __import__("base64").b64encode(f).decode() for f in e["files"]])
+            for e in entries
+        ]
         for entry in old:
             del entry["sigs"]
         manifest.write_text(json.dumps(old))

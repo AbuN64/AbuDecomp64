@@ -10,7 +10,7 @@ sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
 import gates
 
-SAMPLE = '''# 1 "src/A/a.CPP"
+SAMPLE = """# 1 "src/A/a.CPP"
 typedef unsigned long long u64;
 typedef u64 OSTime;
 typedef struct { int x; } Box;
@@ -25,21 +25,27 @@ int caller(int v) {
     return half() + two(v, v);
 }
 void sdkish(OSTime t, long long *p, int z) { }
-'''
+"""
 
 
 class WarningTests(unittest.TestCase):
     def test_return_type_uses_the_enclosing_function(self):
-        text = ("src/A/a.CPP: In function 'func_8020_de':\n"
-                "src/A/a.CPP:9:1: warning: control reaches end of non-void function [-Wreturn-type]\n")
-        self.assertEqual(gates.parse_warnings(text, "/rw"), [
-            ("gate-return-type", "func_8020_de", "src/A/a.CPP", 9, "control reaches end of non-void function")])
+        text = (
+            "src/A/a.CPP: In function 'func_8020_de':\n"
+            "src/A/a.CPP:9:1: warning: control reaches end of non-void function [-Wreturn-type]\n"
+        )
+        self.assertEqual(
+            gates.parse_warnings(text, "/rw"),
+            [("gate-return-type", "func_8020_de", "src/A/a.CPP", 9, "control reaches end of non-void function")],
+        )
 
     def test_implicit_declaration_names_the_callee_and_other_flags_are_ignored(self):
-        text = ("/rw/src/A/a.CPP: In function 'f':\n"
-                "/rw/src/A/a.CPP:4:3: warning: implicit declaration of function 'osFoo' "
-                "[-Wimplicit-function-declaration]\n"
-                "/rw/src/A/a.CPP:5:3: warning: assignment to 'int' from 'char *' makes integer [-Wint-conversion]\n")
+        text = (
+            "/rw/src/A/a.CPP: In function 'f':\n"
+            "/rw/src/A/a.CPP:4:3: warning: implicit declaration of function 'osFoo' "
+            "[-Wimplicit-function-declaration]\n"
+            "/rw/src/A/a.CPP:5:3: warning: assignment to 'int' from 'char *' makes integer [-Wint-conversion]\n"
+        )
         rows = gates.parse_warnings(text, "/rw")
         self.assertEqual([(r[0], r[1], r[2]) for r in rows], [("gate-implicit-decl", "osFoo", "src/A/a.CPP")])
 
@@ -73,16 +79,19 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(self.scan["defs"]["two"][2:], ("src/A/a.CPP", 6))
 
     def test_knr_rows_join_definitions_across_units(self):
-        scans = {"src/A/a.CPP": {"defs": self.scan["defs"], "calls": gates.calls_of(self.scan, ["two"])},
-                 "src/B/b.CPP": {"defs": {}, "calls": [("two", 1, "other", "src/B/b.CPP", 3)]}}
+        scans = {
+            "src/A/a.CPP": {"defs": self.scan["defs"], "calls": gates.calls_of(self.scan, ["two"])},
+            "src/B/b.CPP": {"defs": {}, "calls": [("two", 1, "other", "src/B/b.CPP", 3)]},
+        }
         rows = gates.knr_rows(scans, "/rw", "abc1234", {"src/B/b.CPP"})
         got = sorted((r["class"], r["unit"]) for r in rows)
-        self.assertEqual(got, [("gate-knr-args", "src/A/a.CPP"), ("gate-knr-args", "src/B/b.CPP"),
-                               ("gate-knr-extra", "src/A/a.CPP")])
+        self.assertEqual(
+            got, [("gate-knr-args", "src/A/a.CPP"), ("gate-knr-args", "src/B/b.CPP"), ("gate-knr-extra", "src/A/a.CPP")]
+        )
         self.assertTrue(next(r for r in rows if r["unit"] == "src/B/b.CPP")["boot"])
 
 
-DWARF = '''
+DWARF = """
  <1><b>: Abbrev Number: 2 (DW_TAG_base_type)
     <c>   DW_AT_byte_size   : 8
     <d>   DW_AT_name        : (indirect string, offset: 0x0): long long int
@@ -110,7 +119,7 @@ DWARF = '''
  <1><70>: Abbrev Number: 4 (DW_TAG_structure_type)
     <71>   DW_AT_name        : Fwd
     <75>   DW_AT_declaration : 1
-'''
+"""
 
 
 class LayoutTests(unittest.TestCase):
@@ -122,7 +131,9 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(got["Bits"]["bitfields"], 1)
 
     def test_bit_fields_in_a_nested_anonymous_struct_count(self):
-        dump = DWARF + """ <1><80>: Abbrev Number: 4 (DW_TAG_union_type)
+        dump = (
+            DWARF
+            + """ <1><80>: Abbrev Number: 4 (DW_TAG_union_type)
     <81>   DW_AT_name        : Outer
     <85>   DW_AT_byte_size   : 4
  <2><a0>: Abbrev Number: 5 (DW_TAG_member)
@@ -134,29 +145,43 @@ class LayoutTests(unittest.TestCase):
     <8d>   DW_AT_name        : kind
     <91>   DW_AT_bit_size    : 2
 """
+        )
         got = {s["expr"]: s for s in gates.dwarf_structs(dump)}
         self.assertEqual(got["union Outer"]["bitfields"], 1)
+
     def test_layout_keys_only_boot_units_so_a_no_layout_seed_warms_the_rest(self):
         def fp(unit, layout):
             ctx = {"source": "/src", "adapter": gates.HERE, "layout": layout, "boot": {"src/b.c"}, "sdk": set()}
             return gates.unit_fingerprint(ctx, unit)
+
         self.assertEqual(fp("src/a.c", True), fp("src/a.c", False))
         self.assertNotEqual(fp("src/b.c", True), fp("src/b.c", False))
+
     def test_shape_follows_the_type_closure_not_the_rest_of_the_unit(self):
         base = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF)}
-        unrelated = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF + """ <1><90>: Abbrev Number: 4 (DW_TAG_structure_type)
+        unrelated = {
+            s["expr"]: s["shape"]
+            for s in gates.dwarf_structs(
+                DWARF
+                + """ <1><90>: Abbrev Number: 4 (DW_TAG_structure_type)
     <91>   DW_AT_name        : Other
     <95>   DW_AT_byte_size   : 8
-""")}
+"""
+            )
+        }
         self.assertEqual(base["struct Msg"], unrelated["struct Msg"])
-        wider = {s["expr"]: s["shape"] for s in gates.dwarf_structs(DWARF.replace(
-            "<c>   DW_AT_byte_size   : 8", "<c>   DW_AT_byte_size   : 4"))}
+        wider = {
+            s["expr"]: s["shape"]
+            for s in gates.dwarf_structs(DWARF.replace("<c>   DW_AT_byte_size   : 8", "<c>   DW_AT_byte_size   : 4"))
+        }
         self.assertNotEqual(base["struct Msg"], wider["struct Msg"])
         self.assertEqual(base["Bits"], wider["Bits"])
 
     def test_probe_round_trip_and_difference(self):
-        s = {"expr": "struct Msg", "members": [{"name": "tag", "bit": False}, {"name": "stamp", "bit": False},
-                                               {"name": "f", "bit": True}]}
+        s = {
+            "expr": "struct Msg",
+            "members": [{"name": "tag", "bit": False}, {"name": "stamp", "bit": False}, {"name": "f", "bit": True}],
+        }
         text = gates.probe_source([s])
         self.assertIn("__builtin_offsetof(struct Msg, stamp)", text)
         self.assertNotIn("offsetof(struct Msg, f)", text)
@@ -165,8 +190,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(host, {(0, 0): 12, (0, 1): 4, (0, 2): 0, (0, 3): 4})
         mips = {0: 16, 1: 8, 2: 0, 3: 8}
         flat = {j: v for (i, j), v in host.items()}
-        self.assertEqual(gates.differences(s, flat, mips),
-                         [("sizeof", 12, 16), ("alignof", 4, 8), ("stamp", 4, 8)])
+        self.assertEqual(gates.differences(s, flat, mips), [("sizeof", 12, 16), ("alignof", 4, 8), ("stamp", 4, 8)])
 
     def test_real_compilers_agree_on_a_double_after_an_int(self):
         mips = shutil.which("mips-linux-gnu-gcc")
@@ -175,11 +199,15 @@ class LayoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             unit = pathlib.Path(tmp) / "u.i"
             unit.write_text("struct Msg { int tag; double stamp; };\nstruct Ok { int a; int b; };\n")
-            structs = [{"expr": "struct Msg", "members": [{"name": "tag", "bit": False},
-                                                          {"name": "stamp", "bit": False}]},
-                       {"expr": "struct Ok", "members": [{"name": "a", "bit": False}, {"name": "b", "bit": False}]}]
-            comps = {"host": ["gcc", *gates.HOST_FLAGS], "aligned": ["gcc", *gates.HOST_FLAGS, "-malign-double"],
-                     "mips": [mips, *gates.MIPS_FLAGS]}
+            structs = [
+                {"expr": "struct Msg", "members": [{"name": "tag", "bit": False}, {"name": "stamp", "bit": False}]},
+                {"expr": "struct Ok", "members": [{"name": "a", "bit": False}, {"name": "b", "bit": False}]},
+            ]
+            comps = {
+                "host": ["gcc", *gates.HOST_FLAGS],
+                "aligned": ["gcc", *gates.HOST_FLAGS, "-malign-double"],
+                "mips": [mips, *gates.MIPS_FLAGS],
+            }
             got = gates.probe_unit(unit, structs, comps, tmp)
             msg = gates.differences(structs[0], got["host"][0], got["mips"][0])
             self.assertEqual([d[0] for d in msg], ["sizeof", "alignof", "stamp"])
@@ -211,8 +239,11 @@ class SubwordTests(unittest.TestCase):
             (rw / "src").mkdir()
             (rw / "include").mkdir()
             (rw / "versions" / "v" / "symbol_addrs.txt").write_text(
-                "D_80107E98 = 0x80107E98; // size:4\nD_80107E9A = 0x80107E9A; // size:2\nD_80107EA0 = 0x80107EA0;\n")
-            (rw / "src" / "a.CPP").write_text("extern u32 D_80107E98;\nextern u16 D_80107E9A;\nextern u16 D_80107EA0;\n")
+                "D_80107E98 = 0x80107E98; // size:4\nD_80107E9A = 0x80107E9A; // size:2\nD_80107EA0 = 0x80107EA0;\n"
+            )
+            (rw / "src" / "a.CPP").write_text(
+                "extern u32 D_80107E98;\nextern u16 D_80107E9A;\nextern u16 D_80107EA0;\n"
+            )
             rows = gates.subword_rows(rw, "v", "abc1234")
             self.assertEqual([(r["class"], r["symbol"]) for r in rows], [("gate-subword", "D_80107E9A")])
 
@@ -230,9 +261,11 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(gates.new_sites([renamed], base), [])  # a rename keeps the count: not a new site
 
     def test_classes_table_counts_boot_units_and_folders(self):
-        rows = [gates.row("gate-return-type", "f", "src/A/a.CPP", "", "p", True, ""),
-                gates.row("gate-return-type", "g", "src/A/a.CPP", "", "p", True, ""),
-                gates.row("gate-return-type", "h", "src/B/b.CPP", "", "p", False, "")]
+        rows = [
+            gates.row("gate-return-type", "f", "src/A/a.CPP", "", "p", True, ""),
+            gates.row("gate-return-type", "g", "src/A/a.CPP", "", "p", True, ""),
+            gates.row("gate-return-type", "h", "src/B/b.CPP", "", "p", False, ""),
+        ]
         text = gates.render_classes(rows, {"units": 3, "boot_units": 2})
         self.assertIn("| gate-return-type | 3 | 2 | 1 | 2 | A 2, B 1 |", text)
 
@@ -242,8 +275,8 @@ class CacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = pathlib.Path(d)
             (d / "a.h").write_text("one")
-            (d / "x.d").write_text(f'x.i: x.c \\\n  {d!s}/a.h\n')
-            self.assertEqual(gates.read_depfile(d / "x.d"), [f'{d!s}/a.h', "x.c"])
+            (d / "x.d").write_text(f"x.i: x.c \\\n  {d!s}/a.h\n")
+            self.assertEqual(gates.read_depfile(d / "x.d"), [f"{d!s}/a.h", "x.c"])
             state = {str(d / "a.h"): gates.file_state(str(d / "a.h"))}
             self.assertTrue(gates.deps_unchanged(state))
             (d / "a.h").write_text("two")
@@ -252,6 +285,8 @@ class CacheTests(unittest.TestCase):
             (d / "a.h").write_text("one")  # same bytes, new mtime: still valid
             gates._STATE.clear()
             self.assertTrue(gates.deps_unchanged(state))
+
+
 class PrepareTests(unittest.TestCase):
     def test_cheap_preprocess_is_the_same_unit_as_prepare_py_and_records_its_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,7 +300,6 @@ class PrepareTests(unittest.TestCase):
             exact, _ = gates.prepare_unit("src/a.c", tmp, tmp / "w2")
             self.assertEqual(fast.read_text(), exact.read_text())
             self.assertTrue(any(d.endswith("h.h") for d in deps))
-
 
 
 if __name__ == "__main__":

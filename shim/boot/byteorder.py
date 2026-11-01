@@ -7,6 +7,7 @@ its first DMA (n64c_pi UNTYPED, from link.py). This lists them before a boot doe
 --needs, one JSON row) per untyped blob, the counts per class, and exit status 1 while any blob is untyped.
 With --rom it also lists every RNC stream in the cartridge that no blob fact or row covers (UNFACTED: the blob fact
 itself is missing, so nothing registers it; n64c_pi stops a DMA that starts on one)."""
+
 import argparse
 import collections
 import json
@@ -34,14 +35,32 @@ def main():
         if kind == "untyped":
             size = sum(hi - lo for lo, hi in ranges)
             print("BYTEORDER", blob, f"0x{ranges[0][0]:x}", size, codec, fmt, sep="\t")
-            needs.append({"kind": "byteorder", "blob": blob, "rom": f"0x{ranges[0][0]:x}", "bytes": size,
-                          "codec": codec, "format": fmt})
-    for at, method, unpacked, packed in (link.unfacted_streams(args.rom.read_bytes(), project, args.source)
-                                         if args.rom else []):
+            needs.append(
+                {
+                    "kind": "byteorder",
+                    "blob": blob,
+                    "rom": f"0x{ranges[0][0]:x}",
+                    "bytes": size,
+                    "codec": codec,
+                    "format": fmt,
+                }
+            )
+    for at, method, unpacked, packed in (
+        link.unfacted_streams(args.rom.read_bytes(), project, args.source) if args.rom else []
+    ):
         print("UNFACTED", f"0x{at:x}", f"rnc{method}", unpacked, packed, sep="\t")
-        needs.append({"kind": "byteorder", "blob": None, "rom": f"0x{at:x}", "bytes": 18 + packed,
-                      "codec": f"rnc{method}", "format": None, "unpacked": unpacked,
-                      "need": "a blob fact (blobs.toml) for this RNC stream, then a blob_layouts row"})
+        needs.append(
+            {
+                "kind": "byteorder",
+                "blob": None,
+                "rom": f"0x{at:x}",
+                "bytes": 18 + packed,
+                "codec": f"rnc{method}",
+                "format": None,
+                "unpacked": unpacked,
+                "need": "a blob fact (blobs.toml) for this RNC stream, then a blob_layouts row",
+            }
+        )
         counts["unfacted", f"rnc{method}"] += 1
     for (kind, fmt), count in sorted(counts.items(), key=lambda pair: (pair[0][0], str(pair[0][1]))):
         print("COUNT", kind, count, fmt, sep="\t")

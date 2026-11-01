@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Refused native units are observations, never reusable compilation results."""
+
 import pathlib
 import sys
 import tempfile
@@ -16,9 +17,15 @@ class RefusalCacheTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = pathlib.Path(temporary.name)
         self.base = self.root / "unit"
-        self.opts = {"objcache": str(self.root / "cache"), "root": str(self.root), "maps": [],
-                         "outs": [str(self.base) + ".o", str(self.base) + ".failed"], "drops": [],
-                         "base": str(self.base), "depfile": str(self.root / "unit.d")}
+        self.opts = {
+            "objcache": str(self.root / "cache"),
+            "root": str(self.root),
+            "maps": [],
+            "outs": [str(self.base) + ".o", str(self.base) + ".failed"],
+            "drops": [],
+            "base": str(self.base),
+            "depfile": str(self.root / "unit.d"),
+        }
         self.cache = unitstep.ObjectCache(self.opts, [[sys.executable, "-c", "pass"]])
 
     def test_old_zero_dependency_refusal_is_not_restored(self):

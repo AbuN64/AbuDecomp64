@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compile the oracle's boot trace into the table the hit census reads (trace.c)."""
+
 import argparse
 import csv
 import json
@@ -38,16 +39,18 @@ def generate(trace, manifest, source, output):
     project = json.loads(manifest.read_text())
     _, by_address = symbol_table(source, project["version"])
     native_names = native_functions()
-    native_bindings = {symbol: target for symbol, target in project["bindings"].items()
-                       if target in native_names}
+    native_bindings = {symbol: target for symbol, target in project["bindings"].items() if target in native_names}
     entries = rows(trace)
     traced_names = {n for _, address, names in entries for n in names + by_address.get(address, [])}
     for symbol in sorted(traced_names & native_names):
         native_bindings.setdefault(symbol, symbol)
     # Native APIs can keep original SDK names; game aliases remain original hits.
     bound = set(native_bindings) | set(native_bindings.values())
-    lines = ['/* Generated boot trace table; addresses and names only. */', '#include "trace.h"',
-             "const N64cTraceEntry n64c_trace_entries[] = {"]
+    lines = [
+        "/* Generated boot trace table; addresses and names only. */",
+        '#include "trace.h"',
+        "const N64cTraceEntry n64c_trace_entries[] = {",
+    ]
     for order, address, names in entries:
         names = list(dict.fromkeys(names + by_address.get(address, [])))
         if len(names) > MAX_NAMES or not all(IDENT.fullmatch(n) for n in names):

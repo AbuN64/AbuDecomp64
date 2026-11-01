@@ -8,6 +8,7 @@ run-on stop instead of a link failure. A unit outside the closure compiles throu
   autogen   simulate the archive pull from the closure objects' undefined names and route every game name nothing
             defines (closure.route: libultra binding or stop, function stop, pinned data binding) into
             us_rev1.effective.json, the manifest the bindings, stops and trace table are generated from"""
+
 import argparse
 import hashlib
 import json
@@ -40,6 +41,7 @@ def plan(argv):
     args = parser.parse_args(argv)
     import closure
     import policy
+
     d = json.loads(args.manifest.read_text())
     facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(d))
     skip = set(d["sources"]) | set(lines(args.image_units))
@@ -68,13 +70,15 @@ def archive(argv):
     temp = args.output.with_name(args.output.name + ".new")
     temp.unlink(missing_ok=True)
     for start in range(0, len(members), 400):
-        subprocess.run([hostabi.AR, "qcD", str(temp), *members[start:start + 400]], check=True)
+        subprocess.run([hostabi.AR, "qcD", str(temp), *members[start : start + 400]], check=True)
     if not members:
         subprocess.run([hostabi.AR, "qcD", str(temp)], check=True)
     subprocess.run([hostabi.RANLIB, "-D", str(temp)], check=True)
     # An unchanged archive keeps its timestamp, so the boot executable is not relinked for nothing.
-    if args.output.exists() and hashlib.sha256(args.output.read_bytes()).digest() == \
-            hashlib.sha256(temp.read_bytes()).digest():
+    if (
+        args.output.exists()
+        and hashlib.sha256(args.output.read_bytes()).digest() == hashlib.sha256(temp.read_bytes()).digest()
+    ):
         temp.unlink()
     else:
         temp.replace(args.output)
@@ -87,8 +91,12 @@ def symbols(paths):
     """{path: (defined names, undefined names)} of global symbols, one nm run per few hundred objects."""
     result = {str(p): (set(), set()) for p in paths}
     for start in range(0, len(paths), 400):
-        r = subprocess.run([hostabi.NM, "-g", "-A", "-P", *map(str, paths[start:start + 400])],
-                           capture_output=True, text=True, check=False)
+        r = subprocess.run(
+            [hostabi.NM, "-g", "-A", "-P", *map(str, paths[start : start + 400])],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         for line in r.stdout.splitlines():
             m = NM_LINE.match(line)
             if m and m.group(1) in result:
@@ -143,6 +151,7 @@ def autogen(argv):
     args = parser.parse_args(argv)
     import closure
     import policy
+
     d = json.loads(args.manifest.read_text())
     facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(d))
     boot_objects = lines(args.boot / "linked-objects.txt")
@@ -150,7 +159,10 @@ def autogen(argv):
     image_objects = lines(args.boot / "image-objects.txt")
     syms = symbols([pathlib.Path(p) for p in boot_objects + members + image_objects])
     have = set(d["data"]) | set(d["bindings"]) | set(d["stops"]) | set(d.get("rom_offsets", {}))
-    have |= {hostabi.strip(m.group(1)) for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.MULTILINE)}
+    have |= {
+        hostabi.strip(m.group(1))
+        for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.MULTILINE)
+    }
     have |= set(json.loads((args.boot / "image.json").read_text()).get("function_stops", []))
     have |= library_names(args.libs)
     seeds = {d["entry"], *d["bindings"].values()}
@@ -183,7 +195,9 @@ def autogen(argv):
     # An image unit is linked as data: a name it defines only for another version (#if VERSION_DE) has no C
     # definition at this pin and binds to its pinned address like any other undefined data.
     image_list = args.plan.with_name("image-units.txt")
-    linked_sources = d["sources"] + [u for u in (lines(image_list) if image_list.exists() else []) if u not in d["sources"]]
+    linked_sources = d["sources"] + [
+        u for u in (lines(image_list) if image_list.exists() else []) if u not in d["sources"]
+    ]
     trial["sources"] = linked_sources
     while unresolved - routed_names:
         todo = sorted(unresolved - routed_names)
@@ -196,7 +210,9 @@ def autogen(argv):
             if kind == "need":
                 report["needs"].append(detail)
             elif kind == "added":
-                report["skipped"][name] = detail  # its unit is not in the archive: closure.py still routes the link error
+                report["skipped"][name] = (
+                    detail  # its unit is not in the archive: closure.py still routes the link error
+                )
                 trial["sources"] = linked_sources
             elif kind == "routed":
                 report["routed"][name] = detail
@@ -209,7 +225,9 @@ def autogen(argv):
         unresolved |= left
     # An alias binding routes its target as undefined when the unit that defines it is already linked: drop the
     # stop a linked or pulled object defines (it would be a multiple definition).
-    defined = set().union(*(syms[p][0] for p in boot_objects), *(defined_by[n][1] for n in defined_by if defined_by[n][0] in pulled))
+    defined = set().union(
+        *(syms[p][0] for p in boot_objects), *(defined_by[n][1] for n in defined_by if defined_by[n][0] in pulled)
+    )
     for name in [n for n in trial["stops"] if n in defined]:
         del trial["stops"][name]
         report["routed"].pop(name, None)
@@ -228,9 +246,11 @@ def autogen(argv):
     args.output.write_text(json.dumps(trial, indent=2, sort_keys=True) + "\n")
     report.update(pulled=len(pulled), members=len(members), refused=deny)
     args.output.with_suffix(".report.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
-    print(f"link-all: {len(pulled)}/{len(members)} archive units pulled, {len(report['routed'])} names routed "
-          f"({sum(1 for v in report['routed'].values() if v.startswith(('stop', 'frontier')))} stops), "
-          f"{len(report['needs'])} data needs, {len(report['skipped'])} unrouted, {len(deny)} units refused")
+    print(
+        f"link-all: {len(pulled)}/{len(members)} archive units pulled, {len(report['routed'])} names routed "
+        f"({sum(1 for v in report['routed'].values() if v.startswith(('stop', 'frontier')))} stops), "
+        f"{len(report['needs'])} data needs, {len(report['skipped'])} unrouted, {len(deny)} units refused"
+    )
     return 0
 
 

@@ -27,6 +27,7 @@ relocation of a name the source gives it, or a raw word the image bound: the nat
 or raw (the native word is the cartridge's number); a raw code word, or one in a blob (no image rewrites blob bytes), is a need: one ADDRESS line,
 and with --needs one JSON row; exit status 1 while any is left. Words of symbols the image does not place are listed as
 unplaced (the native image holds nothing there)."""
+
 import argparse
 import bisect
 import json
@@ -51,13 +52,54 @@ GBI_HEADS = frozenset(range(0x01, 0x08)) | frozenset(range(0xD3, 0x100))
 MAX_SKIP = 4  # instructions an entry alias may skip
 # SPECIAL funct codes with register operands only: shifts, hi/lo moves, mult/div, add/sub/logic/set-less-than and
 # their doubleword forms (no jr/jalr/syscall/break/sync/traps)
-ALU_FUNCT = frozenset([0, 2, 3, 4, 6, 7, 16, 17, 18, 19, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
-                       39, 42, 43, 44, 45, 46, 47, 56, 58, 59, 60, 62, 63])
+ALU_FUNCT = frozenset(
+    [
+        0,
+        2,
+        3,
+        4,
+        6,
+        7,
+        16,
+        17,
+        18,
+        19,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        56,
+        58,
+        59,
+        60,
+        62,
+        63,
+    ]
+)
 ALU_IMMEDIATE = frozenset([8, 9, 10, 11, 12, 13, 14, 15, 24, 25])  # addi..lui, daddi, daddiu
 
 
 class Targets:
     """Function starts and KUSEG data records of the version's pinned facts (image.facts)."""
+
     def __init__(self, table, preferred=(), roms=None):
         self.functions, self.records = {}, {}
         self.rom_of = {}  # function start (KSEG0) -> ROM offset of its first instruction, where the facts give one
@@ -86,7 +128,7 @@ class Targets:
         if not 1 <= skipped <= MAX_SKIP or base + 4 * skipped > len(rom):
             return None
         for k in range(skipped):
-            op, = struct.unpack_from(">I", rom, base + 4 * k)
+            (op,) = struct.unpack_from(">I", rom, base + 4 * k)
             if not register_alu(op):
                 return None
         name = self.function(start)
@@ -122,7 +164,7 @@ def register_alu(instruction):
 def _code(rom, at, targets, lo, hi):
     if not lo <= at <= hi - 4 or at + 4 > len(rom):
         return None
-    word, = struct.unpack_from(">I", rom, at)
+    (word,) = struct.unpack_from(">I", rom, at)
     found = targets.classify(word)
     if at - 4 >= lo and rom[at - 4] in GBI_HEADS:
         return None
@@ -138,7 +180,7 @@ def _code(rom, at, targets, lo, hi):
 def _pointer(rom, at, targets, lo, hi):
     if not lo <= at <= hi - 4:
         return False
-    word, = struct.unpack_from(">I", rom, at)
+    (word,) = struct.unpack_from(">I", rom, at)
     return KSEG0 <= word < RDRAM_END or bool(_code(rom, at, targets, lo, hi))
 
 
@@ -153,7 +195,11 @@ def code_class(rom, at, targets, lo=0, hi=None, lone=True):
     if not found:
         return None
     word, name, kind = found
-    if word < KSEG0 and (word & 0xFFF == 0 or not lone) and not any(_pointer(rom, at + 4 * k, targets, lo, hi) for k in NEAR):
+    if (
+        word < KSEG0
+        and (word & 0xFFF == 0 or not lone)
+        and not any(_pointer(rom, at + 4 * k, targets, lo, hi) for k in NEAR)
+    ):
         return None
     return name, kind
 
@@ -166,8 +212,11 @@ def code_word(rom, at, targets, lo=0, hi=None):
 
 def data_symbols(table, roms):
     """[(rom, address, size, name)] of the data symbols with a rom: fact, each up to the next one in the ROM."""
-    rows = sorted((rom, table[name][0], name) for name, rom in roms.items()
-                  if name in table and table[name][1] == "data" and table[name][0] >= KSEG0)
+    rows = sorted(
+        (rom, table[name][0], name)
+        for name, rom in roms.items()
+        if name in table and table[name][1] == "data" and table[name][0] >= KSEG0
+    )
     out = []
     for i, (rom, address, name) in enumerate(rows):
         end = rows[i + 1][0] if i + 1 < len(rows) else rom + 4
@@ -188,6 +237,7 @@ def _scan_word(rom, at, word, targets, lo, hi, lone=True):
 def scan(rom, project, source):
     """[(rom offset, original address or None, word, class, target, container)] of every address-shaped word."""
     import image  # the build's own fact readers
+
     table = image.facts(source, project["version"])
     roms = image.rom_facts(source, project["version"])
     targets = Targets(table, roms=roms)
@@ -198,7 +248,7 @@ def scan(rom, project, source):
         for offset in range(-(address % 4) % 4, size - 3, 4):
             if at + offset + 4 > len(rom):
                 break
-            word, = struct.unpack_from(">I", rom, at + offset)
+            (word,) = struct.unpack_from(">I", rom, at + offset)
             found = _scan_word(rom, at + offset, word, targets, *section)
             if found:
                 out.append((at + offset, address + offset, word, found[0], found[1], name))
@@ -207,7 +257,7 @@ def scan(rom, project, source):
             continue  # packed bytes: their pointers, if any, show in the unpacked layout's references
         for lo, hi in ranges:
             for at in range(lo + (-lo % 4), min(hi, len(rom)) - 3, 4):
-                word, = struct.unpack_from(">I", rom, at)
+                (word,) = struct.unpack_from(">I", rom, at)
                 found = _scan_word(rom, at, word, targets, lo, hi, False)
                 if found:
                     out.append((at, None, word, found[0], found[1], "blob " + blob))
@@ -219,8 +269,9 @@ def image_state(directory):
     report = json.loads((directory / "image.json").read_text())
     text = (directory / "image.c").read_text()
     block = text.split("n64c_boot_image[] = {", 1)[1].split("};", 1)[0]
-    extents = sorted((KSEG0 + int(a), int(b), int(z))
-                     for a, b, z in re.findall(r"\{(\d+)u, (\d+)u, (\d+)u\}", block) if int(z))
+    extents = sorted(
+        (KSEG0 + int(a), int(b), int(z)) for a, b, z in re.findall(r"\{(\d+)u, (\d+)u, (\d+)u\}", block) if int(z)
+    )
     bound = {int(row["address"], 16) for row in report.get("code_words", [])}
     return extents, (directory / "image.bin").read_bytes(), bound
 
@@ -249,24 +300,51 @@ def main():
             if i < 0 or address + 4 > extents[i][0] + extents[i][2]:
                 state = "unplaced"
             else:
-                native, = struct.unpack_from("<I", blob, extents[i][1] + address - extents[i][0])
+                (native,) = struct.unpack_from("<I", blob, extents[i][1] + address - extents[i][0])
                 state = "bound" if address in bound or native != word else "raw"
         counts[kind, state] = counts.get((kind, state), 0) + 1
-        line = ["ADDRESS", f"0x{at:x}", f"0x{address:08x}" if address is not None else "-", f"0x{word:08x}", kind,
-                target, state, container]
+        line = [
+            "ADDRESS",
+            f"0x{at:x}",
+            f"0x{address:08x}" if address is not None else "-",
+            f"0x{word:08x}",
+            kind,
+            target,
+            state,
+            container,
+        ]
         if kind in ("code", "code-entry") and state in ("raw", "blob"):
             print(*line, sep="\t")
-            needs.append({"kind": "address", "rom": f"0x{at:x}", "address": line[2], "word": line[3], "target": target,
-                          "state": state, "container": container})
+            needs.append(
+                {
+                    "kind": "address",
+                    "rom": f"0x{at:x}",
+                    "address": line[2],
+                    "word": line[3],
+                    "target": target,
+                    "state": state,
+                    "container": container,
+                }
+            )
     for (kind, state), count in sorted(counts.items()):
         print("COUNT", kind, state, count, sep="\t")
     import closure  # a D_00XXXXXX name the closure cannot bind to its function routes as zeroed data
+
     facts = closure.Facts(args.source, HERE.parent, portdir.fact("shim-bindings.txt"), policy.game_code(project))
     for sym, address, names in facts.unbound_aliases():
         print("ADDRESS", "-", f"0x{address:08x}", "-", "alias", names[0], "unbound", sym, sep="\t")
         counts["alias", "unbound"] = counts.get(("alias", "unbound"), 0) + 1
-        needs.append({"kind": "address", "rom": "-", "address": f"0x{address:08x}", "word": "-", "target": names[0],
-                      "state": "alias-unbound", "container": sym})
+        needs.append(
+            {
+                "kind": "address",
+                "rom": "-",
+                "address": f"0x{address:08x}",
+                "word": "-",
+                "target": names[0],
+                "state": "alias-unbound",
+                "container": sym,
+            }
+        )
     if args.needs:
         args.needs.write_text("".join(json.dumps(row) + "\n" for row in needs))
     return 1 if needs else 0

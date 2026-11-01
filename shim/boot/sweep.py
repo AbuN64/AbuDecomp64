@@ -16,6 +16,7 @@ function reaches (each unit once, cached as a small graph: defined symbols, refe
 objects are deleted at once), walk its closure with closure.py's own routing rules for what no unit defines (shim
 bindings, pinned data addresses, aliases, stops), and the row is appended to sweep.tsv in boot order as soon as it
 is done. A unit is found through an index of the identifiers the sources define at column 0."""
+
 import argparse
 import collections
 import concurrent.futures
@@ -39,8 +40,17 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
 
-FLAGS = ["-g", "-m32", "-std=gnu89", "-fno-strict-aliasing", "-fwrapv", "-msse2", "-mfpmath=sse",
-         "-ffunction-sections", "-fdata-sections"]
+FLAGS = [
+    "-g",
+    "-m32",
+    "-std=gnu89",
+    "-fno-strict-aliasing",
+    "-fwrapv",
+    "-msse2",
+    "-mfpmath=sse",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
 SECTION = re.compile(r"^(?:text|data(?:\.rel(?:\.ro)?(?:\.local)?)?|rodata|bss|sdata|sbss)\.(.+)$")
 RELOC_HEAD = re.compile(r"^Relocation section '\.rel(\.[^']+)' ")
 RELOC_ROW = re.compile(r"^\s*[0-9a-f]+\s+[0-9a-f]+\s+R_\w+\s+[0-9a-f]+\s+(\S+)")
@@ -82,12 +92,21 @@ def parse_nm(text):
 def classify_error(line):
     """The cause class of one compiler diagnostic."""
     low = line.lower()
-    for key, name in (("conflicting types", "decl-conflict"), ("redeclared", "decl-conflict"), ("redefinition", "decl-conflict"),
-                      ("previous declaration", "decl-conflict"), ("conflicting", "decl-conflict"),
-                      ("undeclared", "undeclared-ident"), ("unknown type name", "unknown-type"),
-                      ("too many arguments", "arg-count"), ("too few arguments", "arg-count"),
-                      ("no such file", "missing-include"), ("incompatible", "type-error"),
-                      ("invalid", "type-error"), ("syntax error", "syntax-error")):
+    for key, name in (
+        ("conflicting types", "decl-conflict"),
+        ("redeclared", "decl-conflict"),
+        ("redefinition", "decl-conflict"),
+        ("previous declaration", "decl-conflict"),
+        ("conflicting", "decl-conflict"),
+        ("undeclared", "undeclared-ident"),
+        ("unknown type name", "unknown-type"),
+        ("too many arguments", "arg-count"),
+        ("too few arguments", "arg-count"),
+        ("no such file", "missing-include"),
+        ("incompatible", "type-error"),
+        ("invalid", "type-error"),
+        ("syntax error", "syntax-error"),
+    ):
         if key in low:
             return name
     return "compile-other"
@@ -108,14 +127,40 @@ def run(cmd, **kw):
 def build_unit(rw, unit, work, python="python3"):
     """Port-compile one unit and return its graph record; every intermediate file is removed."""
     stem = work / unit.replace("/", "__")
-    pp = ["-DNON_MATCHING", "-DVERSION_US_REV1", "-D_LANGUAGE_C", "-DF3DEX_GBI_2", "-include",
-          str(HERE / "native.h"), *srcfiles.include_flags(rw)]
+    pp = [
+        "-DNON_MATCHING",
+        "-DVERSION_US_REV1",
+        "-D_LANGUAGE_C",
+        "-DF3DEX_GBI_2",
+        "-include",
+        str(HERE / "native.h"),
+        *srcfiles.include_flags(rw),
+    ]
     files = {s: str(stem) + s for s in (".i", ".stubs.c", ".json", ".d", ".o")}
     rec = {"unit": unit, "ok": False}
     try:
-        p = run([python, "-I", str(HERE / "prepare.py"), "--compiler", "gcc", "--source", f"{rw}/{unit}",
-                 "--output", files[".i"], "--stubs", files[".stubs.c"], "--inventory", files[".json"],
-                 "--depfile", files[".d"], "--", *FLAGS, *pp])
+        p = run(
+            [
+                python,
+                "-I",
+                str(HERE / "prepare.py"),
+                "--compiler",
+                "gcc",
+                "--source",
+                f"{rw}/{unit}",
+                "--output",
+                files[".i"],
+                "--stubs",
+                files[".stubs.c"],
+                "--inventory",
+                files[".json"],
+                "--depfile",
+                files[".d"],
+                "--",
+                *FLAGS,
+                *pp,
+            ]
+        )
         if p.returncode:
             rec["error"] = first_error(p.stderr)
             return rec
@@ -171,6 +216,7 @@ class Router:
     """What no compiled unit defines, and original libultra: closure.py's routing against a copy of the port manifest.
     external(sym) -> (status, class, detail); status ok or blocked. sdk(sym, unit) says whether the port binds sym
     to the shim instead of linking its C body (pinned libultra address or an SDK unit), as closure.py does."""
+
     def __init__(self, facts, manifest, deny, host, route, rebind=None):
         self.facts, self.d, self.deny, self.host, self.route = facts, copy.deepcopy(manifest), deny, host, route
         self.pin = manifest.get("source_pin", "")[:7]
@@ -190,9 +236,12 @@ class Router:
             self.refs = set()
             texts = (t for u, t in self.facts.text.items() if not self.facts.sdk_unit(u))
             src = self.facts.source
-            heads = (p.read_text(errors="replace") for h in srcfiles.layout(src)["header_roots"]
-                     for p in sorted((src / h).rglob("*"))
-                     if p.is_file() and "sdk" not in (q.lower() for q in p.relative_to(src).parts))
+            heads = (
+                p.read_text(errors="replace")
+                for h in srcfiles.layout(src)["header_roots"]
+                for p in sorted((src / h).rglob("*"))
+                if p.is_file() and "sdk" not in (q.lower() for q in p.relative_to(src).parts)
+            )
             for text in (*texts, *heads):
                 self.refs.update(IDENT.findall(DECLARATION.sub(" ", COMMENT.sub(" ", text))))
         return sym not in self.refs
@@ -234,9 +283,12 @@ IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
 # One function prototype or extern declaration statement: [extern] TYPE NAME(PARAMS); with a type word (or *)
 # before the name, so a call statement (no type, or a keyword such as return) never matches.
-DECLARATION = re.compile(r"^[ \t]*(?!(?:return|else|case|goto|do|sizeof)\b)(?:extern[ \t]+)?[A-Za-z_][\w \t*]*?"
-                         r"(?<=[\s*])\**[A-Za-z_]\w*[ \t]*\([^;{}()]*(?:\([^;{}()]*\)[^;{}()]*)*\)[ \t]*;"
-                         r"|^[ \t]*extern[ \t][^;{}()=]*;", re.MULTILINE)
+DECLARATION = re.compile(
+    r"^[ \t]*(?!(?:return|else|case|goto|do|sizeof)\b)(?:extern[ \t]+)?[A-Za-z_][\w \t*]*?"
+    r"(?<=[\s*])\**[A-Za-z_]\w*[ \t]*\([^;{}()]*(?:\([^;{}()]*\)[^;{}()]*)*\)[ \t]*;"
+    r"|^[ \t]*extern[ \t][^;{}()=]*;",
+    re.MULTILINE,
+)
 
 
 def build_index(texts):
@@ -254,6 +306,7 @@ def build_index(texts):
 
 class Graph:
     """Units are built on demand by `build(unit)` and cached; `index` maps an identifier to the units that may define it."""
+
     def __init__(self, router, build, index, records=()):
         self.router, self.build, self.index = router, build, index
         self.rec, self.glob, self.tried = {}, {}, set()
@@ -361,8 +414,13 @@ def check_function(graph, deny, sym, unit):
     if not bl:
         return "ok", "ok", "", 0, ""
     depth, cls, name, detail = bl[0]
-    return ("callee" if depth == 1 else "closure"), cls, f"{name}: {detail}"[:300], len(bl), \
-        ";".join(f"{b[1]}:{b[2]}" for b in bl[1:6])
+    return (
+        ("callee" if depth == 1 else "closure"),
+        cls,
+        f"{name}: {detail}"[:300],
+        len(bl),
+        ";".join(f"{b[1]}:{b[2]}" for b in bl[1:6]),
+    )
 
 
 def read_list(path):
@@ -413,8 +471,23 @@ HEADER = "symbol\torder\tcheck\tverdict\tfirst_error\tunit\tlinked\tblockers\tmo
 
 
 def line_of(r, linked):
-    return "\t".join([r["symbol"], str(r["order"]), r["check"], r["verdict"], r["why"].replace("\t", " "),
-                      r["unit"], "yes" if r["unit"] in linked else "no", str(r["count"]), r["more"], "gap"]) + "\n"
+    return (
+        "\t".join(
+            [
+                r["symbol"],
+                str(r["order"]),
+                r["check"],
+                r["verdict"],
+                r["why"].replace("\t", " "),
+                r["unit"],
+                "yes" if r["unit"] in linked else "no",
+                str(r["count"]),
+                r["more"],
+                "gap",
+            ]
+        )
+        + "\n"
+    )
 
 
 def run_sweep(rows, graph, deny, linked, workers, out, on_row=None):
@@ -449,7 +522,9 @@ def run_sweep(rows, graph, deny, linked, workers, out, on_row=None):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--list", required=True, type=pathlib.Path, help="TSV: order, symbol, port, decomp, owning file, block, percent")
+    ap.add_argument(
+        "--list", required=True, type=pathlib.Path, help="TSV: order, symbol, port, decomp, owning file, block, percent"
+    )
     ap.add_argument("--rw", required=True, type=pathlib.Path, help="the RW (ragewars-decomp) tree to read")
     ap.add_argument("--out", required=True, type=pathlib.Path)
     ap.add_argument("--manifest", type=pathlib.Path, default=portdir.fact("manifest.json"))
@@ -459,6 +534,7 @@ def main():
     ap.add_argument("--actor", default="", help="announce start and end on the event feed under this name")
     args = ap.parse_args()
     import closure
+
     rw, out = args.rw.resolve(), args.out.resolve()
     rows = read_list(args.list)
     jobs = args.jobs or jobs_now()
@@ -477,7 +553,9 @@ def main():
 
     manifest = json.loads(args.manifest.read_text())
     facts = closure.Facts(rw, HERE.parent, args.shim_bindings, closure.policy.game_code(manifest))
-    graph = Graph(Router(facts, manifest, deny, host_symbols(), closure.route, closure.rebind), build, build_index(facts.text))
+    graph = Graph(
+        Router(facts, manifest, deny, host_symbols(), closure.route, closure.rebind), build, build_index(facts.text)
+    )
     if args.actor:
         event(args.actor, "started", f"taste sweep: {len(rows)} functions, {jobs} jobs")
     results = run_sweep(rows, graph, deny, set(manifest["sources"]), jobs, out)

@@ -17,9 +17,16 @@ class SourceFilesTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.tmp.name)
         for name, text in {
-            "src/A/a.CPP": "", "src/B/b.c": "", "src/B/c.cpp": "", "src/libgcc/g.c": "", "src/B/x.s": "",
-            "src/sdk/libgcc/runtime.C": "", "src/B/not.c.bak": "",
-            "include/A.H": "extern u32 D_00000000;\n", "include/b.h": "extern u8 D_00000001;\n", "include/n.txt": "",
+            "src/A/a.CPP": "",
+            "src/B/b.c": "",
+            "src/B/c.cpp": "",
+            "src/libgcc/g.c": "",
+            "src/B/x.s": "",
+            "src/sdk/libgcc/runtime.C": "",
+            "src/B/not.c.bak": "",
+            "include/A.H": "extern u32 D_00000000;\n",
+            "include/b.h": "extern u8 D_00000001;\n",
+            "include/n.txt": "",
         }.items():
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text(text)
@@ -46,14 +53,16 @@ class SourceFilesTest(unittest.TestCase):
         (self.root / "src/looks.C").mkdir()
         shim = pathlib.Path(srcfiles.__file__).resolve().parents[1]
         (self.root / "CMakeLists.txt").write_text(
-            'cmake_minimum_required(VERSION 3.20)\nproject(SuffixProof NONE)\n'
+            "cmake_minimum_required(VERSION 3.20)\nproject(SuffixProof NONE)\n"
             f'include("{shim}/cmake/sources.cmake")\n'
             'n64c_source_files(units "${CMAKE_CURRENT_SOURCE_DIR}")\n'
             'list(JOIN units "\\n" listing)\n'
             'file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/units.txt" "${listing}\\n")\n'
         )
         build = self.root / "build"
-        result = subprocess.run(["cmake", "-S", str(self.root), "-B", str(build)], capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            ["cmake", "-S", str(self.root), "-B", str(build)], capture_output=True, text=True, check=False
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         found = (build / "units.txt").read_text().splitlines()
         expected = [str(p) for p in srcfiles.sources(self.root)]
@@ -76,21 +85,27 @@ class SourceFilesTest(unittest.TestCase):
     def test_a_moved_layout_in_config_toml_is_followed(self):
         self.assertEqual(srcfiles.library_folder(self.root, "libgcc"), "src/sdk/libgcc")
         self.assertEqual(srcfiles.library_prefix(self.root), "src/sdk/")
-        self.assertEqual(srcfiles.include_flags(self.root),
-                         [f"-I{self.root / 'include'}", f"-I{self.root / 'src/sdk/libgcc'}"])
+        self.assertEqual(
+            srcfiles.include_flags(self.root), [f"-I{self.root / 'include'}", f"-I{self.root / 'src/sdk/libgcc'}"]
+        )
         (self.root / "config.toml").write_text(
             '[layout]\nsource_roots = ["src", "sdk"]\nheader_roots = ["include", "sdk/include"]\n'
-            'library_source = "sdk/{library}"\n')
+            'library_source = "sdk/{library}"\n'
+        )
         for name in ("sdk/libultra/os.c", "sdk/include/os.h"):
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)
             (self.root / name).write_text("")
         got = [str(p.relative_to(self.root)) for p in srcfiles.sources(self.root)]
         self.assertEqual(got, ["sdk/libultra/os.c", "src/A/a.CPP", "src/B/b.c", "src/B/c.cpp"])
-        self.assertEqual([str(p.relative_to(self.root)) for p in srcfiles.headers(self.root)],
-                         ["include/A.H", "include/b.h", "sdk/include/os.h"])
+        self.assertEqual(
+            [str(p.relative_to(self.root)) for p in srcfiles.headers(self.root)],
+            ["include/A.H", "include/b.h", "sdk/include/os.h"],
+        )
         self.assertEqual(srcfiles.library_prefix(self.root), "sdk/")
-        self.assertEqual(srcfiles.include_flags(self.root), [f"-I{self.root / 'include'}",
-                         f"-I{self.root / 'sdk/include'}", f"-I{self.root / 'sdk/libgcc'}"])
+        self.assertEqual(
+            srcfiles.include_flags(self.root),
+            [f"-I{self.root / 'include'}", f"-I{self.root / 'sdk/include'}", f"-I{self.root / 'sdk/libgcc'}"],
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Execute original native C and require a hash-qualified, presented frame."""
+
 import argparse
 import hashlib
 import importlib.util
@@ -31,8 +32,7 @@ def dl_golden(goldens):
 
 def compare_dl(native, goldens, boot_log=None):
     """Exact first-submission comparison; no pointer masking or opcode acceptance."""
-    report = {"accepted": False, "scope": "FL0-a first submitted graphics DL",
-              "word_order": "little-endian32"}
+    report = {"accepted": False, "scope": "FL0-a first submitted graphics DL", "word_order": "little-endian32"}
     try:
         entry, expected = dl_golden(goldens)
         report["golden"] = entry
@@ -40,27 +40,48 @@ def compare_dl(native, goldens, boot_log=None):
         report.update(native_sha256=digest(native), native_bytes=len(actual))
         if not actual or len(actual) % 8:
             raise ValueError("invalid native DL size")
-        offset = next((i for i, (a, b) in enumerate(zip(actual, expected, strict=False)) if a != b),
-                      min(len(actual), len(expected)) if len(actual) != len(expected) else None)
+        offset = next(
+            (i for i, (a, b) in enumerate(zip(actual, expected, strict=False)) if a != b),
+            min(len(actual), len(expected)) if len(actual) != len(expected) else None,
+        )
         if offset is not None:
             base = offset // 8 * 8
+
             def words(data):
-                return [f"0x{w:08x}" for w in struct.unpack("<II", data[base:base+8])] if base+8 <= len(data) else None
-            report["first_diff"] = {"byte_offset": offset, "command_index": offset // 8,
-                                    "word_index": offset // 4, "native": words(actual),
-                                    "golden": words(expected),
-                                    "kind": "length" if offset == min(len(actual), len(expected)) else "word"}
+                return (
+                    [f"0x{w:08x}" for w in struct.unpack("<II", data[base : base + 8])]
+                    if base + 8 <= len(data)
+                    else None
+                )
+
+            report["first_diff"] = {
+                "byte_offset": offset,
+                "command_index": offset // 8,
+                "word_index": offset // 4,
+                "native": words(actual),
+                "golden": words(expected),
+                "kind": "length" if offset == min(len(actual), len(expected)) else "word",
+            }
         report["accepted"] = offset is None
         if boot_log is not None:
             text = boot_log.read_text()
-            match = re.search(r"^boot-gfx: first submit seq=(\d+) retrace=(\d+) data=(0x[0-9a-f]+) bytes=(\d+) audio_before=(\d+)$", text, re.MULTILINE)
+            match = re.search(
+                r"^boot-gfx: first submit seq=(\d+) retrace=(\d+) data=(0x[0-9a-f]+) bytes=(\d+) audio_before=(\d+)$",
+                text,
+                re.MULTILINE,
+            )
             if not match:
                 raise ValueError("missing first graphics submission receipt")
-            report["submission"] = dict(zip(["seq", "retrace", "data", "bytes", "audio_before"],
-                                             [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()], strict=False))
+            report["submission"] = dict(
+                zip(
+                    ["seq", "retrace", "data", "bytes", "audio_before"],
+                    [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()],
+                    strict=False,
+                )
+            )
             if report["submission"]["bytes"] != len(actual):
                 raise ValueError("first graphics receipt size differs from dump")
-            hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[:match.start()], re.MULTILINE)
+            hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[: match.start()], re.MULTILINE)
             report["last_first_hit"] = {"count": int(hits[-1][0]), "name": hits[-1][2]} if hits else None
     except (ValueError, OSError, KeyError, TypeError, IndexError) as error:
         report.update(accepted=False, error=str(error))
@@ -101,20 +122,44 @@ def run(binary, rom, project_path, goldens, output):
         for key in ["framebuffer", "output"]:
             if len(gate[key]) != 2 or any(type(n) is not int or not 0 < n <= 4096 for n in gate[key]):
                 raise ValueError("invalid frame dimensions")
-        report.update(binary_sha256=digest(binary), rom_sha256=digest(rom),
-                      project_sha256=digest(project_path), golden_sha256=digest(golden),
-                      checkpoint=gate["checkpoint"], retrace=gate["retrace"])
+        report.update(
+            binary_sha256=digest(binary),
+            rom_sha256=digest(rom),
+            project_sha256=digest(project_path),
+            golden_sha256=digest(golden),
+            checkpoint=gate["checkpoint"],
+            retrace=gate["retrace"],
+        )
         dl_golden(goldens)
         dl = attempt / "first-gfx.dl"
         ppm = attempt / "native.ppm"
         # The game extracts the ROM into a fresh user folder first, as on a player's first run.
-        command = [str(binary.resolve()), "--no-dialog", "--user-dir", str((attempt / "user").resolve()),
-                   "--rom", str(rom.resolve()), "--capture", str(ppm.resolve()), "--retrace", str(gate["retrace"]),
-                   "--fb", "x".join(map(str, gate["framebuffer"])), "--window", "x".join(map(str, gate["output"]))]
+        command = [
+            str(binary.resolve()),
+            "--no-dialog",
+            "--user-dir",
+            str((attempt / "user").resolve()),
+            "--rom",
+            str(rom.resolve()),
+            "--capture",
+            str(ppm.resolve()),
+            "--retrace",
+            str(gate["retrace"]),
+            "--fb",
+            "x".join(map(str, gate["framebuffer"])),
+            "--window",
+            "x".join(map(str, gate["output"])),
+        ]
         report["command"] = command
         with (attempt / "boot.log").open("w") as log:
-            result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False,
-                                    env={**os.environ, "N64C_FIRST_GFX_DL": str(dl.resolve())})
+            result = subprocess.run(
+                command,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                timeout=120,
+                check=False,
+                env={**os.environ, "N64C_FIRST_GFX_DL": str(dl.resolve())},
+            )
         report["native_exit"] = result.returncode
         report["fl0_a"] = compare_dl(dl, goldens, attempt / "boot.log")
         if not report["fl0_a"]["accepted"]:
@@ -127,40 +172,62 @@ def run(binary, rom, project_path, goldens, output):
             raise ValueError("native process returned without a rendered presentation")
         metrics = image_metrics()
         import numpy as np
+
         render = metrics.read_ppm(ppm)
         ow, oh = gate["output"]
         if render.shape != (oh, ow, 3):
             raise ValueError("native frame dimensions differ from project")
         oracle = metrics.read_png(golden)
         x, y, width, height = gate["crop"]
-        if any(type(n) is not int for n in [x,y,width,height]) or x < 0 or y < 0 or width <= 0 or height <= 0 or x+width > oracle.shape[1] or y+height > oracle.shape[0]:
+        if (
+            any(type(n) is not int for n in [x, y, width, height])
+            or x < 0
+            or y < 0
+            or width <= 0
+            or height <= 0
+            or x + width > oracle.shape[1]
+            or y + height > oracle.shape[0]
+        ):
             raise ValueError("invalid oracle crop")
-        small = metrics.box_resize(oracle[y:y+height,x:x+width], ow, oh)
+        small = metrics.box_resize(oracle[y : y + height, x : x + width], ow, oh)
         a, b = metrics.luma(small), metrics.luma(render)
         ys, xs = np.nonzero((a > 16) | (b > 16))
         if not len(ys):
             raise ValueError("both frames are blank")
-        box = (slice(max(int(ys.min())-5,0),int(ys.max())+6),
-               slice(max(int(xs.min())-5,0),int(xs.max())+6))
-        whole = metrics.ssim(a,b)
-        content = metrics.ssim(a[box],b[box])
-        blank = metrics.ssim(a,np.zeros_like(a))
-        report.update(whole_ssim=whole, content_ssim=content, blank_control_ssim=blank,
-                      threshold=threshold, frame_sha256=digest(ppm))
+        box = (slice(max(int(ys.min()) - 5, 0), int(ys.max()) + 6), slice(max(int(xs.min()) - 5, 0), int(xs.max()) + 6))
+        whole = metrics.ssim(a, b)
+        content = metrics.ssim(a[box], b[box])
+        blank = metrics.ssim(a, np.zeros_like(a))
+        report.update(
+            whole_ssim=whole,
+            content_ssim=content,
+            blank_control_ssim=blank,
+            threshold=threshold,
+            frame_sha256=digest(ppm),
+        )
         report["accepted"] = whole >= threshold and content >= threshold
         if not report["accepted"]:
             raise ValueError("native frame failed whole-frame/content-box SSIM")
-    except (ValueError, OSError, KeyError, TypeError, IndexError, ImportError, AssertionError, subprocess.TimeoutExpired) as error:
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        IndexError,
+        ImportError,
+        AssertionError,
+        subprocess.TimeoutExpired,
+    ) as error:
         report["error"] = str(error)
         report["accepted"] = False
-    (attempt / "report.json").write_text(json.dumps(report,indent=2)+"\n")
+    (attempt / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["binary", "rom", "project", "goldens", "output"]:
-        parser.add_argument("--"+name, type=Path)
+        parser.add_argument("--" + name, type=Path)
     parser.add_argument("--native-dl", type=Path, help="compare an already captured first task (FL0-a only)")
     parser.add_argument("--boot-log", type=Path)
     args = parser.parse_args()
@@ -172,8 +239,8 @@ def main():
         return 0 if report["accepted"] else 1
     if not all([args.binary, args.rom, args.project, args.goldens, args.output]):
         parser.error("frame gate requires --binary --rom --project --goldens --output")
-    report = run(args.binary,args.rom,args.project,args.goldens,args.output)
-    print(json.dumps(report,sort_keys=True))
+    report = run(args.binary, args.rom, args.project, args.goldens, args.output)
+    print(json.dumps(report, sort_keys=True))
     return 0 if report["accepted"] else 1
 
 

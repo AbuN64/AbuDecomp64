@@ -11,6 +11,7 @@ stops every thread before the breaker unwinds the spinning one, and DIR/hang-<n>
   32-bit word it holds (what the spin waits on; guest RAM is identity-mapped at 0x80000000).
 The boot then continues, so one run lists every hang with its core. The boot's own stdout/stderr go to DIR/boot.log.
 Only this script's own gdb child is ever signalled (the boot's timeout is gdb's, by PID)."""
+
 import contextlib
 import os
 import re
@@ -30,8 +31,14 @@ def operands(text):
     for absolute in ABSOLUTE.findall(args):
         out.append((int(absolute, 16), None, None, 1))
     for disp, base, index, scale in OPERAND.findall(args):
-        out.append((int(disp, 0) if disp else 0, base[1:] if base else None, index[1:] if index else None,
-                    int(scale) if scale else 1))
+        out.append(
+            (
+                int(disp, 0) if disp else 0,
+                base[1:] if base else None,
+                index[1:] if index else None,
+                int(scale) if scale else 1,
+            )
+        )
     return out
 
 
@@ -67,8 +74,13 @@ def in_gdb(out_dir):
             if "libc" in lib or "libpthread" in lib or top == "break_hang":
                 continue  # parked in a host wait, or the watchdog itself
             # the innermost original function (a thunk or shim frame may sit above it)
-            number = next((int(m.group(1)) for m in re.finditer(r"^#(\d+)\s+(?:0x[0-9a-f]+ in )?(func_\w+|rw_\w+)",
-                                                                 bt, re.MULTILINE)), 0)
+            number = next(
+                (
+                    int(m.group(1))
+                    for m in re.finditer(r"^#(\d+)\s+(?:0x[0-9a-f]+ in )?(func_\w+|rw_\w+)", bt, re.MULTILINE)
+                ),
+                0,
+            )
             gdb.execute(f"frame {number}", to_string=True)
             f = gdb.selected_frame()
             regs = frame_regs(f)
@@ -81,8 +93,10 @@ def in_gdb(out_dir):
                 listing = []
             at = next((i for i, l in enumerate(listing) if l.startswith("=>")), None)
             if at is None:  # a caller frame: its pc is the return address
-                at = next((i for i, l in enumerate(listing) if l.split()[:1] == [f"{pc:#010x}"] or f"{pc:#x} <" in l), 0)
-            for l in listing[max(at - 14, 0):at + 10]:
+                at = next(
+                    (i for i, l in enumerate(listing) if l.split()[:1] == [f"{pc:#010x}"] or f"{pc:#x} <" in l), 0
+                )
+            for l in listing[max(at - 14, 0) : at + 10]:
                 m = re.match(r"^(=>)?\s*(0x[0-9a-f]+) <[^>]*>:\s*(.*)$", l)
                 if not m:
                     continue
@@ -133,14 +147,16 @@ def main(argv):
         sys.stderr.write("usage: hangcore.py --out DIR -- BINARY ARGS...\n")
         return 2
     out_dir = os.path.abspath(argv[1])
-    boot = argv[argv.index("--") + 1:]
+    boot = argv[argv.index("--") + 1 :]
     os.makedirs(out_dir, exist_ok=True)
     env = dict(os.environ, N64C_RUN_ON=os.environ.get("N64C_RUN_ON", "1"), HANGCORE_OUT=out_dir)
     command = ["gdb", "-q", "-batch", "-nx", "-x", os.path.abspath(__file__), "--args", *boot]
     seconds = int(os.environ.get("N64C_RUN_ON_LIMIT", "300")) + 60
     with open(os.path.join(out_dir, "boot.log"), "w") as log:
         try:  # the timeout kills only this gdb child (by PID); the boot ends with it
-            return subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=env, timeout=seconds, check=False).returncode
+            return subprocess.run(
+                command, stdout=log, stderr=subprocess.STDOUT, env=env, timeout=seconds, check=False
+            ).returncode
         except subprocess.TimeoutExpired:
             log.write(f"hangcore: gdb ran past {seconds} s; killed\n")
             return 124

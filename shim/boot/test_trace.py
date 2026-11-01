@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build and run an instrumented fixture through the boot hit census."""
+
 import argparse
 import importlib.util
 import json
@@ -21,7 +22,7 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("boot_trace", ROOT / "trace.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-GAME = r'''
+GAME = r"""
 extern void n64c_trace_event(const char *) __attribute__((weak));
 void alpha(void) {}
 void beta(void) { alpha(); }
@@ -44,10 +45,14 @@ int real_main(void) {
     delta(); /* gamma_fn (order 3) is never reached before delta (order 4) */
     return 0;
 }
-'''
-TRACE = "order\taddress\tsymbol\tdecomp_name\n1\t0x80000010\talpha\n2\t0x80000020\tbeta_old\tbeta\n" \
-        "3\t0x80000030\tgamma_fn\n4\t0x80000040\tdelta\n5\t0x80000050\tshimmed\n6\t0x80000060\tnot_linked\n" \
-        "7\t0x80000070\thost_shim\n8\t0x80000080\tnative_api\n"
+"""
+TRACE = (
+    "order\taddress\tsymbol\tdecomp_name\n1\t0x80000010\talpha\n2\t0x80000020\tbeta_old\tbeta\n"
+    "3\t0x80000030\tgamma_fn\n4\t0x80000040\tdelta\n5\t0x80000050\tshimmed\n6\t0x80000060\tnot_linked\n"
+    "7\t0x80000070\thost_shim\n8\t0x80000080\tnative_api\n"
+)
+
+
 class TraceTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=args.work)
@@ -58,17 +63,27 @@ class TraceTests(unittest.TestCase):
         (facts / "symbol_addrs.txt").write_text(
             "alpha = 0x80000010; // type:func\nbeta = 0x80000020; // type:func\nD_data = 0x80000030; //\n"
             "shimmed = 0x80000050; // type:func\nnative_api = 0x80000080; // type:func\n"
-            "osLib = 0x802B0000; // type:func\n")
+            "osLib = 0x802B0000; // type:func\n"
+        )
         (self.path / "trace.tsv").write_text(TRACE)
-        project = {"version": "test", "sources": [],
-                   "bindings": {"shimmed": "host_shim", "shimmed_alias": "host_shim", "dead_bound": "never_shim",
-                                "game_alias": "alpha"},
-                   "stops": {}}
+        project = {
+            "version": "test",
+            "sources": [],
+            "bindings": {
+                "shimmed": "host_shim",
+                "shimmed_alias": "host_shim",
+                "dead_bound": "never_shim",
+                "game_alias": "alpha",
+            },
+            "stops": {},
+        }
         (self.path / "input.json").write_text(json.dumps(project))
+
     def generate(self):
         with patch.object(module, "native_functions", return_value={"host_shim", "native_api", "never_shim"}):
             module.generate(self.path / "trace.tsv", self.path / "input.json", self.path / "source", self.path / "out")
         return (self.path / "out/trace_table.c").read_text()
+
     def test_table_names_and_shim_rows(self):
         table = self.generate()
         self.assertIn('{2, 0x80000020u, 0, {"beta_old", "beta"}}', table)
@@ -79,51 +94,78 @@ class TraceTests(unittest.TestCase):
         self.assertIn("n64c_shim_count = 3;", table)
         self.assertIn('{8, 0x80000080u, 1, {"native_api"}}', table)
         self.assertNotIn('"game_alias"', table)
+
     def test_bad_trace_is_refused(self):
-        for text in ["order\taddress\tsymbol\n2\t0x80000010\talpha\n", "order\taddress\tsymbol\n1\t0x80000010\n",
-                     "order\taddress\tsymbol\n1\t0x80000010\tbad name\n", "order\taddress\tsymbol\n"]:
+        for text in [
+            "order\taddress\tsymbol\n2\t0x80000010\talpha\n",
+            "order\taddress\tsymbol\n1\t0x80000010\n",
+            "order\taddress\tsymbol\n1\t0x80000010\tbad name\n",
+            "order\taddress\tsymbol\n",
+        ]:
             (self.path / "trace.tsv").write_text(text)
             with self.assertRaises(ValueError):
                 self.generate()
+
     def test_instrumented_run_prints_first_hits(self):
         self.generate()
         (self.path / "game.c").write_text(GAME)
         flags = ["-m32"] if args.m32 else []
         objects = []
-        for source, extra in [(self.path / "game.c", ["-finstrument-functions"]),
-                              (ROOT / "trace.c", []), (self.path / "out/trace_table.c", []),
-                              (ROOT / "test_charge_stub.c", [])]:
+        for source, extra in [
+            (self.path / "game.c", ["-finstrument-functions"]),
+            (ROOT / "trace.c", []),
+            (self.path / "out/trace_table.c", []),
+            (ROOT / "test_charge_stub.c", []),
+        ]:
             obj = self.path / (source.stem + ".o")
-            subprocess.run([args.compiler, *flags, *extra, "-I" + str(ROOT), "-c", str(source), "-o", str(obj)],
-                           check=True, capture_output=True, text=True)
+            subprocess.run(
+                [args.compiler, *flags, *extra, "-I" + str(ROOT), "-c", str(source), "-o", str(obj)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             objects.append(str(obj))
         main_obj = self.path / "driver.o"
         driver = self.path / "driver.c"
-        driver.write_text("extern void n64c_trace_init(void);\nextern void n64c_trace_summary(void);\n"
-                          "extern int real_main(void);\nint main(void){n64c_trace_init();int r=real_main();"
-                          "n64c_trace_summary();return r;}\n")
-        subprocess.run([args.compiler, *flags, "-I" + str(ROOT), "-c", str(driver), "-o", str(main_obj)],
-                       check=True, capture_output=True, text=True)
+        driver.write_text(
+            "extern void n64c_trace_init(void);\nextern void n64c_trace_summary(void);\n"
+            "extern int real_main(void);\nint main(void){n64c_trace_init();int r=real_main();"
+            "n64c_trace_summary();return r;}\n"
+        )
+        subprocess.run(
+            [args.compiler, *flags, "-I" + str(ROOT), "-c", str(driver), "-o", str(main_obj)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         exe = self.path / "check"
-        subprocess.run([args.compiler, *flags, "-no-pie", str(main_obj), *objects,
-                        "-ldl", "-lpthread", "-o", str(exe)], check=True, capture_output=True, text=True)
+        subprocess.run(
+            [args.compiler, *flags, "-no-pie", str(main_obj), *objects, "-ldl", "-lpthread", "-o", str(exe)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr.splitlines(), [
-            "boot-shim-bind: host_shim host_shim shimmed shimmed_alias",
-            "boot-shim-bind: native_api native_api",
-            "boot-shim-bind: never_shim dead_bound never_shim",
-            "boot-step: trace armed: 4 of 8 functions watched (3 shim-bound, 1 not linked)",
-            "boot-step: first thread start (after 0/8)",
-            "boot-shim: host_shim host_shim shimmed shimmed_alias",
-            "boot-shim: native_api native_api",
-            "boot-step: 1/8 beta",
-            "boot-step: out of oracle order: beta (order 2) before alpha (order 1)",
-            "boot-step: 2/8 alpha",
-            "boot-step: 3/8 delta",
-            "boot-step: out of oracle order: delta (order 4) before gamma_fn (order 3)",
-            "boot-step: census 3/8 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
-        ])
+        self.assertEqual(
+            result.stderr.splitlines(),
+            [
+                "boot-shim-bind: host_shim host_shim shimmed shimmed_alias",
+                "boot-shim-bind: native_api native_api",
+                "boot-shim-bind: never_shim dead_bound never_shim",
+                "boot-step: trace armed: 4 of 8 functions watched (3 shim-bound, 1 not linked)",
+                "boot-step: first thread start (after 0/8)",
+                "boot-shim: host_shim host_shim shimmed shimmed_alias",
+                "boot-shim: native_api native_api",
+                "boot-step: 1/8 beta",
+                "boot-step: out of oracle order: beta (order 2) before alpha (order 1)",
+                "boot-step: 2/8 alpha",
+                "boot-step: 3/8 delta",
+                "boot-step: out of oracle order: delta (order 4) before gamma_fn (order 3)",
+                "boot-step: census 3/8 hit, 4 watched, last delta (order 4), next in oracle order gamma_fn (order 3)",
+            ],
+        )
+
     @unittest.skipUnless(args.m32, "lockstep return trampolines on i386 only")
     def test_lockstep_guest_shutdown_returns_through_host_entry(self):
         self.generate()
@@ -181,19 +223,48 @@ extern int real_main(void);
 int main(void) { n64c_trace_init(); return real_main(); }
 """)
         objects = []
-        for source, extra in [(self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
-                              (self.path / "driver.c", []), (ROOT / "trace.c", []),
-                              (ROOT.parent / "n64c_sched.c", []), (ROOT.parent / "os/os_posix_proc.c", []),
-                              (self.path / "out/trace_table.c", [])]:
+        for source, extra in [
+            (self.path / "game.c", ["-finstrument-functions", "-fno-omit-frame-pointer"]),
+            (self.path / "driver.c", []),
+            (ROOT / "trace.c", []),
+            (ROOT.parent / "n64c_sched.c", []),
+            (ROOT.parent / "os/os_posix_proc.c", []),
+            (self.path / "out/trace_table.c", []),
+        ]:
             obj = self.path / (source.stem + ".o")
-            subprocess.run([args.compiler, "-m32", "-O1", *extra, "-I" + str(ROOT), "-I" + str(ROOT.parent),
-                            "-c", str(source), "-o", str(obj)], check=True, capture_output=True, text=True)
+            subprocess.run(
+                [
+                    args.compiler,
+                    "-m32",
+                    "-O1",
+                    *extra,
+                    "-I" + str(ROOT),
+                    "-I" + str(ROOT.parent),
+                    "-c",
+                    str(source),
+                    "-o",
+                    str(obj),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             objects.append(str(obj))
         exe = self.path / "shutdown"
-        subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-ldl", "-lpthread", "-o", str(exe)],
-                       check=True, capture_output=True, text=True)
-        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5,
-                                env={"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(self.path / "lockstep")}, check=False)
+        subprocess.run(
+            [args.compiler, "-m32", "-no-pie", *objects, "-ldl", "-lpthread", "-o", str(exe)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = subprocess.run(
+            [str(exe)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(self.path / "lockstep")},
+            check=False,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("boot-lockstep:", result.stderr)
         points = [json.loads(line) for line in (self.path / "lockstep/lockstep.jsonl").read_text().splitlines()]
@@ -204,33 +275,62 @@ int main(void) { n64c_trace_init(); return real_main(); }
         # One boot meets an unlinked call, a NULL read, a divide by zero, a spin, an uncovered DMA and a refused
         # task. Run-on records each once, in boot order, and every caller resumes with its own callee-saved registers.
         (self.path / "game.c").write_text(RUN_ON_GAME)
-        (self.path / "stub.c").write_text('extern long long n64c_boot_missing(const char *);\n'
-                                          'long long unlinked(void) { return n64c_boot_missing("unlinked"); }\n')
+        (self.path / "stub.c").write_text(
+            "extern long long n64c_boot_missing(const char *);\n"
+            'long long unlinked(void) { return n64c_boot_missing("unlinked"); }\n'
+        )
         (self.path / "table.c").write_text(
             '#include "trace.h"\nconst N64cTraceEntry n64c_trace_entries[] = {\n'
             '    {1, 0x80000010u, 0, {"keep"}}, {2, 0x80000020u, 0, {"crash"}}, {3, 0x80000030u, 0, {"spin"}},\n'
             '    {4, 0x80000040u, 0, {"never"}}};\nconst unsigned n64c_trace_count = 4;\n'
-            'const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n')
+            "const N64cShimEntry n64c_shim_entries[] = {{0, 0}};\nconst unsigned n64c_shim_count = 0;\n"
+        )
         (self.path / "shim.c").write_text(RUN_ON_SHIM)
         shim = ROOT.parent
         objects = []
         game = ["-O2", "-finstrument-functions", "-fno-omit-frame-pointer"]
-        for source, extra in [(self.path / "game.c", game), (self.path / "stub.c", game), (ROOT / "trace.c", ["-O2"]), (ROOT / "test_charge_stub.c", ["-O2"]),
-                              (ROOT / "runon.c", ["-O2"]), (ROOT / "missing.c", ["-O2"]),
-                              (self.path / "table.c", []), (self.path / "shim.c", [])]:
+        for source, extra in [
+            (self.path / "game.c", game),
+            (self.path / "stub.c", game),
+            (ROOT / "trace.c", ["-O2"]),
+            (ROOT / "test_charge_stub.c", ["-O2"]),
+            (ROOT / "runon.c", ["-O2"]),
+            (ROOT / "missing.c", ["-O2"]),
+            (self.path / "table.c", []),
+            (self.path / "shim.c", []),
+        ]:
             obj = self.path / (source.stem + ".o")
-            subprocess.run([args.compiler, "-m32", "-Wall", "-Werror", *extra, "-I" + str(ROOT), "-I" + str(shim),
-                            "-c", str(source), "-o", str(obj)], check=True, capture_output=True, text=True)
+            subprocess.run(
+                [
+                    args.compiler,
+                    "-m32",
+                    "-Wall",
+                    "-Werror",
+                    *extra,
+                    "-I" + str(ROOT),
+                    "-I" + str(shim),
+                    "-c",
+                    str(source),
+                    "-o",
+                    str(obj),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
             objects.append(str(obj))
         exe = self.path / "runon"
-        subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)],
-                       check=True, capture_output=True, text=True)
+        subprocess.run(
+            [args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         env = {"N64C_RUN_ON": "1", "N64C_RUN_ON_HANG": "1", "PATH": "/usr/bin:/bin"}
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
         lines = [line for line in result.stderr.splitlines() if not line.startswith("boot-step: ")]
         self.assertEqual(result.returncode, 78, result.stderr)
-        self.assertEqual(result.stdout.split(), ["unlinked=0", "keep=15", "div=0", "spin=0", "after=9"],
-                         result.stderr)
+        self.assertEqual(result.stdout.split(), ["unlinked=0", "keep=15", "div=0", "spin=0", "after=9"], result.stderr)
         got = [" ".join(line.split()[1:3]) for line in lines if line.startswith("boot-diag: ") and " at=" in line]
         self.assertEqual(got[0], "missing unlinked")
         self.assertTrue(got[1].startswith("fault SIGSEGV@crash"), got)
@@ -238,13 +338,19 @@ int main(void) { n64c_trace_init(); return real_main(); }
         self.assertEqual(got[3:], ["hang spin", "layout dma-rom-0x00001000", "stop rdp-buffer"])
         self.assertIn("in=caller<keep<run", next(line for line in lines if "missing unlinked" in line))
         self.assertIn("return=crash", result.stderr)
-        self.assertIn("boot-diag: end 6 failures (1 missing, 1 stop, 0 code-pointer, 2 fault, 1 layout, 1 hang), "
-                      "census 3/4", result.stderr)
+        self.assertIn(
+            "boot-diag: end 6 failures (1 missing, 1 stop, 0 code-pointer, 2 fault, 1 layout, 1 hang), census 3/4",
+            result.stderr,
+        )
         # Without N64C_RUN_ON the same binary stops at the first failure, as the fail-fast walk and the gate need.
-        plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"}, check=False)
+        plain = subprocess.run(
+            [str(exe)], capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"}, check=False
+        )
         self.assertEqual(plain.returncode, 78)
         self.assertIn("boot-missing: unlinked", plain.stderr)
         self.assertNotIn("boot-diag:", plain.stderr)
+
+
 RUN_ON_GAME = r"""
 #include <stdio.h>
 extern long long unlinked(void);

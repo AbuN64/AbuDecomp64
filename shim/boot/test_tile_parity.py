@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Unit tests for tile_parity.py (seconds, no boot): census parsing, verdict, seat drift."""
+
 import json
 import pathlib
 import sys
@@ -32,16 +33,48 @@ class TileParity(unittest.TestCase):
         path = pathlib.Path(directory.name) / "seat.json"
         release = path.parent / "release"
         release.mkdir()
-        path.write_text(json.dumps({"supervisor": {"runtime_root": str(path.parent), "roles": {
-            "port": {"command": command, "release_current": str(release)}}}}))
+        path.write_text(
+            json.dumps(
+                {
+                    "supervisor": {
+                        "runtime_root": str(path.parent),
+                        "roles": {"port": {"command": command, "release_current": str(release)}},
+                    }
+                }
+            )
+        )
         return path
 
     def test_seat_args_match_and_drift(self):
-        same = self.seat(["{release}/ragewars", "--no-dialog", "--user-dir", "{release}/user", "--rom", "{release}/data/ragewars.z64",
-                          "--fb", "284x222", "--window", "640x480"])
+        same = self.seat(
+            [
+                "{release}/ragewars",
+                "--no-dialog",
+                "--user-dir",
+                "{release}/user",
+                "--rom",
+                "{release}/data/ragewars.z64",
+                "--fb",
+                "284x222",
+                "--window",
+                "640x480",
+            ]
+        )
         self.assertEqual(tp.seat_args(same, "x"), tp.TILE_ARGS)
-        moved = self.seat(["{release}/ragewars", "--no-dialog", "--user-dir", "{release}/user", "--rom", "{release}/data/ragewars.z64",
-                          "--fb", "284x222", "--window", "800x600"])
+        moved = self.seat(
+            [
+                "{release}/ragewars",
+                "--no-dialog",
+                "--user-dir",
+                "{release}/user",
+                "--rom",
+                "{release}/data/ragewars.z64",
+                "--fb",
+                "284x222",
+                "--window",
+                "800x600",
+            ]
+        )
         self.assertNotEqual(tp.seat_args(moved, "x"), tp.TILE_ARGS)
 
 

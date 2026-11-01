@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Validate explicit project bindings and emit native link/load inputs."""
+
 import argparse
 import pathlib
 import re
@@ -27,9 +28,18 @@ NAMED_ADDRESS = re.compile(r"D_auto_(8[0-9A-F]{7})\Z")
 # element, and count expression; sized chains ("chain") also give a payload-size expression. Each expression is
 # {fields: [[offset,width],...], multiply: n, divide: d}, evaluated on its header before swapping.
 # Array references use section 0 for the whole array (including the head); chain payload bytes remain raw.
-KINDS = {"raw": "N64C_RES_RAW", "swap16": "N64C_RES_SWAP16", "swap32": "N64C_RES_SWAP32", "fields": "N64C_RES_STRUCT",
-         "tagged": "N64C_RES_TAGGED", "alctl": "N64C_RES_ALCTL", "u16": "N64C_RES_SWAP16", "u32": "N64C_RES_SWAP32",
-         "graph": "N64C_RES_GRAPH", "untyped": "N64C_RES_UNTYPED"}
+KINDS = {
+    "raw": "N64C_RES_RAW",
+    "swap16": "N64C_RES_SWAP16",
+    "swap32": "N64C_RES_SWAP32",
+    "fields": "N64C_RES_STRUCT",
+    "tagged": "N64C_RES_TAGGED",
+    "alctl": "N64C_RES_ALCTL",
+    "u16": "N64C_RES_SWAP16",
+    "u32": "N64C_RES_SWAP32",
+    "graph": "N64C_RES_GRAPH",
+    "untyped": "N64C_RES_UNTYPED",
+}
 WIDTHS = {"raw": 1, "swap16": 2, "swap32": 4, "u16": 2, "u32": 4, "tagged": 1, "alctl": 1, "graph": 1}
 UNPACKED_KINDS = {"raw", "swap16", "swap32", "fields", "tagged", "graph"}
 MAX_LAYOUTS = 16  # n64c_pi.c keeps 16 layouts per tagged resource
@@ -52,27 +62,41 @@ def c_string(text):
 
 def field_widths(text, label):
     widths = [c for c in text if c != " "] if isinstance(text, str) else []
-    if not widths or len(widths) > MAX_FIELDS or not all(FIELD_WIDTH.fullmatch(c) for c in widths) or \
-            not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip()):
+    if (
+        not widths
+        or len(widths) > MAX_FIELDS
+        or not all(FIELD_WIDTH.fullmatch(c) for c in widths)
+        or not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip())
+    ):
         raise ValueError("invalid field widths: " + label)
     return widths
+
+
 def tagged_spec(item, label):
     """The "offset/width;tag=fields;..." string of a tagged resource: records of different sizes, back to back."""
     tag, layouts = item.get("tag"), item.get("layouts")
-    if item.get("fields") is not None or not isinstance(tag, dict) or set(tag) != {"offset", "width"} or \
-            tag["width"] not in (1, 2, 4) or type(tag["offset"]) is not int or tag["offset"] < 0:
+    if (
+        item.get("fields") is not None
+        or not isinstance(tag, dict)
+        or set(tag) != {"offset", "width"}
+        or tag["width"] not in (1, 2, 4)
+        or type(tag["offset"]) is not int
+        or tag["offset"] < 0
+    ):
         raise ValueError("invalid tag: " + label)
     if not isinstance(layouts, dict) or not 0 < len(layouts) <= MAX_LAYOUTS:
         raise ValueError("invalid layouts: " + label)
-    parts = [f'{tag["offset"]}/{tag["width"]}']
+    parts = [f"{tag['offset']}/{tag['width']}"]
     for key, text in layouts.items():
-        if not isinstance(key, str) or not key.isdecimal() or int(key) > 0xffffffff or str(int(key)) != key:
+        if not isinstance(key, str) or not key.isdecimal() or int(key) > 0xFFFFFFFF or str(int(key)) != key:
             raise ValueError("invalid layout tag: " + label)
         record = sum(int(c) for c in field_widths(text, label))
         if record < tag["offset"] + tag["width"]:
             raise ValueError("layout shorter than its tag: " + label)
         parts.append(f"{key}={text.strip()}")
     return ";".join(parts)
+
+
 def graph_program(item, label):
     """The n64c_pi GRAPH program of a "graph" row: its root type first, the others in name order."""
     types, root = item.get("types"), item.get("root")
@@ -85,21 +109,33 @@ def graph_program(item, label):
         if name not in index:
             raise ValueError(f"graph {what} names no type: {label}: {name}")
         return str(index[name])
+
     def tag_pairs(value, label, name):
         tag, layouts = value.get("tag"), value.get("layouts")
-        if set(value) != {"tag", "layouts"} or not isinstance(tag, dict) or set(tag) != {"offset", "width"} or \
-                tag["width"] not in (1, 2, 4) or type(tag["offset"]) is not int or tag["offset"] < 0 or \
-                not isinstance(layouts, dict) or not layouts:
+        if (
+            set(value) != {"tag", "layouts"}
+            or not isinstance(tag, dict)
+            or set(tag) != {"offset", "width"}
+            or tag["width"] not in (1, 2, 4)
+            or type(tag["offset"]) is not int
+            or tag["offset"] < 0
+            or not isinstance(layouts, dict)
+            or not layouts
+        ):
             raise ValueError(f"invalid tag selection: {label}: {name}")
         pairs = []
         for key, part in layouts.items():
-            if not key.isdecimal() or int(key) > 0xffffffff or str(int(key)) != key:
+            if not key.isdecimal() or int(key) > 0xFFFFFFFF or str(int(key)) != key:
                 raise ValueError(f"invalid layout tag: {label}: {name}")
             pairs.append(f"{key}={ref(part, 'layout')}")
-        return f'{tag["offset"]}/{tag["width"]}:' + ",".join(pairs)
+        return f"{tag['offset']}/{tag['width']}:" + ",".join(pairs)
+
     def expression(value, header):
-        if not isinstance(value, dict) or set(value) != {"fields", "multiply", "divide"} or \
-                any(type(value[k]) is not int or not 0 < value[k] <= 0xffffffff for k in ("multiply", "divide")):
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"fields", "multiply", "divide"}
+            or any(type(value[k]) is not int or not 0 < value[k] <= 0xFFFFFFFF for k in ("multiply", "divide"))
+        ):
             raise ValueError(f"invalid graph size expression: {label}")
         fields = value["fields"]
         if not isinstance(fields, list) or not 1 <= len(fields) <= 8:
@@ -113,16 +149,22 @@ def graph_program(item, label):
                     scalars.add((offset, int(width)))
                     offset += int(width)
         for field in fields:
-            if not isinstance(field, list) or len(field) != 2 or \
-                    any(type(n) is not int for n in field) or field[1] not in (1, 2, 4) or tuple(field) not in scalars:
+            if (
+                not isinstance(field, list)
+                or len(field) != 2
+                or any(type(n) is not int for n in field)
+                or field[1] not in (1, 2, 4)
+                or tuple(field) not in scalars
+            ):
                 raise ValueError(f"graph size must read a scalar header field: {label}")
-        return f'{value["multiply"]}/{value["divide"]}:' + ",".join(f"{o}/{w}" for o, w in fields)
+        return f"{value['multiply']}/{value['divide']}:" + ",".join(f"{o}/{w}" for o, w in fields)
+
     program = []
     for name in order:
         body = types[name]
         if not isinstance(body, dict) or len(body) != 1:
             raise ValueError(f"invalid graph type: {label}: {name}")
-        (shape, value), = body.items()
+        ((shape, value),) = body.items()
         if shape == "fields":
             items = value.split() if isinstance(value, str) else []
             if not items:
@@ -143,10 +185,15 @@ def graph_program(item, label):
             program.append("L:" + ref(value, "leaf"))
         elif shape in ("counted", "chain"):
             required = {"head", "element", "count"} | ({"payload"} if shape == "chain" else set())
-            if not isinstance(value, dict) or set(value) != required or \
-                    not isinstance(value["head"], str) or "fields" not in types.get(value["head"], {}) or \
-                    not isinstance(value["element"], str) or not \
-                    ({"fields"} if shape == "chain" else {"fields", "variants"}) & set(types.get(value["element"], {})):
+            if (
+                not isinstance(value, dict)
+                or set(value) != required
+                or not isinstance(value["head"], str)
+                or "fields" not in types.get(value["head"], {})
+                or not isinstance(value["element"], str)
+                or not ({"fields"} if shape == "chain" else {"fields", "variants"})
+                & set(types.get(value["element"], {}))
+            ):
                 raise ValueError(f"invalid graph {shape}: {label}: {name}")
             code = "A" if shape == "counted" else "C"
             part = code + ":" + ref(value["head"], "head") + "," + ref(value["element"], "element")
@@ -160,11 +207,19 @@ def graph_program(item, label):
             program.append("X:" + ref(value, "planes"))
         elif shape == "packed" and (value is None or isinstance(value, str)):
             program.append("P:" + ("-" if value is None else ref(value, "packed")))
-        elif shape == "head_then" and isinstance(value, list) and len(value) == 2 and \
-                all("fields" in types.get(part, {}) for part in value if isinstance(part, str)):
+        elif (
+            shape == "head_then"
+            and isinstance(value, list)
+            and len(value) == 2
+            and all("fields" in types.get(part, {}) for part in value if isinstance(part, str))
+        ):
             program.append("R:" + ",".join(ref(part, "record") for part in value))
-        elif shape == "variants" and isinstance(value, dict) and set(value) == {"tag", "layouts"} and \
-                all("fields" in types.get(part, {}) for part in value["layouts"].values() if isinstance(part, str)):
+        elif (
+            shape == "variants"
+            and isinstance(value, dict)
+            and set(value) == {"tag", "layouts"}
+            and all("fields" in types.get(part, {}) for part in value["layouts"].values() if isinstance(part, str))
+        ):
             program.append("T:" + tag_pairs(value, label, name))
         elif shape == "directory" and isinstance(value, list) and value:
             program.append("D:" + ",".join("-" if part is None else ref(part, "section") for part in value))
@@ -200,8 +255,12 @@ def descriptor(item, label, unpacked=False):
     if not isinstance(text, str):
         raise ValueError("missing field widths: " + label)
     widths = [c for c in text if c != " "]
-    if not widths or len(widths) > MAX_FIELDS or not all(FIELD_WIDTH.fullmatch(c) for c in widths) or \
-            not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip()):
+    if (
+        not widths
+        or len(widths) > MAX_FIELDS
+        or not all(FIELD_WIDTH.fullmatch(c) for c in widths)
+        or not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip())
+    ):
         raise ValueError("invalid field widths: " + label)
     return kind, text.strip(), sum(int(c) for c in widths)
 
@@ -287,14 +346,19 @@ def unfacted_streams(rom, project, source):
     reads their header raw, its own magic test fails, and it takes the packed bytes for the unpacked resource (resource
     bank children 6 and 7 at boot 231). n64c_pi stops a DMA that starts on one; this lists them before a boot does.
     [(rom offset, method, unpacked bytes, packed bytes)]."""
-    spans = sorted([(lo, hi) for ranges, _, _ in blob_ranges(source, project["version"]).values() for lo, hi in ranges]
-                   + [(number(r["rom"]), number(r["rom"]) + number(r["bytes"]))
-                      for r in project.get("resources", []) + project.get("loads", [])])
+    spans = sorted(
+        [(lo, hi) for ranges, _, _ in blob_ranges(source, project["version"]).values() for lo, hi in ranges]
+        + [
+            (number(r["rom"]), number(r["rom"]) + number(r["bytes"]))
+            for r in project.get("resources", []) + project.get("loads", [])
+        ]
+    )
     starts, ends, reach = [lo for lo, _ in spans], [], 0
     for _, hi in spans:  # the furthest end of any span starting at or before each start
         reach = max(reach, hi)
         ends.append(reach)
     import bisect
+
     out = []
     for method in (1, 2):
         at = rom.find(b"RNC" + bytes([method]))
@@ -334,7 +398,7 @@ def byte_order(project, source):
 
 def number(value):
     result = int(value, 0) if isinstance(value, str) else value
-    if type(result) is not int or not 0 <= result <= 0xffffffff:
+    if type(result) is not int or not 0 <= result <= 0xFFFFFFFF:
         raise ValueError("invalid 32-bit value")
     return result
 
@@ -352,15 +416,22 @@ def generate(manifest, source, output):
     rom_bytes = number(project["rom_bytes"])
     # The layout is the supported dump named like the project version (the installer's dump table).
     layout = [d for d in project.get("dumps", []) if isinstance(d, dict) and d.get("id") == project["version"]]
-    if not 0 < rom_bytes <= 0x0fc00000 or len(layout) != 1 or layout[0].get("size") != rom_bytes or \
-            not layout[0].get("supported") or not re.fullmatch(r"[a-f0-9]{64}", str(layout[0].get("sha256"))):
+    if (
+        not 0 < rom_bytes <= 0x0FC00000
+        or len(layout) != 1
+        or layout[0].get("size") != rom_bytes
+        or not layout[0].get("supported")
+        or not re.fullmatch(r"[a-f0-9]{64}", str(layout[0].get("sha256")))
+    ):
         raise ValueError("invalid ROM identity")
     bindings, owners = [], set()
+
     def claim(symbol):
         name(symbol)
         if symbol in owners:
             raise ValueError("duplicate symbol owner: " + symbol)
         owners.add(symbol)
+
     for symbol, address in project["data"].items():
         claim(symbol)
         value = number(address)
@@ -386,20 +457,29 @@ def generate(manifest, source, output):
     for symbol, target in project["bindings"].items():
         claim(symbol)
         # EXTERN makes the linker pull a target from an archive (host libgcc, the shim) for this script.
-        bindings.append(f"EXTERN({hostabi.add(name(target))})" +
-                        (f" {hostabi.add(symbol)} = {hostabi.add(name(target))};" if symbol != target else ""))
-    code = ['/* Generated explicit bindings; no original game code. */', '#include "boot.h"',
-            'extern long long n64c_boot_missing(const char *);']
+        bindings.append(
+            f"EXTERN({hostabi.add(name(target))})"
+            + (f" {hostabi.add(symbol)} = {hostabi.add(name(target))};" if symbol != target else "")
+        )
+    code = [
+        "/* Generated explicit bindings; no original game code. */",
+        '#include "boot.h"',
+        "extern long long n64c_boot_missing(const char *);",
+    ]
     for symbol, evidence in project["stops"].items():
         claim(symbol)
         if not isinstance(evidence, str) or not evidence.strip():
             raise ValueError("missing stop evidence: " + symbol)
         code.append(f'long long {symbol}(void) {{ return n64c_boot_missing("{symbol}"); }}')
     entry = name(project["entry"])
-    code += [f'extern int {entry}(void);', f'int n64c_boot_entry(void) {{ return {entry}(); }}',
-             f'const u32 n64c_boot_ram_bytes = {ram}u;', f'const u32 n64c_boot_video_clock = {clock}u;',
-             f'const u32 n64c_boot_rom_bytes = {rom_bytes}u;',
-             'const N64cBootLoad n64c_boot_loads[] = {']
+    code += [
+        f"extern int {entry}(void);",
+        f"int n64c_boot_entry(void) {{ return {entry}(); }}",
+        f"const u32 n64c_boot_ram_bytes = {ram}u;",
+        f"const u32 n64c_boot_video_clock = {clock}u;",
+        f"const u32 n64c_boot_rom_bytes = {rom_bytes}u;",
+        "const N64cBootLoad n64c_boot_loads[] = {",
+    ]
     ranges, rom_ranges = [], []
     for load in project["loads"]:
         symbol = name(load["symbol"])
@@ -415,17 +495,19 @@ def generate(manifest, source, output):
         if size % width:
             raise ValueError("partial load field: " + symbol)
         for old_rom, old_ram, old_size in ranges:
-            if (rom < old_rom + old_size and rom + size > old_rom) or (physical < old_ram + old_size and physical + size > old_ram):
+            if (rom < old_rom + old_size and rom + size > old_rom) or (
+                physical < old_ram + old_size and physical + size > old_ram
+            ):
                 raise ValueError("overlapping load range: " + symbol)
         ranges.append((rom, physical, size))
         rom_ranges.append((rom, rom + size, symbol))
         code.append(f'    {{"{symbol}", {rom}u, {physical}u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
     if not ranges:
         raise ValueError("empty boot image")
-    code += ['};', 'const size_t n64c_boot_load_count = sizeof n64c_boot_loads / sizeof n64c_boot_loads[0];']
+    code += ["};", "const size_t n64c_boot_load_count = sizeof n64c_boot_loads / sizeof n64c_boot_loads[0];"]
     # ROM resources the game DMAs itself later (archive headers, tables, models): only the PI byte-order
     # descriptor is registered; the range is never copied at start-up. Anything not listed stays raw.
-    code.append('const N64cBootLoad n64c_boot_resources[] = {')
+    code.append("const N64cBootLoad n64c_boot_resources[] = {")
     for item in project.get("resources", []):
         label = name(item["name"])
         rom, size = number(item["rom"]), number(item["bytes"])
@@ -441,8 +523,11 @@ def generate(manifest, source, output):
                 raise ValueError(f"overlapping resource range: {label} and {old_name}")
         rom_ranges.append((rom, rom + size, label))
         code.append(f'    {{"{label}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
-    code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
-             'const size_t n64c_boot_resource_count = sizeof n64c_boot_resources / sizeof n64c_boot_resources[0] - 1;']
+    code += [
+        "    {0},  /* keeps the array non-empty; the count below excludes it */",
+        "};",
+        "const size_t n64c_boot_resource_count = sizeof n64c_boot_resources / sizeof n64c_boot_resources[0] - 1;",
+    ]
     # Blob layouts, keyed by the decomp's blob facts (the blobs file): an RNC stream's row types its unpacked bytes (the PI
     # layer serves every stream's header in host order; streams without a row unpack raw), an uncompressed blob's row
     # types its ROM bytes like a resources row.
@@ -456,7 +541,9 @@ def generate(manifest, source, output):
         label = item.get("blob") or item["format"]
         if not isinstance(item.get("evidence"), str) or not item["evidence"].strip():
             raise ValueError("missing layout evidence: " + str(label))
-        named = [item["blob"]] if "blob" in item else sorted(b for b, fact in facts.items() if fact[3] == item["format"])
+        named = (
+            [item["blob"]] if "blob" in item else sorted(b for b, fact in facts.items() if fact[3] == item["format"])
+        )
         if not named or any(blob not in facts or blob in layouts for blob in named):
             raise ValueError(f"blob layout names no single-range blob fact of {project['version']} (or twice): {label}")
         layout = descriptor({k: v for k, v in item.items() if k not in ("blob", "format")}, str(label), unpacked=True)
@@ -473,12 +560,16 @@ def generate(manifest, source, output):
             if rom < old_hi and rom + size > old_lo:
                 raise ValueError(f"overlapping resource range: {blob} and {old_name}")
         rom_ranges.append((rom, rom + size, blob))
-        code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
-                    f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
+        code.insert(
+            code.index("    {0},  /* keeps the array non-empty; the count below excludes it */"),
+            f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},',
+        )
     _, opaque = byte_stream_ranges(project, blob_ranges(source, project["version"]))
     for label, lo, hi in opaque:
-        code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
-                    f'    {{"{label}", {lo}u, 0u, {hi - lo}u, N64C_RES_BYTE_STREAM, 0}},')
+        code.insert(
+            code.index("    {0},  /* keeps the array non-empty; the count below excludes it */"),
+            f'    {{"{label}", {lo}u, 0u, {hi - lo}u, N64C_RES_BYTE_STREAM, 0}},',
+        )
     # The byte-order gate: a blob fact nothing types is registered as UNTYPED, so the first DMA of it stops the boot
     # and names it (n64c_pi.h), instead of a big-endian count crashing a reader later.
     classes = byte_order(project, source)
@@ -495,9 +586,11 @@ def generate(manifest, source, output):
             if hi > rom_bytes or hi <= lo or any(lo < old_hi and hi > old_lo for old_lo, old_hi, _ in rom_ranges):
                 continue  # inside a typed range: that range's layout serves it
             rom_ranges.append((lo, hi, blob))
-            code.insert(code.index('    {0},  /* keeps the array non-empty; the count below excludes it */'),
-                        f'    {{"{blob}", {lo}u, 0u, {hi - lo}u, N64C_RES_UNTYPED, "{blob}"}},')
-    code.append('const N64cBootLoad n64c_boot_packed[] = {')
+            code.insert(
+                code.index("    {0},  /* keeps the array non-empty; the count below excludes it */"),
+                f'    {{"{blob}", {lo}u, 0u, {hi - lo}u, N64C_RES_UNTYPED, "{blob}"}},',
+            )
+    code.append("const N64cBootLoad n64c_boot_packed[] = {")
     for blob, (rom, size) in sorted(streams.items(), key=lambda pair: pair[1]):
         if rom + size > rom_bytes:
             raise ValueError("RNC blob outside the cartridge: " + blob)
@@ -509,19 +602,28 @@ def generate(manifest, source, output):
         if blob in untyped_streams:
             kind, fields = "untyped", blob
         code.append(f'    {{"{blob}", {rom}u, 0u, {size}u, {KINDS[kind]}, {c_string(fields)}}},')
-    code += ['    {0},  /* keeps the array non-empty; the count below excludes it */', '};',
-             'const size_t n64c_boot_packed_count = sizeof n64c_boot_packed / sizeof n64c_boot_packed[0] - 1;']
+    code += [
+        "    {0},  /* keeps the array non-empty; the count below excludes it */",
+        "};",
+        "const size_t n64c_boot_packed_count = sizeof n64c_boot_packed / sizeof n64c_boot_packed[0] - 1;",
+    ]
     system = project.get("system")
     if system:
-        fields = {"initialized": ("u32", 4), "tv_type": ("u32", 4), "reset_type": ("u32", 4),
-                  "memory_size": ("u32", 4), "video_clock": ("u32", 4),
-                  "clock_rate": ("u64", 8), "nmi_buffer": ("u8", 64)}
+        fields = {
+            "initialized": ("u32", 4),
+            "tv_type": ("u32", 4),
+            "reset_type": ("u32", 4),
+            "memory_size": ("u32", 4),
+            "video_clock": ("u32", 4),
+            "clock_rate": ("u64", 8),
+            "nmi_buffer": ("u8", 64),
+        }
         if set(system["globals"]) != set(fields):
             raise ValueError("incomplete system globals")
         tv, reset = number(system["tv_type"]), number(system["reset_type"])
         if tv > 2 or reset > 1:
             raise ValueError("invalid boot values")
-        code.append('const N64cSystemGlobals n64c_boot_system = {')
+        code.append("const N64cSystemGlobals n64c_boot_system = {")
         occupied = []
         for field, (ctype, width) in fields.items():
             symbol = name(system["globals"][field])
@@ -531,11 +633,13 @@ def generate(manifest, source, output):
             if any(address < old + size and address + width > old for old, size in occupied):
                 raise ValueError("overlapping system fields")
             occupied.append((address, width))
-            code.append(f'    .{field} = ({ctype} *)0x{address:08x}u,')
-        code += ['};', f'const u32 n64c_boot_tv_type = {tv}u;', f'const u32 n64c_boot_reset_type = {reset}u;']
+            code.append(f"    .{field} = ({ctype} *)0x{address:08x}u,")
+        code += ["};", f"const u32 n64c_boot_tv_type = {tv}u;", f"const u32 n64c_boot_reset_type = {reset}u;"]
     else:
-        code += ['const N64cSystemGlobals n64c_boot_system = {0};',
-                 'const u32 n64c_boot_tv_type = 0, n64c_boot_reset_type = 0;']
+        code += [
+            "const N64cSystemGlobals n64c_boot_system = {0};",
+            "const u32 n64c_boot_tv_type = 0, n64c_boot_reset_type = 0;",
+        ]
 
     flavours = {"audio": 0, "audio_ge": 1, "audio_bc": 2, "naudio": 3}  # N64aFlavour order
     audio = project.get("audio_abi")

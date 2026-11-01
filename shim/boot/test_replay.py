@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Build replay.c against a fixture image and run recorded cases: inputs, returns of every kind, outputs, faults."""
+
 import argparse
 import pathlib
 import subprocess
@@ -15,7 +16,7 @@ args.work.mkdir(parents=True, exist_ok=True)
 ROOT = pathlib.Path(__file__).resolve().parent
 SHIM = ROOT.parent
 
-DRIVER = r'''
+DRIVER = r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,7 +47,7 @@ int main(int argc, char **argv) {
     fflush(stdout);
     return argc > 1 ? n64c_replay_run(argv[1]) : 0;
 }
-'''
+"""
 
 
 class ReplayTests(unittest.TestCase):
@@ -56,12 +57,31 @@ class ReplayTests(unittest.TestCase):
             (path / "driver.c").write_text(DRIVER)
             exe = path / "driver"
             flags = ["-m32"] if args.m32 else []
-            subprocess.run([args.compiler, "-O1", "-Wall", "-Werror", "-fno-omit-frame-pointer", "-no-pie", *flags,
-                            "-I", str(SHIM), str(ROOT / "replay.c"), str(path / "driver.c"), "-o", str(exe)],
-                           check=True, capture_output=True, text=True)
-            addrs = [int(x, 16) for x in subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()]
+            subprocess.run(
+                [
+                    args.compiler,
+                    "-O1",
+                    "-Wall",
+                    "-Werror",
+                    "-fno-omit-frame-pointer",
+                    "-no-pie",
+                    *flags,
+                    "-I",
+                    str(SHIM),
+                    str(ROOT / "replay.c"),
+                    str(path / "driver.c"),
+                    "-o",
+                    str(exe),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            addrs = [
+                int(x, 16) for x in subprocess.run([exe], capture_output=True, text=True, check=True).stdout.split()
+            ]
             sum3, stackarg, wide, half, twice, load_store, crash, spin = addrs[:8]
-            plan = f"""out {path / 'out.txt'}
+            plan = f"""out {path / "out.txt"}
 timeout 1
 case sum
 fn {sum3:x} i
@@ -109,7 +129,9 @@ fn {spin:x} i
 go
 """
             (path / "plan.txt").write_text(plan)
-            done = subprocess.run([exe, str(path / "plan.txt")], capture_output=True, text=True, timeout=60, check=False)
+            done = subprocess.run(
+                [exe, str(path / "plan.txt")], capture_output=True, text=True, timeout=60, check=False
+            )
             self.assertEqual(done.returncode, 0, done.stderr)
             lines = (path / "out.txt").read_text().splitlines()
             by = {}
@@ -128,7 +150,9 @@ go
             self.assertEqual(int(by["twice"][3], 16), 0x4008000000000000)  # 3.0
             self.assertEqual(int(by["mem"][1], 16), 0x12345678)
             self.assertEqual(by["mem"][4:], [["got", "108", "2", hex(0x5678 + 7)[2:]], ["got", "10a", "1", "7"]])
-            self.assertEqual(by["again"][4:][0][3], "0")  # the next case starts from the loaded image, not the last case's stores
+            self.assertEqual(
+                by["again"][4:][0][3], "0"
+            )  # the next case starts from the loaded image, not the last case's stores
             self.assertEqual(by["nomem"][:2], ["nomem", "20000"])
             self.assertEqual(by["crash"][0], "crash")
             self.assertEqual(by["crash"][1], "11")  # SIGSEGV

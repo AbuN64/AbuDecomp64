@@ -5,6 +5,7 @@ A header read by thousands of units is hashed once for the whole machine, not on
 step that checks its dependencies against a cached result costs one stat per file when the memo is warm. The memo is
 only a shortcut: a file whose size or mtime changed is hashed again, a lost update (concurrent steps each save) is
 hashed again, and an unwritable memo changes nothing but the speed."""
+
 import os
 
 KEEP = 40000  # entries kept when a save finds the memo past 1.5x this (oldest dropped: stale worktree paths)
@@ -12,6 +13,7 @@ KEEP = 40000  # entries kept when a save finds the memo past 1.5x this (oldest d
 
 def digest_file(path):
     import hashlib  # imported here: a unit step that answers from stat signatures starts without it
+
     with open(path, "rb") as stream:  # file_digest reads in large blocks: about half the cost of read_bytes + sha256
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
@@ -28,6 +30,7 @@ class Digests:
         # signatures (unitstep.py's restore) never needs it.
         if self.loaded is None:
             import json
+
             try:
                 with open(self.memo) as stream:
                     self.loaded = json.load(stream)
@@ -50,6 +53,7 @@ class Digests:
         if not self.added:
             return
         import json
+
         try:
             with open(self.memo) as stream:
                 merged = json.load(stream)

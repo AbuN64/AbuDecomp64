@@ -16,6 +16,7 @@ Only --out files, the depfile and --drop are touched: an entry holds each --out 
 A coverage build (--coverage) lists each step's .gcno as an --out: its flags key it apart from a plain build's entry in
 the one cache, and a restored .gcno names the directory it is restored in (the step's cwd), as the compile there would
 (gcov resolves the unit's relative source names from it), so a coverage build in another tree restores too."""
+
 import marshal
 import os
 import sys
@@ -52,6 +53,7 @@ def dumps(value):
         return "null"
     if isinstance(value, str):
         from _json import encode_basestring_ascii
+
         return encode_basestring_ascii(value)
     if isinstance(value, int):
         return repr(value)
@@ -64,8 +66,9 @@ def load_manifest(path):
         data = stream.read()
     try:
         if data.startswith(MAGIC):
-            return marshal.loads(data[len(MAGIC):]), True
+            return marshal.loads(data[len(MAGIC) :]), True
         import json
+
         return json.loads(data), False
     except (ValueError, EOFError, TypeError):
         raise ValueError(path)
@@ -80,7 +83,7 @@ def mapped(text, maps):
 def unmapped(path, maps):
     for old, new in maps:
         if path.startswith(new):
-            return old + path[len(new):]
+            return old + path[len(new) :]
     return path
 
 
@@ -95,13 +98,21 @@ class ObjectCache:
     def __init__(self, opts, commands):
         self.opts, self.maps = opts, opts["maps"]
         root = opts["root"]
-        words = [mapped(word.replace(root, "@B") if root else word, self.maps) for command in commands for word in command]
+        words = [
+            mapped(word.replace(root, "@B") if root else word, self.maps) for command in commands for word in command
+        ]
         scripts = [word for command in commands for word in command if word.endswith(".py") and os.path.isfile(word)]
         self.digests = Digests(os.path.join(opts["objcache"], "digests.memo"))
         tool = opts.get("compiler")
         stat = os.stat(os.path.realpath(tool)) if tool else None
-        key = dumps([VERSION, words, [script_digest(path) for path in sorted(set(scripts))],
-                     [os.path.realpath(tool), stat.st_size, stat.st_mtime_ns] if tool else None])
+        key = dumps(
+            [
+                VERSION,
+                words,
+                [script_digest(path) for path in sorted(set(scripts))],
+                [os.path.realpath(tool), stat.st_size, stat.st_mtime_ns] if tool else None,
+            ]
+        )
         self.key = sha256_hex(key.encode())
         self.manifest = os.path.join(opts["objcache"], self.key[:2], self.key + ".json")
 
@@ -131,8 +142,10 @@ class ObjectCache:
         except (OSError, ValueError):
             return False
         for entry in entries:
-            if not entry.get("deps") or any(path.endswith(".failed") and payload is not None
-                                            for path, payload in zip(self.opts["outs"], entry["files"], strict=False)):
+            if not entry.get("deps") or any(
+                path.endswith(".failed") and payload is not None
+                for path, payload in zip(self.opts["outs"], entry["files"], strict=False)
+            ):
                 continue
             if not self.unchanged(entry):
                 continue
@@ -157,6 +170,7 @@ class ObjectCache:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     if not isinstance(text, bytes):  # JSON manifests of before hold base64
                         import binascii
+
                         text = binascii.a2b_base64(text)
                     with open(path, "wb") as stream:
                         stream.write(text)
@@ -166,7 +180,9 @@ class ObjectCache:
             if self.opts.get("depfile"):
                 target = self.opts.get("dep_target") or outs[0]
                 with open(self.opts["depfile"], "w") as stream:
-                    stream.write(f"{target}: " + " \\\n ".join(unmapped(path, self.maps) for path, _ in entry["deps"]) + "\n")
+                    stream.write(
+                        f"{target}: " + " \\\n ".join(unmapped(path, self.maps) for path, _ in entry["deps"]) + "\n"
+                    )
             self.digests.save()
             with contextlib.suppress(OSError):
                 os.utime(self.manifest)
@@ -174,8 +190,10 @@ class ObjectCache:
         return False
 
     def sign(self, entry):
-        entry["sigs"] = [[stat.st_size, stat.st_mtime_ns]
-                         for stat in (os.stat(unmapped(path, self.maps)) for path, _ in entry["deps"])]
+        entry["sigs"] = [
+            [stat.st_size, stat.st_mtime_ns]
+            for stat in (os.stat(unmapped(path, self.maps)) for path, _ in entry["deps"])
+        ]
 
     def write(self, entries):
         try:
@@ -221,8 +239,11 @@ class ObjectCache:
 
     def trim(self):
         import glob
-        files = sorted((os.stat(f).st_mtime, os.stat(f).st_size, f)
-                       for f in glob.glob(os.path.join(self.opts["objcache"], "*", "*.json")))
+
+        files = sorted(
+            (os.stat(f).st_mtime, os.stat(f).st_size, f)
+            for f in glob.glob(os.path.join(self.opts["objcache"], "*", "*.json"))
+        )
         total = sum(size for _, size, _ in files)
         for _, size, path in files:
             if total <= LIMIT * 4 // 5:
@@ -238,6 +259,7 @@ def run(command):
     """One step. The prepare.py step runs in this process (a Python start and its imports are paid once per unit
     instead of twice); every other step is its own process."""
     import subprocess
+
     here = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(here, "prepare.py")
     if command[1:2] == [script] or command[1:3] == ["-I", script]:
@@ -246,9 +268,10 @@ def run(command):
         import io
 
         import prepare
+
         err = io.StringIO()
         saved = sys.argv, sys.stderr
-        sys.argv, sys.stderr = [script, *command[command.index(script) + 1:]], err
+        sys.argv, sys.stderr = [script, *command[command.index(script) + 1 :]], err
         try:
             code = prepare.main()
         except SystemExit as stop:
@@ -261,8 +284,15 @@ def run(command):
 
 def parse(argv):
     opts = {"maps": [], "outs": [], "drops": [], "strict": False, "base": "", "source": "", "root": ""}
-    flags = {"--base": "base", "--source": "source", "--objcache": "objcache", "--root": "root",
-             "--compiler": "compiler", "--depfile": "depfile", "--dep-target": "dep_target"}
+    flags = {
+        "--base": "base",
+        "--source": "source",
+        "--objcache": "objcache",
+        "--root": "root",
+        "--compiler": "compiler",
+        "--depfile": "depfile",
+        "--dep-target": "dep_target",
+    }
     index = 0
     while index < len(argv) and argv[index] != "--":
         word = argv[index]
@@ -284,7 +314,7 @@ def parse(argv):
             raise SystemExit(f"unitstep: unknown option {word}")
         index += 1
     commands, current = [], []
-    for word in argv[index + 1:]:
+    for word in argv[index + 1 :]:
         if word == "---":
             commands.append(current)
             current = []
@@ -314,6 +344,7 @@ def unit(argv):
     if cache and cache.restore():
         return 0
     import re
+
     base = opts["base"]
     marker = base + ".failed"
     for command in commands:

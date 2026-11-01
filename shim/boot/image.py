@@ -19,6 +19,7 @@ be a code address (addrscan.code_word: a function's start, or its KUSEG alias wi
 number natively too, and a call through it faults. The image binds such a word to the function like a relocation
 (its native definition or a generated stop the closure then routes) and lists it in image.json code_words.
 """
+
 import argparse
 import json
 import pathlib
@@ -100,7 +101,7 @@ def placements(source, version=None):
             continue
         match = INPUT.match(line)
         if match and srcfiles.is_source(match[1]):
-            rows.append((match[1], *(current or (None, None)), line[match.end():]))
+            rows.append((match[1], *(current or (None, None)), line[match.end() :]))
     return rows
 
 
@@ -122,8 +123,12 @@ def overlay_units(source, version):
     """Overlay data units of one version: unit -> (VMA, LMA) of the overlay section holding its initialised data."""
     overlay, units = overlay_keys(source), {}
     for unit, key, lma, spec in placements(source, version):
-        if key in overlay and INITIALISED.search(spec) and not re.search(r"bss|COMMON", spec) \
-                and units.setdefault(unit, (key[1], lma)) != (key[1], lma):
+        if (
+            key in overlay
+            and INITIALISED.search(spec)
+            and not re.search(r"bss|COMMON", spec)
+            and units.setdefault(unit, (key[1], lma)) != (key[1], lma)
+        ):
             raise ValueError("overlay data unit in two sections: " + unit)
     return units
 
@@ -146,7 +151,9 @@ def select(source, exclude, version=None, data_only=False):
     keys = {}
     for unit, key, _, _ in placements(source):
         keys.setdefault(unit, set()).add(key)
-    if version:  # a unit this version places is shared-address only by its initialised sections: code in an overlay is not
+    if (
+        version
+    ):  # a unit this version places is shared-address only by its initialised sections: code in an overlay is not
         held = {}
         for unit, key, _, spec in placements(source, version):
             held.setdefault(unit, set())
@@ -155,10 +162,12 @@ def select(source, exclude, version=None, data_only=False):
         keys.update(held)
     overlay = overlay_keys(source)
     holding = set(resident_units(source, version)) | set(overlay_units(source, version)) if version else set()
+
     def takes(unit):
         if function_free(source / unit):
             return unit not in exclude
         return unit in holding and not data_only  # a linked code unit's data still sits at its pinned address
+
     units = [unit for unit, unit_keys in sorted(keys.items()) if not unit_keys & overlay and takes(unit)]
     if version:
         units += [unit for unit in sorted(overlay_units(source, version)) if takes(unit)]
@@ -209,7 +218,7 @@ def overlapping(items, key, refused):
     items.sort(key=lambda item: (item[key], item["name"]))
     for index, item in enumerate(items):
         end = item[key] + item["symbol"]["size"]
-        for later in items[index + 1:]:
+        for later in items[index + 1 :]:
             if later[key] >= end:
                 break
             refused[item["name"]] = "native extent overlaps " + later["name"]
@@ -222,26 +231,42 @@ class Elf:
         data = path.read_bytes()
         if data[:4] != b"\x7fELF" or data[4] != 1 or data[5] != 1:
             raise ValueError(f"{path}: not a little-endian ELF32 object")
-        shoff, = struct.unpack_from("<I", data, 0x20)
+        (shoff,) = struct.unpack_from("<I", data, 0x20)
         shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x2E)
         self.sections = []
         for index in range(shnum):
             fields = struct.unpack_from("<IIIIIIIIII", data, shoff + index * shentsize)
-            self.sections.append(dict(zip(
-                ("name", "type", "flags", "addr", "offset", "size", "link", "info", "align", "entsize"), fields, strict=False)))
+            self.sections.append(
+                dict(
+                    zip(
+                        ("name", "type", "flags", "addr", "offset", "size", "link", "info", "align", "entsize"),
+                        fields,
+                        strict=False,
+                    )
+                )
+            )
         names = self.sections[shstrndx]
         for section in self.sections:
             section["label"] = self._string(data, names, section["name"])
-            section["bytes"] = b"" if section["type"] == SHT_NOBITS else \
-                data[section["offset"]:section["offset"] + section["size"]]
+            section["bytes"] = (
+                b"" if section["type"] == SHT_NOBITS else data[section["offset"] : section["offset"] + section["size"]]
+            )
         self.symbols, self.relocations = [], {}
         for section in self.sections:
             if section["type"] == SHT_SYMTAB:
                 strings = self.sections[section["link"]]
                 for offset in range(0, section["size"], 16):
                     name, value, size, info, _, shndx = struct.unpack_from("<IIIBBH", section["bytes"], offset)
-                    self.symbols.append({"name": self._string(data, strings, name), "value": value,
-                                         "size": size, "type": info & 15, "bind": info >> 4, "shndx": shndx})
+                    self.symbols.append(
+                        {
+                            "name": self._string(data, strings, name),
+                            "value": value,
+                            "size": size,
+                            "type": info & 15,
+                            "bind": info >> 4,
+                            "shndx": shndx,
+                        }
+                    )
         for section in self.sections:
             if section["type"] == SHT_RELA:
                 raise ValueError(f"{path}: RELA relocations are not i386 objects")
@@ -254,11 +279,14 @@ class Elf:
     @staticmethod
     def _string(data, table, offset):
         start = table["offset"] + offset
-        return data[start:data.index(b"\0", start)].decode()
+        return data[start : data.index(b"\0", start)].decode()
 
     def data_section(self, index):
-        return 0 < index < len(self.sections) and self.sections[index]["flags"] & SHF_ALLOC \
+        return (
+            0 < index < len(self.sections)
+            and self.sections[index]["flags"] & SHF_ALLOC
             and not self.sections[index]["flags"] & SHF_EXEC
+        )
 
 
 class Coff:
@@ -266,6 +294,7 @@ class Coff:
     names lose the target's underscore, and relocations as (offset, symbol index, R_386_32 or an unsupported kind).
     COFF symbols carry no size: the code and data sections are one symbol each (-ffunction-sections -fdata-sections), so
     a symbol runs to the next symbol of its section, or the section's end."""
+
     IMAGE_SCN_CNT_CODE, IMAGE_SCN_CNT_UNINITIALIZED = 0x20, 0x80
     IMAGE_SCN_LNK_REMOVE, IMAGE_SCN_MEM_EXECUTE = 0x800, 0x20000000
     DIR32 = 6
@@ -279,14 +308,29 @@ class Coff:
 
         def string(offset):
             start = strings + offset
-            return data[start:data.index(b"\0", start)].decode()
+            return data[start : data.index(b"\0", start)].decode()
 
-        self.sections = [{"name": 0, "type": 0, "flags": 0, "addr": 0, "offset": 0, "size": 0, "link": 0, "info": 0,
-                          "align": 0, "entsize": 0, "label": "", "bytes": b""}]
+        self.sections = [
+            {
+                "name": 0,
+                "type": 0,
+                "flags": 0,
+                "addr": 0,
+                "offset": 0,
+                "size": 0,
+                "link": 0,
+                "info": 0,
+                "align": 0,
+                "entsize": 0,
+                "label": "",
+                "bytes": b"",
+            }
+        ]
         raw = []
         for index in range(count):
             name, vsize, _, size, rawptr, relptr, _, nreloc, _, chars = struct.unpack_from(
-                "<8sIIIIIIHHI", data, 20 + optional + 40 * index)
+                "<8sIIIIIIHHI", data, 20 + optional + 40 * index
+            )
             label = name.rstrip(b"\0").decode()
             if label.startswith("/"):
                 label = string(int(label[1:]))
@@ -294,10 +338,22 @@ class Coff:
             flags = 0 if chars & self.IMAGE_SCN_LNK_REMOVE else SHF_ALLOC
             if chars & (self.IMAGE_SCN_CNT_CODE | self.IMAGE_SCN_MEM_EXECUTE):
                 flags |= SHF_EXEC
-            self.sections.append({"name": 0, "type": SHT_NOBITS if bss else 1, "flags": flags, "addr": 0,
-                                  "offset": rawptr, "size": size or vsize, "link": 0, "info": 0, "align": 0,
-                                  "entsize": 0, "label": label,
-                                  "bytes": b"" if bss else data[rawptr:rawptr + size]})
+            self.sections.append(
+                {
+                    "name": 0,
+                    "type": SHT_NOBITS if bss else 1,
+                    "flags": flags,
+                    "addr": 0,
+                    "offset": rawptr,
+                    "size": size or vsize,
+                    "link": 0,
+                    "info": 0,
+                    "align": 0,
+                    "entsize": 0,
+                    "label": label,
+                    "bytes": b"" if bss else data[rawptr : rawptr + size],
+                }
+            )
             raw.append((relptr, nreloc))
         self.symbols, starts, index = [], {}, 0
         while index < symbols:
@@ -317,8 +373,14 @@ class Coff:
             else:
                 stype = 0
             bind = 1 if cls == 2 else 2 if cls == 105 else 0
-            entry = {"name": hostabi.strip(text) if not text.startswith(".") else text, "value": value, "size": 0,
-                     "type": stype, "bind": bind, "shndx": shndx}
+            entry = {
+                "name": hostabi.strip(text) if not text.startswith(".") else text,
+                "value": value,
+                "size": 0,
+                "type": stype,
+                "bind": bind,
+                "shndx": shndx,
+            }
             self.symbols.append(entry)
             if stype in (STT_OBJECT, STT_FUNC):
                 starts.setdefault(shndx, []).append(entry)
@@ -336,7 +398,8 @@ class Coff:
             for slot in range(nreloc):
                 where, symbol, kind = struct.unpack_from("<IIH", data, relptr + 10 * slot)
                 self.relocations.setdefault(shndx, []).append(
-                    (where, symbol, R_386_32 if kind == self.DIR32 else 0x100 + kind))
+                    (where, symbol, R_386_32 if kind == self.DIR32 else 0x100 + kind)
+                )
 
     def data_section(self, index):
         return Elf.data_section(self, index)
@@ -413,9 +476,13 @@ def build(manifest, source, objects, linked, output, rom=None):
         target = elf.symbols[symbol_index]
         if target["type"] == STT_SECTION:
             for symbol in elf.symbols:
-                if symbol["type"] == STT_OBJECT and symbol["shndx"] == target["shndx"] \
-                        and symbol["value"] <= addend < symbol["value"] + max(symbol["size"], 1) \
-                        and symbol["name"] in table and table[symbol["name"]][1] == "data":
+                if (
+                    symbol["type"] == STT_OBJECT
+                    and symbol["shndx"] == target["shndx"]
+                    and symbol["value"] <= addend < symbol["value"] + max(symbol["size"], 1)
+                    and symbol["name"] in table
+                    and table[symbol["name"]][1] == "data"
+                ):
                     return ("addr", table[symbol["name"]][0] + addend - symbol["value"])
             return None
         name = target["name"]
@@ -441,6 +508,7 @@ def build(manifest, source, objects, linked, output, rom=None):
         return None
 
     code_words = []
+
     def raw_code(item, chunk, taken):
         """Bind the words of chunk the cartridge shows to be code addresses kept as plain numbers."""
         at = item.get("rom", roms.get(item["name"], item.get("image_rom")))
@@ -451,7 +519,7 @@ def build(manifest, source, objects, linked, output, rom=None):
         for offset in range(-start % 4, len(chunk) - 3, 4):
             if offset in taken or at + offset + 4 > len(rom):
                 continue
-            word, = struct.unpack_from(">I", rom, at + offset)
+            (word,) = struct.unpack_from(">I", rom, at + offset)
             if struct.unpack_from("<I", chunk, offset)[0] != word:
                 continue  # the source types these bytes otherwise (not one native word equal to the cartridge's)
             found = addrscan.code_class(rom, at + offset, targets)
@@ -461,16 +529,27 @@ def build(manifest, source, objects, linked, output, rom=None):
             if name not in resolved_names:
                 stops.add(name)
             out.append((offset, name, 0))
-            code_words.append({"symbol": item["name"], "address": f"0x{start + offset:08x}",
-                               "rom": f"0x{at + offset:x}", "word": f"0x{word:08x}", "function": name,
-                               "class": found[1]})
+            code_words.append(
+                {
+                    "symbol": item["name"],
+                    "address": f"0x{start + offset:08x}",
+                    "rom": f"0x{at + offset:x}",
+                    "word": f"0x{word:08x}",
+                    "function": name,
+                    "class": found[1],
+                }
+            )
         return out
 
     for item in keep + keep_overlay:
         elf, symbol = item["elf"], item["symbol"]
         section = elf.sections[symbol["shndx"]]
         size = symbol["size"]
-        chunk = bytearray(section["bytes"][symbol["value"]:symbol["value"] + size]) if section["bytes"] else bytearray(size)
+        chunk = (
+            bytearray(section["bytes"][symbol["value"] : symbol["value"] + size])
+            if section["bytes"]
+            else bytearray(size)
+        )
         patches, failure, taken = [], None, set()
         for where, symbol_index, kind in elf.relocations.get(symbol["shndx"], []):
             if not symbol["value"] <= where < symbol["value"] + size:
@@ -478,15 +557,15 @@ def build(manifest, source, objects, linked, output, rom=None):
             offset = where - symbol["value"]
             taken.add(offset)
             if kind != R_386_32 or offset + 4 > size:
-                failure = f'unsupported relocation kind {kind:d}'
+                failure = f"unsupported relocation kind {kind:d}"
                 break
-            addend, = struct.unpack_from("<i", chunk, offset)
+            (addend,) = struct.unpack_from("<i", chunk, offset)
             value = resolve(elf, symbol_index, addend)
             if value is None:
                 failure = "pointer to a name without a pinned address or native definition"
                 break
             if value[0] == "addr":
-                struct.pack_into("<I", chunk, offset, value[1] & 0xffffffff)
+                struct.pack_into("<I", chunk, offset, value[1] & 0xFFFFFFFF)
             else:
                 patches.append((offset, value[1], addend))
         if failure:
@@ -511,8 +590,10 @@ def build(manifest, source, objects, linked, output, rom=None):
             else:
                 runs.append([start, base, size])
     stops -= resolved_names
+
     def covered(address):
         return any(start <= address < start + size for start, _, size in extents)
+
     binds = {}
     for name in sorted(linked_undefined - linked_defined - claimed - stops):
         if name in table and table[name][1] == "data" and covered(table[name][0]):
@@ -521,17 +602,28 @@ def build(manifest, source, objects, linked, output, rom=None):
     # unnamed game function (func_*) no linked unit defines gets a weak fatal stop (a real definition or a closure
     # binding still wins). Named callees are left out: libultra names come from the shim library, whose archive
     # members a weak definition would keep from being pulled in.
-    weak = sorted(name for name in linked_undefined - linked_defined - claimed - stops
-                  if name.startswith("func_") and table.get(name, (0, ""))[1] == "func")
+    weak = sorted(
+        name
+        for name in linked_undefined - linked_defined - claimed - stops
+        if name.startswith("func_") and table.get(name, (0, ""))[1] == "func"
+    )
     output.mkdir(parents=True, exist_ok=True)
     (output / "image.bin").write_bytes(bytes(blob))
     binary = (output / "image.bin").resolve()
     if hostabi.COFF:
-        asm = ['.section .rdata$n64c_boot_image,"dr"', f".globl {hostabi.add('n64c_boot_image_bytes')}", ".balign 4",
-               f"{hostabi.add('n64c_boot_image_bytes')}:"]
+        asm = [
+            '.section .rdata$n64c_boot_image,"dr"',
+            f".globl {hostabi.add('n64c_boot_image_bytes')}",
+            ".balign 4",
+            f"{hostabi.add('n64c_boot_image_bytes')}:",
+        ]
     else:
-        asm = ['.section .rodata.n64c_boot_image,"a"', ".globl n64c_boot_image_bytes", ".balign 4",
-               "n64c_boot_image_bytes:"]
+        asm = [
+            '.section .rodata.n64c_boot_image,"a"',
+            ".globl n64c_boot_image_bytes",
+            ".balign 4",
+            "n64c_boot_image_bytes:",
+        ]
     cursor = 0
     for offset, name, addend in sorted(words):
         if offset > cursor:
@@ -547,19 +639,36 @@ def build(manifest, source, objects, linked, output, rom=None):
     block = ["__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
     # Android: the image holds pointer words, relocated in a shared library, so its section is writable (bionic refuses a
     # library with text relocations).
-    android = ["#ifdef __ANDROID__", "/* The image holds pointer words: in a shared library they are relocated, so the section is writable",
-               "   (bionic refuses a library with text relocations). */",
-               "__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"'.replace(
-                   '.rodata.n64c_boot_image,\\"a\\"', '.data.rel.ro.n64c_boot_image,\\"aw\\"') for line in asm], ");",
-               "#else", *block, "#endif"]
-    code = ["/* Generated original data image: bytes and pointer words of the fetched source objects. */",
-            '#include "boot.h"', 'extern long long n64c_boot_missing(const char *);', *([] if hostabi.COFF else android)]
+    android = [
+        "#ifdef __ANDROID__",
+        "/* The image holds pointer words: in a shared library they are relocated, so the section is writable",
+        "   (bionic refuses a library with text relocations). */",
+        "__asm__(",
+        *[
+            f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"'.replace(
+                '.rodata.n64c_boot_image,\\"a\\"', '.data.rel.ro.n64c_boot_image,\\"aw\\"'
+            )
+            for line in asm
+        ],
+        ");",
+        "#else",
+        *block,
+        "#endif",
+    ]
+    code = [
+        "/* Generated original data image: bytes and pointer words of the fetched source objects. */",
+        '#include "boot.h"',
+        "extern long long n64c_boot_missing(const char *);",
+        *([] if hostabi.COFF else android),
+    ]
     code += [f'long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
     # (Not on Windows: a COFF weak definition does not keep its section through --gc-sections, and a plain one would collide
     # with the stop the closure routes for the same name: the image's pointer words seed that routing, so a function stop
     # exists either way.)
     if not hostabi.COFF:
-        code += [f'__attribute__((weak)) long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in weak]
+        code += [
+            f'__attribute__((weak)) long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in weak
+        ]
     code.append("const N64cBootImage n64c_boot_image[] = {")
     code += [f"    {{{start - 0x80000000}u, {base}u, {size}u}}," for start, base, size in extents]
     code += ["    {0u, 0u, 0u}", "};", f"const size_t n64c_boot_image_count = {len(extents)};"]
@@ -569,14 +678,26 @@ def build(manifest, source, objects, linked, output, rom=None):
     if hostabi.COFF:
         code += block
     (output / "image.c").write_text("\n".join(code) + "\n")
-    (output / "image.ld").write_text("".join(f"{hostabi.add(name)} = 0x{address:08x};\n" for name, address in binds.items())
-                                     + "SECTIONS {} INSERT AFTER .text;\n")
-    report = {"symbols": imaged,
-              "bytes": len(blob), "extents": len(extents), "relocated_words": len(words),
-              "overlay_symbols": sorted(item["name"] for item in keep_overlay if item["name"] not in refused),
-              "rom_extents": [[f"0x{start:x}", size] for start, _, size in rom_extents],
-              "failed_units": failed, "code_units": code_units, "function_stops": sorted(stops), "bound": sorted(binds), "refused": dict(sorted(refused.items())),
-              "rom_checked": rom is not None, "code_words": code_words, "weak_stops": weak}
+    (output / "image.ld").write_text(
+        "".join(f"{hostabi.add(name)} = 0x{address:08x};\n" for name, address in binds.items())
+        + "SECTIONS {} INSERT AFTER .text;\n"
+    )
+    report = {
+        "symbols": imaged,
+        "bytes": len(blob),
+        "extents": len(extents),
+        "relocated_words": len(words),
+        "overlay_symbols": sorted(item["name"] for item in keep_overlay if item["name"] not in refused),
+        "rom_extents": [[f"0x{start:x}", size] for start, _, size in rom_extents],
+        "failed_units": failed,
+        "code_units": code_units,
+        "function_stops": sorted(stops),
+        "bound": sorted(binds),
+        "refused": dict(sorted(refused.items())),
+        "rom_checked": rom is not None,
+        "code_words": code_words,
+        "weak_stops": weak,
+    }
     (output / "image.json").write_text(json.dumps(report, indent=1) + "\n")
 
 
@@ -586,10 +707,28 @@ def compile_unit(prepare, compiler, source, output, flags):
     Its diagnostics go to OUTPUT.err and OUTPUT is left empty, so an unrelated
     source failure never blocks the image (build lists it under failed_units)."""
     base = output.with_suffix("")
-    steps = [[sys.executable, "-I", str(prepare), "--compiler", compiler, "--source", str(source),
-              "--output", f"{base}.i", "--stubs", f"{base}.stubs.c", "--inventory", f"{base}.json",
-              "--depfile", f"{output}.d", "--", *flags],
-             [compiler, *flags, "-x", "cpp-output", "-c", f"{base}.i", "-o", str(output)]]
+    steps = [
+        [
+            sys.executable,
+            "-I",
+            str(prepare),
+            "--compiler",
+            compiler,
+            "--source",
+            str(source),
+            "--output",
+            f"{base}.i",
+            "--stubs",
+            f"{base}.stubs.c",
+            "--inventory",
+            f"{base}.json",
+            "--depfile",
+            f"{output}.d",
+            "--",
+            *flags,
+        ],
+        [compiler, *flags, "-x", "cpp-output", "-c", f"{base}.i", "-o", str(output)],
+    ]
     error, depfile = pathlib.Path(f"{output}.err"), pathlib.Path(f"{output}.d")
     output.parent.mkdir(parents=True, exist_ok=True)
     failure = None
@@ -642,7 +781,13 @@ if __name__ == "__main__":
             flags = args.flags[1:] if args.flags[:1] == ["--"] else args.flags
             compile_unit(args.prepare, args.compiler, args.source, args.output, flags)
         else:
-            build(args.manifest, args.source, lines(args.objects), lines(args.linked), args.output,
-                  args.rom.read_bytes() if args.rom else None)
+            build(
+                args.manifest,
+                args.source,
+                lines(args.objects),
+                lines(args.linked),
+                args.output,
+                args.rom.read_bytes() if args.rom else None,
+            )
     except (ValueError, KeyError, OSError, struct.error) as error:
         parser.exit(2, f"boot-image: {error}\n")

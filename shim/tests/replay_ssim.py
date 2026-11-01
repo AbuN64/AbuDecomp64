@@ -10,6 +10,7 @@ The oracle image is box-resampled to 320x240 and compared to the render with the
 (11x11 Gaussian window, sigma 1.5, luma). It passes only when both the whole frame and the bounding box
 of non-black content reach the threshold. Needs only the standard library and numpy.
 """
+
 import json
 import struct
 import subprocess
@@ -25,8 +26,8 @@ def read_png(path):
     assert data[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
     pos, idat, ihdr = 8, b"", None
     while pos < len(data):
-        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
-        body = data[pos + 8:pos + 8 + n]
+        n, kind = struct.unpack(">I4s", data[pos : pos + 8])
+        body = data[pos + 8 : pos + 8 + n]
         if kind == b"IHDR":
             ihdr = struct.unpack(">IIBBBBB", body)
         elif kind == b"IDAT":
@@ -101,14 +102,18 @@ def box_resize(img, w, h):
 
 def gaussian_kernel(size=11, sigma=1.5):
     x = np.arange(size) - size // 2
-    k = np.exp(-(x ** 2) / (2 * sigma ** 2))
+    k = np.exp(-(x**2) / (2 * sigma**2))
     return k / k.sum()
 
 
 def filt(img, k):
     pad = len(k) // 2
-    out = np.apply_along_axis(lambda r: np.convolve(r, k, mode="valid"), 1, np.pad(img, ((0, 0), (pad, pad)), mode="reflect"))
-    return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, np.pad(out, ((pad, pad), (0, 0)), mode="reflect"))
+    out = np.apply_along_axis(
+        lambda r: np.convolve(r, k, mode="valid"), 1, np.pad(img, ((0, 0), (pad, pad)), mode="reflect")
+    )
+    return np.apply_along_axis(
+        lambda c: np.convolve(c, k, mode="valid"), 0, np.pad(out, ((pad, pad), (0, 0)), mode="reflect")
+    )
 
 
 def ssim(a, b):
@@ -117,10 +122,10 @@ def ssim(a, b):
     k = gaussian_kernel()
     c1, c2 = (0.01 * 255) ** 2, (0.03 * 255) ** 2
     mu_a, mu_b = filt(a, k), filt(b, k)
-    saa = filt(a * a, k) - mu_a ** 2
-    sbb = filt(b * b, k) - mu_b ** 2
+    saa = filt(a * a, k) - mu_a**2
+    sbb = filt(b * b, k) - mu_b**2
     sab = filt(a * b, k) - mu_a * mu_b
-    s = ((2 * mu_a * mu_b + c1) * (2 * sab + c2)) / ((mu_a ** 2 + mu_b ** 2 + c1) * (saa + sbb + c2))
+    s = ((2 * mu_a * mu_b + c1) * (2 * sab + c2)) / ((mu_a**2 + mu_b**2 + c1) * (saa + sbb + c2))
     return float(s.mean())
 
 
@@ -135,23 +140,33 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     ppm = out / "render.ppm"
     fb = meta.get("fb", [320, 240])
-    subprocess.run([replay, str(cap / meta["rdram"]), meta["dl"], str(ppm), str(fb[0]), str(fb[1]), "320", "240"], check=True)
+    subprocess.run(
+        [replay, str(cap / meta["rdram"]), meta["dl"], str(ppm), str(fb[0]), str(fb[1]), "320", "240"], check=True
+    )
     render = read_ppm(ppm)
     oracle = read_png(cap / meta["oracle"])
     if "crop" in meta:
         x, y, w, h = meta["crop"]
-        oracle = oracle[y:y + h, x:x + w]
+        oracle = oracle[y : y + h, x : x + w]
     small = box_resize(oracle, 320, 240)
     score = ssim(luma(small), luma(render))
-    (out / "oracle_320x240.ppm").write_bytes(b"P6\n320 240\n255\n" + np.clip(small + 0.5, 0, 255).astype(np.uint8).tobytes())
+    (out / "oracle_320x240.ppm").write_bytes(
+        b"P6\n320 240\n255\n" + np.clip(small + 0.5, 0, 255).astype(np.uint8).tobytes()
+    )
     # extra evidence: SSIM inside the bounding box of non-black content, and the blank-frame control
     a, b = luma(small), luma(render)
     ys, xs = np.nonzero((a > 16) | (b > 16))
-    box = (slice(max(ys.min() - 5, 0), ys.max() + 6), slice(max(xs.min() - 5, 0), xs.max() + 6)) if len(ys) else (slice(None), slice(None))
+    box = (
+        (slice(max(ys.min() - 5, 0), ys.max() + 6), slice(max(xs.min() - 5, 0), xs.max() + 6))
+        if len(ys)
+        else (slice(None), slice(None))
+    )
     content = ssim(a[box], b[box])
     control = ssim(a, np.zeros_like(a))
     content_control = ssim(a[box], np.zeros_like(a[box]))
-    print(f"SSIM {score:.4f} (threshold {threshold}); content-box {content:.4f}; blank-frame control {control:.4f} (content-box {content_control:.4f})")
+    print(
+        f"SSIM {score:.4f} (threshold {threshold}); content-box {content:.4f}; blank-frame control {control:.4f} (content-box {content_control:.4f})"
+    )
     (out / "ssim.txt").write_text(f"{score:.4f}\n")
     # the whole frame is mostly black, so the gate also needs the content box to pass
     sys.exit(0 if score >= threshold and content >= threshold else 1)

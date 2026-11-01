@@ -8,14 +8,17 @@ stop is pending work of the walk, not a need, and is not written.
 With a run-on boot's failure list (advance.py diag_rows), stop rows the boot reached carry boot_order, and every other
 failure of that boot is a row too: class byte-order (bytes no byte-order row covers, RNC layouts), address-model (raw
 guest code pointers, MMIO/TLB stops) or runtime (faults, hangs, refused tasks), trace_order its census position."""
+
 import json
 import pathlib
 import re
 
 SITE = re.compile(r"(src/\S+?\.(?:CPP|c)):(\d+)\s*(.*)", re.DOTALL)
 UNIT = re.compile(r"src/\S+?\.(?:CPP|c)")
-DECL = re.compile(r"conflicting types|redefinition|redeclared|unknown type name|undeclared|incompatible|"
-                  r"has no member|NEEDS one declaration|previous declaration|storage class")
+DECL = re.compile(
+    r"conflicting types|redefinition|redeclared|unknown type name|undeclared|incompatible|"
+    r"has no member|NEEDS one declaration|previous declaration|storage class"
+)
 
 
 def unit_of(text):
@@ -57,15 +60,34 @@ def rows(project, data_needs, pin, order, halt=None):
     for symbol, why in sorted(project.get("stops", {}).items()):
         got = classify(why)
         if got:
-            out.append({"symbol": symbol, "class": got[0], "unit": got[1], "file_line": got[2],
-                        "first_error": got[3], "pin": pin, "trace_order": order.get(symbol), "halt": symbol == halt})
+            out.append(
+                {
+                    "symbol": symbol,
+                    "class": got[0],
+                    "unit": got[1],
+                    "file_line": got[2],
+                    "first_error": got[3],
+                    "pin": pin,
+                    "trace_order": order.get(symbol),
+                    "halt": symbol == halt,
+                }
+            )
     for line in data_needs:
         symbol, _, why = line.partition(" | ")
         if symbol.strip():
             site = SITE.search(why)
-            out.append({"symbol": symbol.strip(), "class": "data-type", "unit": unit_of(why) or "",
-                        "file_line": f"{site.group(1)}:{site.group(2)}" if site else "", "first_error": why.strip(),
-                        "pin": pin, "trace_order": None, "halt": False})
+            out.append(
+                {
+                    "symbol": symbol.strip(),
+                    "class": "data-type",
+                    "unit": unit_of(why) or "",
+                    "file_line": f"{site.group(1)}:{site.group(2)}" if site else "",
+                    "first_error": why.strip(),
+                    "pin": pin,
+                    "trace_order": None,
+                    "halt": False,
+                }
+            )
     return out
 
 
@@ -78,9 +100,19 @@ def diag_needs(got, diag, pin):
             continue
         if d["owner"] == "frontier":
             continue
-        got.append({"symbol": d["subject"], "class": d["owner"] if d["class"] != "missing" else "unlisted",
-                    "unit": "", "file_line": "", "first_error": f"{d['class']} {d['subject']} in={d['in']} {d['details']}".strip(),
-                    "pin": pin, "trace_order": d["census"], "halt": False, "boot_order": d["boot_order"]})
+        got.append(
+            {
+                "symbol": d["subject"],
+                "class": d["owner"] if d["class"] != "missing" else "unlisted",
+                "unit": "",
+                "file_line": "",
+                "first_error": f"{d['class']} {d['subject']} in={d['in']} {d['details']}".strip(),
+                "pin": pin,
+                "trace_order": d["census"],
+                "halt": False,
+                "boot_order": d["boot_order"],
+            }
+        )
 
 
 def write(work, manifest, worklist=None, halt=None, diag=None):

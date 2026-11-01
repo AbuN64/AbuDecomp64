@@ -13,8 +13,8 @@ from unittest import mock
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import closure
-import linkall
+import closure  # noqa: E402
+import linkall  # noqa: E402
 
 
 class AutogenTests(unittest.TestCase):

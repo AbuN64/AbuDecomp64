@@ -8,7 +8,7 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
-import sweep
+import sweep  # noqa: E402
 
 RELOCS = """
 Relocation section '.rel.text.f' at offset 0x10 contains 3 entries:

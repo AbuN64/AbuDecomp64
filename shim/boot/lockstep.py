@@ -26,7 +26,7 @@ Calls of functions without a known prototype (--types) are not compared: their a
 that code natively and never copies it) are masked. A memory divergence is persistent when the word
 still differs at the next --persist compared points. Words holding a host pointer (outside RDRAM, not a function)
 are shim-owned state, and floats within 4 ulp are rounding (MIPS single vs x87): listed, never counted. Exit 0 when nothing diverges, 1 when something does, 2 on bad input.
-"""
+"""  # noqa: E501
 
 import argparse
 import array
@@ -148,10 +148,10 @@ class Side:
                 continue
             try:
                 r = json.loads(line)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as err:
                 if number:  # the last line of a run killed mid-write
                     continue
-                raise ValueError(f"{self.dir}: unreadable meta line")
+                raise ValueError(f"{self.dir}: unreadable meta line") from err
             kind = r.get("k")
             if kind == "meta":
                 self.meta = r

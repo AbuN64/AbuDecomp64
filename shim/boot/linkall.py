@@ -236,7 +236,7 @@ def autogen(argv):
     # the unit that really defines it wins when the closure links it. Listed as data needs in the report.
     stubs = sorted(n.split(" | ")[0] for n in report["needs"])
     code = ["/* Generated: weak zeroed storage for data no unit defines and the pin does not address. */"]
-    # (A COFF weak definition is a weak external whose default section --gc-sections drops, leaving the reference undefined:
+    # (A COFF weak definition is a weak external whose default section --gc-sections drops, leaving the reference undefined:  # noqa: E501
     # on Windows the storage is plain. Nothing else defines the name, so nothing can collide with it.)
     attributes = "aligned(16)" if hostabi.COFF else "weak, aligned(16)"
     code += [f"__attribute__(({attributes})) char {n}[4096];" for n in stubs]

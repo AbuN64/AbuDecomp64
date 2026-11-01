@@ -928,7 +928,7 @@ def render_classes(rows, meta):
     lines = [
         "# GATES-1 classes ({!s})".format(meta.get("when", "")),
         "",
-        "RW {!s}, pin {!s}; {:d} units swept, {:d} boot units. One needs.jsonl row per site; folder = first path component under src/. A subword row carries no boot flag (symbol-level).".format(
+        "RW {!s}, pin {!s}; {:d} units swept, {:d} boot units. One needs.jsonl row per site; folder = first path component under src/. A subword row carries no boot flag (symbol-level).".format(  # noqa: E501
             meta.get("rw", "?"), meta.get("pin", "?"), meta.get("units", 0), meta.get("boot_units", 0)
         ),
         "",
@@ -1229,7 +1229,7 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
     listing.write_text("\n".join(objs) + "\n")
     if len(objs) < len(todo):
         print(
-            f"lto: {len(objs):d} of {len(todo):d} units reached the link ({len(todo) - len(objs):d} dropped by prepare/compile)",
+            f"lto: {len(objs):d} of {len(todo):d} units reached the link ({len(todo) - len(objs):d} dropped by prepare/compile)",  # noqa: E501
             file=sys.stderr,
             flush=True,
         )

@@ -30,13 +30,13 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
-import hostabi
-import needs as needsfeed
-import policy
-import srcfiles
+import hostabi  # noqa: E402
+import needs as needsfeed  # noqa: E402
+import policy  # noqa: E402
+import srcfiles  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir
+import portdir  # noqa: E402
 
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
 
@@ -61,7 +61,7 @@ class Facts:
                 self.shim[fn] = (osname, evidence[0] if evidence else "")
 
     def prime(self, names):
-        """Index which units mention each of names in one pass, so definers() of a long list does not rescan every unit."""
+        """Index which units mention each of names in one pass, so definers() of a long list does not rescan every unit."""  # noqa: E501
         wanted = set(names)
         self.pool.update({name: [] for name in wanted})
         for unit, text in self.text.items():
@@ -247,7 +247,7 @@ def tidy(d, facts, deny=None, pin=None, frontier=False):
 
 
 def rebind(d, facts):
-    """Move each libultra stop the shim now provides (a shim-bindings.txt row whose name the shim declares) to bindings."""
+    """Move each libultra stop the shim now provides (a shim-bindings.txt row whose name the shim declares) to bindings."""  # noqa: E501
     for sym in [
         k
         for k in d["stops"]

@@ -91,13 +91,18 @@ def in_gdb(out_dir):
                 listing = gdb.execute(f"disassemble {pc:#x}", to_string=True).splitlines()
             except gdb.error:
                 listing = []
-            at = next((i for i, l in enumerate(listing) if l.startswith("=>")), None)
+            at = next((i for i, entry in enumerate(listing) if entry.startswith("=>")), None)
             if at is None:  # a caller frame: its pc is the return address
                 at = next(
-                    (i for i, l in enumerate(listing) if l.split()[:1] == [f"{pc:#010x}"] or f"{pc:#x} <" in l), 0
+                    (
+                        i
+                        for i, entry in enumerate(listing)
+                        if entry.split()[:1] == [f"{pc:#010x}"] or f"{pc:#x} <" in entry
+                    ),
+                    0,  # noqa: E501
                 )
-            for l in listing[max(at - 14, 0) : at + 10]:
-                m = re.match(r"^(=>)?\s*(0x[0-9a-f]+) <[^>]*>:\s*(.*)$", l)
+            for entry in listing[max(at - 14, 0) : at + 10]:
+                m = re.match(r"^(=>)?\s*(0x[0-9a-f]+) <[^>]*>:\s*(.*)$", entry)
                 if not m:
                     continue
                 addr, asm = int(m.group(2), 16), m.group(3)

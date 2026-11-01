@@ -96,7 +96,7 @@ class RouteTests(unittest.TestCase):
             "bindings": {},
             "stops": {
                 "func_80200000_de": "original SDK unit; clean shim required (SDK: shim binding decision)",
-                "func_802BADC0_de": "original SDK unit src/AUDIO/802BFEB0.CPP; clean shim required (SDK: shim binding decision)",
+                "func_802BADC0_de": "original SDK unit src/AUDIO/802BFEB0.CPP; clean shim required (SDK: shim binding decision)",  # noqa: E501
             },
         }
         closure.tidy(d, self.facts)
@@ -591,12 +591,12 @@ class RouteTests(unittest.TestCase):
                 {
                     "source_pin": "a" * 40,
                     "stops": {
-                        "func_80200100_de": "src/GAME/80200000.CPP:7 conflicting types for 'x'; have 'int'; RW NEEDS one declaration",
-                        "func_802B72B0_de": "libultra 0x802BC380; not identified for the shim at abcdef0 (SDK: shim binding decision)",
+                        "func_80200100_de": "src/GAME/80200000.CPP:7 conflicting types for 'x'; have 'int'; RW NEEDS one declaration",  # noqa: E501
+                        "func_802B72B0_de": "libultra 0x802BC380; not identified for the shim at abcdef0 (SDK: shim binding decision)",  # noqa: E501
                         "func_80200200_de": "src/GAME/80200000.CPP:9 expected ';' before '}' token",
                         "func_80200300_de": "no C definition at abcdef0",
-                        "func_80200400_de": "SDK-directory unit holds no libultra-range function: src/SDK/a.CPP (f); decomp must move",
-                        "func_80200500_de": "src/GAME/80200000.CPP defines it; not linked yet at abcdef0 (boot frontier)",
+                        "func_80200400_de": "SDK-directory unit holds no libultra-range function: src/SDK/a.CPP (f); decomp must move",  # noqa: E501
+                        "func_80200500_de": "src/GAME/80200000.CPP defines it; not linked yet at abcdef0 (boot frontier)",  # noqa: E501
                     },
                 }
             )

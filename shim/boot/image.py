@@ -30,10 +30,10 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import addrscan
-import hostabi
-import policy
-import srcfiles
+import addrscan  # noqa: E402
+import hostabi  # noqa: E402
+import policy  # noqa: E402
+import srcfiles  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.MULTILINE)
@@ -633,11 +633,11 @@ def build(manifest, source, objects, linked, output, rom=None):
         cursor = offset + 4
     if cursor < len(blob):
         asm.append(f'.incbin "{binary}", {cursor}, {len(blob) - cursor}')
-    # ELF returns to the section the compiler was in with .previous; COFF has no such directive, so its block is the last
+    # ELF returns to the section the compiler was in with .previous; COFF has no such directive, so its block is the last  # noqa: E501
     # text of the file and ends in .text.
     asm.append(".text" if hostabi.COFF else ".previous")
     block = ["__asm__(", *[f'    "{line.replace(chr(34), chr(92) + chr(34))}\\n"' for line in asm], ");"]
-    # Android: the image holds pointer words, relocated in a shared library, so its section is writable (bionic refuses a
+    # Android: the image holds pointer words, relocated in a shared library, so its section is writable (bionic refuses a  # noqa: E501
     # library with text relocations).
     android = [
         "#ifdef __ANDROID__",
@@ -662,8 +662,8 @@ def build(manifest, source, objects, linked, output, rom=None):
         *([] if hostabi.COFF else android),
     ]
     code += [f'long long {name}(void) {{ return n64c_boot_missing("{name}"); }}' for name in sorted(stops)]
-    # (Not on Windows: a COFF weak definition does not keep its section through --gc-sections, and a plain one would collide
-    # with the stop the closure routes for the same name: the image's pointer words seed that routing, so a function stop
+    # (Not on Windows: a COFF weak definition does not keep its section through --gc-sections, and a plain one would collide  # noqa: E501
+    # with the stop the closure routes for the same name: the image's pointer words seed that routing, so a function stop  # noqa: E501
     # exists either way.)
     if not hostabi.COFF:
         code += [

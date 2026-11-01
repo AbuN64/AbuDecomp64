@@ -9,8 +9,8 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import hostabi
-import policy
+import hostabi  # noqa: E402
+import policy  # noqa: E402
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 # The source's address-named data (D_auto_80XXXXXX): the name states its address, the pinned facts may omit it.
@@ -528,7 +528,7 @@ def generate(manifest, source, output):
         "};",
         "const size_t n64c_boot_resource_count = sizeof n64c_boot_resources / sizeof n64c_boot_resources[0] - 1;",
     ]
-    # Blob layouts, keyed by the decomp's blob facts (the blobs file): an RNC stream's row types its unpacked bytes (the PI
+    # Blob layouts, keyed by the decomp's blob facts (the blobs file): an RNC stream's row types its unpacked bytes (the PI  # noqa: E501
     # layer serves every stream's header in host order; streams without a row unpack raw), an uncompressed blob's row
     # types its ROM bytes like a resources row.
     # A row names one blob ("blob") or every blob of a format ("format", the blob facts' format string).

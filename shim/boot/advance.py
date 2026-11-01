@@ -23,11 +23,11 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
-import closure
-import needs as needsfeed
+import closure  # noqa: E402
+import needs as needsfeed  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir
+import portdir  # noqa: E402
 
 
 def next_unit(d, symbol, facts):

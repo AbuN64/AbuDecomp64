@@ -41,7 +41,7 @@ STEP = re.compile(r"boot-step: census (\d+)/(\d+) hit")
 def census(stderr):
     """Distinct trace functions the boot hit: the run-on end line, else the last census step line, else 0."""
     end = None
-    for end in END.finditer(stderr):
+    for end in END.finditer(stderr):  # noqa: B007
         pass
     if end:
         return int(end.group(2))
@@ -50,7 +50,7 @@ def census(stderr):
 
 
 def seat_args(seat_json, rom):
-    """The port role's boot arguments from a seat profile, with the release ROM and user folder replaced by {rom} and {user}."""
+    """The port role's boot arguments from a seat profile, with the release ROM and user folder replaced by {rom} and {user}."""  # noqa: E501
     path = pathlib.Path(seat_json)
     supervisor = json.loads(path.read_text())["supervisor"]
     role = supervisor["roles"]["port"]

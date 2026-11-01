@@ -8,7 +8,7 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
-import gates
+import gates  # noqa: E402
 
 SAMPLE = """# 1 "src/A/a.CPP"
 typedef unsigned long long u64;

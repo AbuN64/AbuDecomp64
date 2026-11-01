@@ -61,7 +61,7 @@ def dumps(value):
 
 
 def load_manifest(path):
-    """(entries, current): a manifest file is marshal data behind MAGIC, or the JSON older builds wrote (not current)."""
+    """(entries, current): a manifest file is marshal data behind MAGIC, or the JSON older builds wrote (not current)."""  # noqa: E501
     with open(path, "rb") as stream:
         data = stream.read()
     try:
@@ -70,8 +70,8 @@ def load_manifest(path):
         import json
 
         return json.loads(data), False
-    except (ValueError, EOFError, TypeError):
-        raise ValueError(path)
+    except (ValueError, EOFError, TypeError) as err:
+        raise ValueError(path) from err
 
 
 def mapped(text, maps):

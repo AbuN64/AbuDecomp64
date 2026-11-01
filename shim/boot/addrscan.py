@@ -26,7 +26,7 @@ With --image (the build's decomp-boot directory) each code word inside the nativ
 relocation of a name the source gives it, or a raw word the image bound: the native word differs from the cartridge's)
 or raw (the native word is the cartridge's number); a raw code word, or one in a blob (no image rewrites blob bytes), is a need: one ADDRESS line,
 and with --needs one JSON row; exit status 1 while any is left. Words of symbols the image does not place are listed as
-unplaced (the native image holds nothing there)."""
+unplaced (the native image holds nothing there)."""  # noqa: E501
 
 import argparse
 import bisect
@@ -38,11 +38,11 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import link
-import policy
+import link  # noqa: E402
+import policy  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir
+import portdir  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
 KSEG0, KUSEG_END, KUSEG_LOW, RDRAM_END = 0x80000000, 0x00800000, 0x10000, 0x80800000

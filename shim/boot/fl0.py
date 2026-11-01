@@ -167,7 +167,7 @@ def run(binary, rom, project_path, goldens, output):
         if result.returncode:
             raise ValueError(f"original native boot exited {result.returncode}; no FL0 acceptance")
         log = (attempt / "boot.log").read_text()
-        pattern = rf"^boot-frame: retrace={gate['retrace']} tasks=([1-9][0-9]*) audio=[0-9]+ commands=([1-9][0-9]*) surface=0x([0-9a-f]{{8}})$"
+        pattern = rf"^boot-frame: retrace={gate['retrace']} tasks=([1-9][0-9]*) audio=[0-9]+ commands=([1-9][0-9]*) surface=0x([0-9a-f]{{8}})$"  # noqa: E501
         if not re.search(pattern, log, re.MULTILINE) or not ppm.is_file():
             raise ValueError("native process returned without a rendered presentation")
         metrics = image_metrics()

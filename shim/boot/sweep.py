@@ -15,7 +15,7 @@ The list is a work queue in boot order: `--jobs` workers each take the next func
 function reaches (each unit once, cached as a small graph: defined symbols, references per symbol section, stops;
 objects are deleted at once), walk its closure with closure.py's own routing rules for what no unit defines (shim
 bindings, pinned data addresses, aliases, stops), and the row is appended to sweep.tsv in boot order as soon as it
-is done. A unit is found through an index of the identifiers the sources define at column 0."""
+is done. A unit is found through an index of the identifiers the sources define at column 0."""  # noqa: E501
 
 import argparse
 import collections
@@ -59,7 +59,7 @@ IGNORED = ("_GLOBAL_OFFSET_TABLE_", "__x86.", "__stack_chk")
 
 
 def parse_relocs(text):
-    """readelf -rW text -> {symbol: sorted referenced names} for every per-symbol section (-ffunction/-fdata-sections)."""
+    """readelf -rW text -> {symbol: sorted referenced names} for every per-symbol section (-ffunction/-fdata-sections)."""  # noqa: E501
     edges, current = {}, None
     for line in text.splitlines():
         head = RELOC_HEAD.match(line)
@@ -305,7 +305,7 @@ def build_index(texts):
 
 
 class Graph:
-    """Units are built on demand by `build(unit)` and cached; `index` maps an identifier to the units that may define it."""
+    """Units are built on demand by `build(unit)` and cached; `index` maps an identifier to the units that may define it."""  # noqa: E501
 
     def __init__(self, router, build, index, records=()):
         self.router, self.build, self.index = router, build, index

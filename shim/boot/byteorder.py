@@ -16,8 +16,8 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import link
-import policy
+import link  # noqa: E402
+import policy  # noqa: E402
 
 
 def main():

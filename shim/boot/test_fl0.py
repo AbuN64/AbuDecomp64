@@ -156,7 +156,7 @@ class GateTests(unittest.TestCase):
         native = self.root / "native.dl"
         log = self.root / "boot.log"
         log.write_text(
-            "boot-step: 473/932 submit_task\nboot-gfx: first submit seq=2 retrace=0 data=0x80000100 bytes=16 audio_before=1\n"
+            "boot-step: 473/932 submit_task\nboot-gfx: first submit seq=2 retrace=0 data=0x80000100 bytes=16 audio_before=1\n"  # noqa: E501
         )
         native.write_bytes(self.dl)
         report = module.compare_dl(native, self.gold, log)

@@ -165,7 +165,7 @@ def main():
     control = ssim(a, np.zeros_like(a))
     content_control = ssim(a[box], np.zeros_like(a[box]))
     print(
-        f"SSIM {score:.4f} (threshold {threshold}); content-box {content:.4f}; blank-frame control {control:.4f} (content-box {content_control:.4f})"
+        f"SSIM {score:.4f} (threshold {threshold}); content-box {content:.4f}; blank-frame control {control:.4f} (content-box {content_control:.4f})"  # noqa: E501
     )
     (out / "ssim.txt").write_text(f"{score:.4f}\n")
     # the whole frame is mostly black, so the gate also needs the content box to pass

@@ -49,7 +49,7 @@ class FailClosedTests(unittest.TestCase):
             self.assertIn(str(self.source), self.files[-1].read_text())
 
     def test_main_compile_failure_preserves_all_diagnostics_and_caches_nothing(self):
-        diagnostic = "included from header.h:2\nsource:3: error: conflicting types for Texture\nsource:1: note: previous declaration\n"
+        diagnostic = "included from header.h:2\nsource:3: error: conflicting types for Texture\nsource:1: note: previous declaration\n"  # noqa: E501
         argv = ["prepare.py", "--compiler", sys.executable, "--source", str(self.source)]
         for option, path in zip(("output", "stubs", "inventory", "depfile"), self.files, strict=False):
             argv += ["--" + option, str(path)]

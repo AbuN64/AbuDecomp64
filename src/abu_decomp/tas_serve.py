@@ -57,6 +57,7 @@ from PIL import Image
 
 from abu_decomp import (
     DecompError,
+    display,
     evidence,
     inotify,
     site_core,
@@ -73,12 +74,14 @@ from abu_decomp import (
     tas_points,
     tas_seat,
     tas_triage,
+    viewer,
 )
 from abu_decomp.config import Profile
 
 _SERVE_KEYS = frozenset(
     {
         "listen",
+        "displays",
         "jobs",
         "inbox",
         "states",
@@ -246,6 +249,13 @@ class Server:
             raise DecompError("tas.serve", f"unknown tas.serve keys: {', '.join(sorted(extra))}")
         self.listen = str(serve.get("listen", "127.0.0.1:8099"))
         self.jobs = int(serve.get("jobs", 4))
+        # Where the site's displays are kept (`decomp display --dir`): the Live page and the viewer read the same
+        # folder.
+        self.displays = (
+            profile.path("tas.serve.displays", serve["displays"])
+            if "displays" in serve
+            else Path.home() / ".local" / "state" / "abu-decomp" / "displays"
+        )
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
@@ -1342,6 +1352,16 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def missing(self) -> None:
             self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
+        def viewer_socket(self, subject: str) -> None:
+            """Upgrade to a WebSocket and carry the display's RFB until either side closes; the connection is then
+done."""
+            key = self.headers.get("Sec-WebSocket-Key")
+            record = display.load(server.displays, subject)
+            if not key or self.headers.get("Upgrade", "").lower() != "websocket":
+                raise DecompError("viewer.upgrade", "the viewer socket needs a WebSocket upgrade")
+            self.close_connection = True
+            viewer.serve_socket(self.connection, key, record, display.connect_address)
+
         def do_GET(self) -> None:
             path, _, query = self.path.partition("?")
             head, _, run_id = path[1:].partition("/")
@@ -1352,6 +1372,13 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.feed_stream()
                 elif (site := site_core.answer(server, "GET", path, query, b"")) is not None:
                     self.json(site[1], site[0])
+                elif path == "/live":
+                    self.reply(viewer.live_page(display.records(server.displays)).encode(), "text/html; charset=utf-8")
+                elif head == "viewer" and run_id.endswith("/ws"):
+                    self.viewer_socket(run_id[:-3])
+                elif head == "viewer" and run_id:
+                    page = viewer.viewer_page(display.load(server.displays, run_id))
+                    self.reply(page.encode(), "text/html; charset=utf-8")
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/pool":

@@ -201,9 +201,20 @@ def _json_object(name: str, text: str | None) -> dict[str, Any] | None:
 
 def _display_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--dir", type=Path, help="where displays are kept (default ~/.local/state/abu-decomp/displays)")
+    parser.add_argument(
+        "--backend", choices=("linux", "windows"), help="default: this host's own (linux, or windows on Windows)"
+    )
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     create = actions.add_parser("create", help="start a headless display (Linux: labwc + wayvnc) at a size")
     create.add_argument("--size", default="1280x720", help="WIDTHxHEIGHT (default 1280x720)")
+    create.add_argument("--endpoint", help="windows: HOST:PORT of the guest's VNC server (the site's config names it)")
+    invoke = actions.add_parser(
+        "invoke", help="linux: run a command drawing on a fresh display, then delete the display"
+    )
+    invoke.add_argument("--size", default="1280x720", help="WIDTHxHEIGHT (default 1280x720)")
+    invoke.add_argument(
+        "argv", nargs=argparse.REMAINDER, help="-- COMMAND ARGS: the replay runner, run inside the display"
+    )
     actions.add_parser("describe", help="show one display").add_argument("subject", help="the display identity")
     capture = actions.add_parser("capture", help="write one PNG frame of a display read over RFB")
     capture.add_argument("subject", help="the display identity")
@@ -221,14 +232,34 @@ def _display_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _invoke_display(shown: Any, size: str, argv: list[str]) -> dict[str, Any]:
+    """Run argv inside a fresh display and delete the display when it exits. Nothing is recorded; the page's viewer
+shows it live."""
+    import os
+    import subprocess
+
+    if not argv:
+        raise DecompError("cli.arguments", "display invoke needs -- COMMAND")
+    record = shown.create(size)
+    try:
+        announce = {"display": record.identity, "viewer": f"/viewer/{record.identity}"}
+        print(json.dumps(announce), file=sys.stderr, flush=True)
+        code = subprocess.run(argv, env=os.environ | shown.environment(record.identity), check=False).returncode
+    finally:
+        shown.delete(record.identity)
+    return {"display": record.identity, "exit": code}
+
+
 def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from dataclasses import asdict
 
     from abu_decomp import display
 
-    shown = display.backend(args.dir)
+    shown = display.backend(args.dir, args.backend)
     if args.action == "create":
-        return asdict(shown.create(args.size)), 0, []
+        return asdict(shown.create(args.size, args.endpoint)), 0, []
+    if args.action == "invoke":
+        return _invoke_display(shown, args.size, [a for a in args.argv if a != "--"]), 0, []
     if args.action == "capture":
         return shown.capture(args.subject, args.path), 0, []
     if args.action == "input":

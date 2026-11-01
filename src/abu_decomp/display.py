@@ -1,8 +1,12 @@
-"""The site's own display adapter: one interface (Create, Describe, Capture, Input, Delete), a Linux backend now.
+"""The site's own display adapter: one interface (Create, Describe, Capture, Input, Delete), with a Linux and a
+Windows backend.
 
 Linux holds a headless Wayland compositor (labwc) and a VNC server on a Unix socket (wayvnc) in a private run directory,
-captures a frame and sends keys and pointer events by speaking RFB to that socket. Windows refuses until its backend
-lands.
+captures a frame and sends keys and pointer events by speaking RFB to the Linux socket. Windows reads the guest
+desktop over
+VNC at an endpoint the site's config names (the guest's own VNC server is not ours to start or stop). Both are reached
+through the same address (`unix path` or `tcp host:port`), so capture and the browser viewer (viewer.py) do not care
+which backend made the display.
 Called as `decomp display ...`, so rig jobs and the runner use the same code. Nothing here calls another toolkit.
 """
 
@@ -41,6 +45,8 @@ COMMAND_SECONDS = 3 * START_SECONDS + RFB_SECONDS
 OUTPUT = "HEADLESS-1"
 HOLD = "hold.sock"  # the input holder's control socket in the display's directory
 RAW, CURSOR, POINTER_POS = 0, -239, -232
+# Dials of a Windows guest's ServerInit that may answer EOF right after the display starts (QUIRKS 7).
+ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -56,10 +62,11 @@ class Record:
 
 
 class Backend(Protocol):
-    def create(self, size: str) -> Record: ...
+    def create(self, size: str, endpoint: str | None = None) -> Record: ...
     def describe(self, subject: str) -> Record: ...
     def capture(self, subject: str, path: Path) -> dict[str, object]: ...
     def input(self, subject: str, events: object) -> dict[str, object]: ...
+    def environment(self, subject: str) -> dict[str, str]: ...
     def delete(self, subject: str) -> Record: ...
 
 
@@ -249,9 +256,10 @@ class Rfb:
                 self.update(1, 1)  # wayvnc takes a button change per pass of its loop: a round trip separates them
         self.update()
 
-    def frame(self) -> Image.Image:
+    def frame(self, drop_first: bool = False) -> Image.Image:
         """wayvnc's first update is the buffer kept since its last client left (QUIRKS 4): drop it, use the second."""
-        self.update()
+        if drop_first:
+            self.update()
         return self.update()
 
 
@@ -264,6 +272,46 @@ def connect_unix(path: str) -> socket.socket:
         conn.close()
         raise DecompError("display.connect", f"cannot reach {path}: {exc}") from exc
     return conn
+
+
+def connect_address(address: str) -> socket.socket:
+    """Dial a display's address: `tcp:host:port` for a guest VNC server, else the path of a Unix socket."""
+    if not address.startswith("tcp:"):
+        return connect_unix(address)
+    host, _, port = address[4:].rpartition(":")
+    try:
+        return socket.create_connection((host, int(port)))
+    except (OSError, ValueError) as exc:
+        raise DecompError("display.connect", f"cannot reach {address}: {exc}") from exc
+
+
+def load(root: Path, subject: str) -> Record:
+    path = root / subject / "display.json"
+    if not subject.startswith("d-") or "/" in subject or not path.is_file():
+        raise DecompError("display.notfound", f"no display {subject!r}", "create one with `decomp display create`")
+    return Record(**json.loads(path.read_text()))
+
+
+def records(root: Path) -> list[Record]:
+    """Every display kept under root, oldest name first."""
+    return [load(root, d.name) for d in sorted(root.glob("d-*")) if (d / "display.json").is_file()]
+
+
+def read_frame(record: Record, connect: Callable[[str], socket.socket], drop_first: bool) -> Image.Image:
+    conn = connect(record.socket)
+    try:
+        return Rfb(conn).frame(drop_first)
+    finally:
+        conn.close()
+
+
+def write_png(image: Image.Image, path: Path) -> dict[str, object]:
+    if not path.is_absolute():
+        raise DecompError("display.path", "capture needs an absolute --path")
+    partial = path.with_name("." + path.name + ".part")
+    image.save(partial, "PNG")
+    partial.replace(path)
+    return {"path": str(path), "width": image.width, "height": image.height, "non_black": image.getbbox() is not None}
 
 
 # ---------------------------------------------------------------- Linux
@@ -307,13 +355,17 @@ class Linux:
         self,
         root: Path,
         spawn: Callable[..., subprocess.Popen] = subprocess.Popen,
-        connect: Callable[[str], socket.socket] = connect_unix,
+        connect: Callable[[str], socket.socket] = connect_address,
     ) -> None:
         self.root = root
         self.spawn = spawn
         self.connect = connect
 
-    def create(self, size: str) -> Record:
+    def create(self, size: str, endpoint: str | None = None) -> Record:
+        if endpoint:
+            raise DecompError(
+                "display.endpoint", "a Linux display starts its own VNC server; --endpoint is for Windows"
+            )
         width, height = parse_size(size)
         for tool in PACKAGES:
             if not any((Path(d) / tool).exists() for d in os.get_exec_path()):
@@ -407,25 +459,15 @@ class Linux:
             )
 
     def describe(self, subject: str) -> Record:
-        path = self.root / subject / "display.json"
-        if not subject.startswith("d-") or "/" in subject or not path.is_file():
-            raise DecompError("display.notfound", f"no display {subject!r}", "create one with `decomp display create`")
-        return Record(**json.loads(path.read_text()))
+        return load(self.root, subject)
 
     def capture(self, subject: str, path: Path) -> dict[str, object]:
-        record = self.describe(subject)
-        if not path.is_absolute():
-            raise DecompError("display.path", "capture needs an absolute --path")
-        conn = self.connect(record.socket)
-        try:
-            image = Rfb(conn).frame()
-        finally:
-            conn.close()
-        partial = path.with_name("." + path.name + ".part")
-        image.save(partial, "PNG")
-        partial.replace(path)
-        black = image.getbbox() is None
-        return {"path": str(path), "width": image.width, "height": image.height, "non_black": not black}
+        return write_png(read_frame(self.describe(subject), self.connect, drop_first=True), path)
+
+    def environment(self, subject: str) -> dict[str, str]:
+        """What a client needs to draw on this display: its Wayland socket in the private run directory."""
+        run = Path(self.describe(subject).directory) / "run"
+        return {"XDG_RUNTIME_DIR": str(run), "WAYLAND_DISPLAY": "wayland-0"}
 
     def input(self, subject: str, events: object) -> dict[str, object]:
         """Send the events over RFB; the framebuffer request after them is answered once the server has taken them."""
@@ -480,22 +522,76 @@ class Linux:
 
 
 class Windows:
-    """The Windows backend is RUNNER-LIVE-DISPLAY's; until it lands every verb refuses."""
+    """The guest desktop over VNC at `host:port` (the site's config names it). The guest's VNC server (tvnserver) is the
+    guest's own: Create only proves it answers and records it, Delete forgets the record and stops nothing there."""
 
-    def _refuse(self, *_args: object) -> object:
-        raise DecompError("display.unsupported", "Unsupported: the Windows display backend is not built yet")
+    def __init__(
+        self,
+        root: Path,
+        connect: Callable[[str], socket.socket] = connect_address,
+        attempts: int = ATTEMPTS,
+    ) -> None:
+        self.root = root
+        self.connect = connect
+        self.attempts = attempts
 
-    create = describe = capture = input = delete = _refuse  # type: ignore[assignment]
+    def create(self, size: str, endpoint: str | None = None) -> Record:
+        """`size` is the guest's own and is not set here; the record carries the size the guest reports."""
+        host, _, port = (endpoint or "").rpartition(":")
+        if not host or not port.isdecimal():
+            raise DecompError(
+                "display.endpoint", "a Windows display needs --endpoint HOST:PORT", "name it in the config"
+            )
+        address = f"tcp:{host}:{port}"
+        rfb = self._handshake(address)
+        identity = "d-" + secrets.token_hex(4)
+        directory = self.root / identity
+        directory.mkdir(parents=True, mode=0o700)
+        record = Record(identity, rfb.width, rfb.height, address, {}, str(directory))
+        (directory / "display.json").write_text(json.dumps(asdict(record)))
+        return record
+
+    def _handshake(self, address: str) -> Rfb:
+        """ServerInit's first answer can be EOF right after the guest display starts (QUIRKS 7): redial, bounded."""
+        for attempt in range(self.attempts):
+            conn = self.connect(address)
+            try:
+                return Rfb(conn)
+            except DecompError as exc:
+                if attempt + 1 == self.attempts or "closed" not in exc.detail:
+                    raise
+            finally:
+                conn.close()
+        raise AssertionError("unreachable")
+
+    def describe(self, subject: str) -> Record:
+        return load(self.root, subject)
+
+    def capture(self, subject: str, path: Path) -> dict[str, object]:
+        return write_png(read_frame(self.describe(subject), self.connect, drop_first=False), path)
+
+    def input(self, subject: str, events: object) -> dict[str, object]:
+        raise DecompError(
+            "display.unsupported",
+            "Unsupported: a Windows guest takes input from its own viewer session; input is for Linux displays",
+        )
+
+    def environment(self, subject: str) -> dict[str, str]:
+        raise DecompError("display.unsupported", "a Windows guest runs its own programs; invoke is for Linux displays")
+
+    def delete(self, subject: str) -> Record:
+        record = self.describe(subject)
+        shutil.rmtree(record.directory)
+        return record
 
 
-def backend(root: Path | None = None) -> Backend:
+def backend(root: Path | None = None, kind: str | None = None) -> Backend:
+    kind = kind or ("windows" if sys.platform == "win32" else "linux")
     base = root or Path.home() / ".local" / "state" / "abu-decomp" / "displays"
-    if sys.platform == "linux":
-        base.mkdir(parents=True, exist_ok=True)
-        return Linux(base)
-    if sys.platform == "win32":
-        return Windows()  # type: ignore[return-value]
-    raise DecompError("display.unsupported", f"no display backend for {sys.platform}")
+    if kind not in ("linux", "windows"):
+        raise DecompError("display.unsupported", f"no display backend {kind!r}", "use linux or windows")
+    base.mkdir(parents=True, exist_ok=True)
+    return Linux(base) if kind == "linux" else Windows(base)
 
 
 if __name__ == "__main__":  # the display's holder: `python display.py RFB_SOCKET CONTROL_SOCKET`

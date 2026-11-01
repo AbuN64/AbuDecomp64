@@ -53,7 +53,7 @@ def served(pixels: list[bytes]):
 def test_frame_drops_the_stale_first_update(tmp_path: Path) -> None:
     stale, fresh = bytes(W * H * 4), bytes([0, 0, 255, 0]) * (W * H)  # BGRX: red
     near, thread = served([stale, fresh])
-    image = display.Rfb(near).frame()
+    image = display.Rfb(near).frame(drop_first=True)
     thread.join()
     assert image.size == (W, H)
     assert image.getpixel((0, 0)) == (255, 0, 0)
@@ -157,10 +157,48 @@ def test_describe_refuses_an_unknown_or_escaping_identity(tmp_path: Path) -> Non
             display.Linux(tmp_path).describe(subject)
 
 
-def test_windows_backend_refuses_every_verb() -> None:
-    for verb in (lambda w: w.create("1x1"), lambda w: w.describe("d"), lambda w: w.delete("d")):
-        with pytest.raises(DecompError, match="not built yet"):
-            verb(display.Windows())
+def test_windows_create_records_the_guest_size_and_delete_stops_nothing(tmp_path: Path) -> None:
+    near, thread = served([])
+    windows = display.Windows(tmp_path, connect=lambda _address: near)
+    record = windows.create("ignored", "guest.example.lan:5900")
+    thread.join()
+    assert (record.width, record.height, record.socket, record.pids) == (W, H, "tcp:guest.example.lan:5900", {})
+    assert windows.describe(record.identity) == record
+    assert windows.delete(record.identity) == record
+    assert not (tmp_path / record.identity).exists()
+
+
+def test_windows_capture_takes_the_first_update(tmp_path: Path) -> None:
+    (tmp_path / "d-aa").mkdir()
+    record = display.Record("d-aa", W, H, "tcp:g:1", {}, str(tmp_path / "d-aa"))
+    (tmp_path / "d-aa" / "display.json").write_text(json.dumps(record.__dict__))
+    near, _ = served([bytes([0, 0, 255, 0]) * (W * H)])
+    # the stub server answers the SetPixelFormat of a fresh handshake, so the connect factory hands out one socket
+    done = display.Windows(tmp_path, connect=lambda _a: near).capture("d-aa", tmp_path / "f.png")
+    assert done["non_black"] is True
+
+
+def test_windows_redials_after_an_eof_at_server_init(tmp_path: Path) -> None:
+    dead, far = socket.socketpair()
+    far.close()  # the guest hangs up right after accepting: EOF at ServerInit
+    live, thread = served([])
+    dials = iter([dead, live])
+    record = display.Windows(tmp_path, connect=lambda _a: next(dials)).create("x", "g:5900")
+    thread.join()
+    assert record.width == W
+
+
+def test_windows_create_needs_an_endpoint_and_linux_refuses_one(tmp_path: Path) -> None:
+    with pytest.raises(DecompError, match="--endpoint HOST:PORT"):
+        display.Windows(tmp_path).create("1x1")
+    with pytest.raises(DecompError, match="for Windows"):
+        display.Linux(tmp_path).create("1x1", "g:1")
+
+
+def test_backend_picks_by_name(tmp_path: Path) -> None:
+    assert isinstance(display.backend(tmp_path, "windows"), display.Windows)
+    with pytest.raises(DecompError, match="no display backend"):
+        display.backend(tmp_path, "plan9")
 
 
 def test_size_is_width_by_height() -> None:
@@ -348,7 +386,7 @@ def test_keysyms() -> None:
 
 def test_windows_input_answers_unsupported() -> None:
     with pytest.raises(DecompError, match="Unsupported") as raised:
-        display.Windows().input("d", [{"key": "a"}])
+        display.Windows(Path("w")).input("d", [{"key": "a"}])
     assert raised.value.key == "display.unsupported"
 
 

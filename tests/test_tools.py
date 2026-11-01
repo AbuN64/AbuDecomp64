@@ -9,9 +9,7 @@ from unittest import mock
 from abu_decomp import tools
 from abu_decomp.config import ConfigError, load_profile
 
-UNBAKE = "unbake @ git+https://github.com/AbuN64/cake-unbake-64@" + "a" * 40
-RECIPE = "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@" + "b" * 40
-TASTE = "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@" + "c" * 40
+UNBAKE = "unbake"
 
 
 class Distribution:
@@ -26,7 +24,9 @@ class Distribution:
 
 def installed(**changes):
     table = {
-        "abu-decomp-64": Distribution(requires=["unbake", RECIPE, TASTE, "ruff==0.16.9; extra == 'dev'"]),
+        "abu-decomp-64": Distribution(
+            requires=["unbake", "recipemaker", "cake-taste-64", "ruff==0.16.9; extra == 'dev'"]
+        ),
         "unbake": Distribution("https://github.com/AbuN64/cake-unbake-64", "a" * 40),
         "recipemaker": Distribution(
             "https://github.com/AbuN64/recipe-maker-64.git", "b" * 40, [UNBAKE, "pycparser==3.0"]
@@ -67,26 +67,24 @@ class ToolTests(unittest.TestCase):
         self.assertIn("tools.taste_profile", caught.exception.detail)
         self.assertIn("absolute path", caught.exception.detail)
 
-    def test_pins_come_from_own_metadata_and_match_installed_commits(self):
+    def test_every_tool_is_reported_at_its_installed_commit(self):
         with installed():
             report = tools.verify_dependencies()
         self.assertEqual(list(report), ["unbake", "recipe", "taste"])
         self.assertEqual(report["taste"]["commit"], "c" * 40)
 
-    def test_wrong_commit_missing_tool_are_refused(self):
+    def test_missing_tool_and_missing_provenance_are_refused(self):
         cases = {
             "dependency.missing": {"cake-taste-64": None},
             "dependency.provenance": {"recipemaker": Distribution(requires=[UNBAKE])},
-            "dependency.pin": {"recipemaker": Distribution("https://github.com/AbuN64/recipe-maker-64", "e" * 40)},
         }
         for key, change in cases.items():
             with self.subTest(key=key), installed(**change), self.assertRaises(tools.DependencyError) as caught:
                 tools.verify_dependencies()
             self.assertEqual(caught.exception.key, key)
 
-    def test_unbake_has_no_pin_and_runs_at_its_installed_commit(self):
+    def test_every_tool_runs_at_its_installed_commit(self):
         with installed():
-            self.assertNotIn("unbake", tools.pins())
             self.assertEqual(tools.commits(), {"unbake": "a" * 40, "recipe": "b" * 40, "taste": "c" * 40})
 
     def test_cake_taste_must_be_standalone(self):

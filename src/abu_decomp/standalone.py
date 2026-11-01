@@ -1,22 +1,21 @@
 """A game repo builds with make alone: none of its files names one of our tools.
 
-The names are those of the tools decomp pins (tools.TOOLS: each distribution and module) and of decomp itself, plus
-the repositories the pins point at, matched in any case and with any `-`, `_` or space between their letters (so
-`cake-unbake`, `__UNBAKE_X` and `recipe maker` all count). A plain command word (`recipe`, `taste`, `decomp`) is
-not a name: game text and make recipes use those words. `mentions(tree)` reads every tracked and untracked
-unignored file of the tree; `mentions(tree, against=REV)` reads only the lines the work tree adds over REV, which is
-what a landing or a hand commit is judged on. The whole-tree form is the proof that a repo is clean."""
+The names are those of the tools decomp installs (tools.TOOLS: each distribution and module) and of decomp itself, plus
+the repositories they install from (deploy.PACKAGES), matched in any case and with any `-`, `_` or space between
+their letters (so `cake-unbake`, `__UNBAKE_X` and `recipe maker` all count). A plain command word (`recipe`,
+`taste`, `decomp`) is not a name: game text and make recipes use those words. `mentions(tree)` reads every tracked
+and untracked unignored file of the tree; `mentions(tree, against=REV)` reads only the lines the work tree adds over
+REV, which is what a landing or a hand commit is judged on. The whole-tree form is the proof that a repo is clean."""
 
 from __future__ import annotations
 
 import re
 import subprocess
 from collections.abc import Collection
-from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tools
+from abu_decomp import DecompError, deploy, tools
 
 _OWNER = re.compile(r"^abu[-_]")  # the owner word some repository names start with; the rest is the tool's name
 
@@ -25,8 +24,7 @@ def _stems() -> set[str]:
     names = {tools.DISTRIBUTION, __name__.split(".")[0]}
     for tool in tools.TOOLS.values():
         names |= {tool.distribution, tool.module.split(".")[0]}
-    with suppress(DecompError):  # not installed with its pins (a test, a source checkout): the names still hold
-        names |= {pin.url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") for pin in tools.pins().values()}
+    names |= {url.rsplit("/", 1)[-1] for url in deploy.PACKAGES.values()}  # the repository names (recipe-maker-64)
     stems = set()
     for name in names:
         stem = re.sub(r"[-_]64$", "", name.lower())

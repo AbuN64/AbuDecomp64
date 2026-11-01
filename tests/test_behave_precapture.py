@@ -106,12 +106,11 @@ class PrecaptureTests(unittest.TestCase):
 
     def plan_with(self, runner):
         profile = mock.Mock()
-        pins = {"taste": mock.Mock(commit="abc")}
         with (
             mock.patch.object(precapture.behave_run, "run", runner),
             mock.patch.object(precapture.behave_run, "work_dir", return_value=self.root),
             mock.patch.object(precapture.behave_run, "configuration", return_value={"cases": 48, "depth": 1}),
-            mock.patch.object(precapture.tools, "pins", return_value=pins),
+            mock.patch.object(precapture.tools, "commits", return_value={"taste": "abc"}),
         ):
             return precapture.plan_one(profile, self.options, "f")
 

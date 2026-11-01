@@ -52,8 +52,7 @@ class CheckoutTests(unittest.TestCase):
         self.pin(self.new)
 
     def pin(self, commit):
-        pins = {name: tools.Pin(tool.distribution, URL, commit) for name, tool in tools.TOOLS.items()}
-        patcher = mock.patch("abu_decomp.tools.pins", return_value=pins)
+        patcher = mock.patch("abu_decomp.tools.commits", return_value=dict.fromkeys(tools.TOOLS, commit))
         patcher.start()
         self.addCleanup(patcher.stop)
 

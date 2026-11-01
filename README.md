@@ -13,7 +13,7 @@ python3.13 -m venv ~/.venvs/decomp && . ~/.venvs/decomp/bin/activate
 pip install git+https://github.com/AbuN64/abu-decomp-64 && decomp dependencies
 ```
 
-`decomp dependencies` checks that unbake, Recipe Maker and Cake Taste are installed at their pinned commits.
+`decomp dependencies` checks that unbake, Recipe Maker and Cake Taste are installed from git, each at the commit it landed at.
 
 ## Usage
 

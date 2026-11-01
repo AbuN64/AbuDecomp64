@@ -269,7 +269,7 @@ def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], 
 
 
 def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequence[str] = ()) -> list[dict[str, Any]]:
-    """`decomp dependencies` (every installed tool at its pinned commit), an import of every declared project package,
+    """`decomp dependencies` (every installed tool from a git install), an import of every declared project package,
     and `unbake symbols --version V` on the project, V being the first version directory of the project."""
     results = []
     code, output = run([str(venv / "bin" / "decomp"), "dependencies"], None)

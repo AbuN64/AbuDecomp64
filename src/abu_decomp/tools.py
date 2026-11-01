@@ -1,8 +1,7 @@
 """The decomp tools: provenance verification and isolated calls to each public CLI.
 
-A tool decomp pins by commit (the direct requirements of this installed distribution, pyproject.toml, read back from
-its metadata) is accepted only when its installed direct_url.json names the same repository and commit. A tool decomp
-does not pin (unbake: it installs itself on every land) is accepted at whatever git commit is installed.
+decomp pins none of its tools: each installs itself on every land (`decomp tools deploy --package NAME`), so a tool is
+accepted at whatever git commit is installed.
 """
 
 from __future__ import annotations
@@ -43,22 +42,10 @@ TOOLS = {
     "taste": Tool("cake-taste-64", "cake_taste.cli", envelope=True),
 }
 ENVELOPE = frozenset({"ok", "result", "findings", "stages", "invocation"})
-_REQUIREMENT = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)@git\+(?P<url>https://[^@]+)@(?P<commit>[0-9a-f]{40})$")
 
 
 class DependencyError(DecompError):
     pass
-
-
-@dataclass(frozen=True)
-class Pin:
-    distribution: str
-    url: str
-    commit: str
-
-    @property
-    def requirement(self) -> str:
-        return f"{self.distribution}@git+{self.url}@{self.commit}"
 
 
 def _normal(name: str) -> str:
@@ -67,25 +54,6 @@ def _normal(name: str) -> str:
 
 def _requirements(distribution: metadata.Distribution) -> list[str]:
     return ["".join(row.split(";")[0].split()) for row in distribution.requires or []]
-
-
-def pins() -> dict[str, Pin]:
-    """The direct VCS pins this installed package declares for a tool, keyed by tool command. A tool with no pin
-    (unbake) is absent."""
-    try:
-        own = metadata.distribution(DISTRIBUTION)
-    except metadata.PackageNotFoundError as exc:
-        raise DependencyError("dependency.self", f"{DISTRIBUTION} is not installed; run pip install -e .") from exc
-    found: dict[str, Pin] = {}
-    for row in _requirements(own):
-        match = _REQUIREMENT.match(row)
-        if match:
-            found[_normal(match["name"])] = Pin(match["name"], match["url"], match["commit"])
-    return {
-        command: found[_normal(tool.distribution)]
-        for command, tool in TOOLS.items()
-        if _normal(tool.distribution) in found
-    }
 
 
 def installed_commit(distribution: str) -> str:
@@ -106,16 +74,12 @@ def installed_commit(distribution: str) -> str:
 
 
 def commits() -> dict[str, str]:
-    """Tool command -> the commit it runs at: decomp's pin, or the installed commit of a tool decomp does not pin."""
-    declared = pins()
-    return {
-        command: declared[command].commit if command in declared else installed_commit(tool.distribution)
-        for command, tool in TOOLS.items()
-    }
+    """Tool command -> the git commit it is installed at."""
+    return {command: installed_commit(tool.distribution) for command, tool in TOOLS.items()}
 
 
 def version_text() -> str:
-    """decomp's own version and the pinned tools' installed versions, one per line."""
+    """decomp's own version and the tools' installed versions, one per line."""
 
     def installed(name: str) -> str:
         try:
@@ -131,9 +95,8 @@ def version_text() -> str:
 
 
 def verify_dependencies() -> dict[str, dict[str, str]]:
-    """Require every installed tool from a git commit, a pinned one at its pinned repository and commit, and a
-    standalone Cake Taste. Unbake has no pin: it is reported at the commit installed."""
-    declared = pins()
+    """Require every installed tool from a git commit and a standalone Cake Taste; each is reported at the commit
+    installed."""
     report: dict[str, dict[str, str]] = {}
     installed: dict[str, metadata.Distribution] = {}
     for command, tool in TOOLS.items():
@@ -151,12 +114,8 @@ def verify_dependencies() -> dict[str, dict[str, str]]:
             valid = vcs["vcs"] == "git"
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise DependencyError("dependency.provenance", f"{command} has invalid VCS provenance") from exc
-        pin = declared.get(command)
-        if not valid or (pin and (url != pin.url or commit != pin.commit)):
-            raise DependencyError(
-                "dependency.pin",
-                f"{command} must come from {pin.url} at {pin.commit}" if pin else f"{command} is not a git install",
-            )
+        if not valid:
+            raise DependencyError("dependency.provenance", f"{command} is not a git install")
         installed[command] = distribution
         report[command] = {
             "distribution": tool.distribution,
@@ -267,7 +226,7 @@ def settings(profile: Profile, project: Path | None = None, host: Path | None = 
 def checkouts_of(profile: Profile) -> dict[str, Path]:
     """Tool command -> the git checkout the seat runs that tool's code from (`tools.checkouts`, optional).
 
-    A checkout is pinned the same way as the installed package: it must sit at the commit decomp pins."""
+    A checkout is pinned the same way as the installed package: it must sit at the commit installed."""
     table = _table(profile)
     given = table.get("checkouts", {})
     if not isinstance(given, dict) or set(given) - set(TOOLS):
@@ -296,7 +255,7 @@ def checkout_dirty(path: Path) -> list[str]:
 
 
 def checkout_drift(profile: Profile, commands: Sequence[str] | None = None) -> list[str]:
-    """Why a checkout the seat runs tool code from is not at decomp's pin; empty when every one agrees."""
+    """Why a checkout the seat runs tool code from is not at the installed commit; empty when every one agrees."""
     wanted = commits()
     found = []
     for command, path in checkouts_of(profile).items():
@@ -315,7 +274,7 @@ def checkout_drift(profile: Profile, commands: Sequence[str] | None = None) -> l
 
 
 def require_checkouts(profile: Profile, commands: Sequence[str]) -> None:
-    """Fail fast, before the tool runs, when a checkout of `commands` differs from decomp's pin."""
+    """Fail fast, before the tool runs, when a checkout of `commands` differs from the installed commit."""
     if found := checkout_drift(profile, commands):
         raise DependencyError("tools.checkout_drift", "; ".join(found))
 

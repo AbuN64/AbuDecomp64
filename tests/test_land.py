@@ -600,8 +600,7 @@ class LandTests(unittest.TestCase):
 
     def test_a_landing_that_adds_a_tool_name_fails_the_standalone_gate(self):
         one = self.patch("L1", {"a.c": "/* drafted with unbake */\nint func_1(void) { return 1; }\n"})
-        with mock.patch("abu_decomp.tools.pins", side_effect=DecompError("dependency.pin", "none")):
-            result, code, findings = self.land([one])
+        result, code, findings = self.land([one])
         self.assertEqual(code, 1)
         self.assertEqual(self.gates(result)["standalone"], False)
         self.assertEqual(findings[0]["key"], "land.standalone")

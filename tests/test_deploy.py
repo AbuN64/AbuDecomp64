@@ -41,7 +41,7 @@ class DeployTests(unittest.TestCase):
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
         self.profile = load_profile(self.root / "seat.json")
         self.commands = []
-        self.fail = None
+        self.fail_on = None
         self.carried = list(CARRIED)  # what the live venv holds
         self.requirements = ""  # requirements.txt of the project revision
         self.asked = []
@@ -65,11 +65,11 @@ class DeployTests(unittest.TestCase):
     def runner(self, argv, cwd=None):
         self.commands.append(list(argv))
         # the live venv's python lists its packages
-        if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail and self.fail in deploy.CARRY):
+        if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail_on and self.fail_on in deploy.CARRY):
             return 0, json.dumps(self.carried)
-        if "venv" in argv and "-m" in argv and not (self.fail and self.fail in " ".join(argv)):
+        if "venv" in argv and "-m" in argv and not (self.fail_on and self.fail_on in " ".join(argv)):
             self.make_venv(Path(argv[-1]))
-        if self.fail and self.fail in " ".join(argv):
+        if self.fail_on and self.fail_on in " ".join(argv):
             return 1, "boom"
         return 0, "ok output"
 
@@ -152,7 +152,7 @@ class DeployTests(unittest.TestCase):
 
     def test_a_venv_that_cannot_import_a_declared_package_is_a_failed_deploy(self):
         self.requirements = "splat64==0.50.0\n"
-        self.fail = "-c"  # the import check is the one command run with python -c
+        self.fail_on = "-c"  # the import check is the one command run with python -c
         result, code, findings = self.deploy()
         self.assertEqual(code, 1)
         self.assertEqual([f["key"] for f in findings], ["deploy.smoke"])
@@ -240,12 +240,12 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(caught.exception.key, "deploy.venv")
 
     def test_a_failing_install_and_a_failing_smoke_are_findings(self):
-        self.fail = "pip install"
+        self.fail_on = "pip install"
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))  # live untouched
         self.assertFalse((self.root / f"venv-a.{NAME1}").exists())
-        self.fail = "dependencies"
+        self.fail_on = "dependencies"
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.smoke"))
         self.assertEqual(os.path.realpath(self.root / "venv-a"), str(self.root / "venv-a.old"))
@@ -279,11 +279,11 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(order[1], ("chmod", ["-R", "a-w", fresh], True))
 
     def test_a_failed_smoke_never_seals_and_a_failed_seal_never_flips(self):
-        self.fail = "dependencies"
+        self.fail_on = "dependencies"
         _, code, _ = self.deploy()
         self.assertEqual(code, 1)
         self.assertFalse([c for c in self.commands if c[0] == "chmod"])
-        self.fail = "chmod"
+        self.fail_on = "chmod"
         old = os.path.realpath(self.root / "venv-a")
         _, code, findings = self.deploy()
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.seal"))
@@ -485,7 +485,7 @@ class CarryTests(DeployTests):
                 self.root.joinpath("site").rename(self.root / f"site-{abs(hash(str(origin)))}")
 
     def test_a_venv_that_cannot_be_listed_refuses_before_anything_is_built(self):
-        self.fail = "metadata.distributions"
+        self.fail_on = "metadata.distributions"
         with self.assertRaises(deploy.DeployError) as caught:
             self.deploy()
         self.assertEqual(caught.exception.key, "deploy.carry")

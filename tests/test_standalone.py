@@ -2,9 +2,8 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
-from abu_decomp import DecompError, standalone
+from abu_decomp import standalone
 from abu_decomp.cli import main
 
 
@@ -25,9 +24,6 @@ class StandaloneTests(unittest.TestCase):
         (self.tree / ".gitignore").write_text("/build/\n")
         git(self.tree, "add", ".")
         git(self.tree, "commit", "-q", "-m", "base")
-        self.pins = mock.patch("abu_decomp.tools.pins", side_effect=DecompError("dependency.pin", "none"))
-        self.pins.start()
-        self.addCleanup(self.pins.stop)
 
     def test_every_spelling_of_a_tool_name_matches_and_plain_words_do_not(self):
         import re

@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -489,7 +490,7 @@ class DeadlockTests(unittest.TestCase):
                 "t=os.open(sys.argv[1]+'/.unbake/tree.lock',os.O_RDWR|os.O_CREAT)\\n"
                 "print('ready',flush=True);time.sleep(30)\\n"
             ).replace("\\n", "\n")
-            child = subprocess.Popen(["python3", "-c", child_code, temp], stdout=subprocess.PIPE, text=True)
+            child = subprocess.Popen([sys.executable, "-c", child_code, temp], stdout=subprocess.PIPE, text=True)
             self.addCleanup(child.kill)
             assert child.stdout and child.stdout.readline().strip() == "ready"
             mine = os.open(tree / ".unbake/tree.lock", os.O_RDWR)  # the ship's own hold

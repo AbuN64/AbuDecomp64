@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -485,7 +486,7 @@ class RegenTests(unittest.TestCase):
 class CliTests(unittest.TestCase):
     def test_the_ship_command_takes_the_proof_and_regen_flags(self) -> None:
         out = subprocess.run(
-            ["python3", "-m", "abu_decomp", "ship", "--help"], capture_output=True, text=True, check=False
+            [sys.executable, "-m", "abu_decomp", "ship", "--help"], capture_output=True, text=True, check=False
         )
         self.assertIn("--regen", out.stdout + out.stderr)
         self.assertIn("--no-proof", out.stdout + out.stderr)

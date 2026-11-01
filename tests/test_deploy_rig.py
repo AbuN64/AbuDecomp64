@@ -8,9 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("deploy_rig", Path(__file__).parent.parent / "ci" / "deploy_rig.py")
 deploy_rig = importlib.util.module_from_spec(spec)

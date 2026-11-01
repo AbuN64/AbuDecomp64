@@ -199,6 +199,34 @@ def _json_object(name: str, text: str | None) -> dict[str, Any] | None:
     return value
 
 
+def _display_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--dir", type=Path, help="where displays are kept (default ~/.local/state/abu-decomp/displays)")
+    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    create = actions.add_parser("create", help="start a headless display (Linux: labwc + wayvnc) at a size")
+    create.add_argument("--size", default="1280x720", help="WIDTHxHEIGHT (default 1280x720)")
+    actions.add_parser("describe", help="show one display").add_argument("subject", help="the display identity")
+    capture = actions.add_parser("capture", help="write one PNG frame of a display read over RFB")
+    capture.add_argument("subject", help="the display identity")
+    capture.add_argument("--path", type=Path, required=True, help="absolute PNG path to write")
+    actions.add_parser("delete", help="stop a display's compositor and VNC server and remove its folder").add_argument(
+        "subject", help="the display identity"
+    )
+
+
+def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    from dataclasses import asdict
+
+    from abu_decomp import display
+
+    shown = display.backend(args.dir)
+    if args.action == "create":
+        return asdict(shown.create(args.size)), 0, []
+    if args.action == "capture":
+        return shown.capture(args.subject, args.path), 0, []
+    record = shown.describe(args.subject) if args.action == "describe" else shown.delete(args.subject)
+    return asdict(record), 0, []
+
+
 def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import events
 
@@ -1621,6 +1649,11 @@ COMMANDS: dict[str, Command] = {
         "proof-build the profile's project (or --project) through the build pool", _tool_arguments, _run_make
     ),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
+    "display": Command(
+        "create, describe, capture and delete a headless display (Linux: labwc + wayvnc)",
+        _display_arguments,
+        _run_display,
+    ),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "tools": Command("install one package into venvs", _tools_arguments, _run_tools),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),

@@ -62,10 +62,15 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
 .enh-bar .enh-closed { background: #2e9e5b; } .enh-bar .enh-working { background: #d89b1f; } .enh-bar .enh-open { background: var(--dim); }
 .enh-tag { margin-right: 18px; font-size: 15px; }
 .enh-tag b { font: 700 20px var(--mono); margin-right: 6px; }
-.enh-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-.enh-items li { display: grid; grid-template-columns: 150px 92px 1fr; gap: 12px; align-items: baseline; padding: 8px 0; border-top: 1px solid var(--line); }
-.enh-items li:first-child { border-top: 0; }
-.enh-items .name { font-weight: 600; }
+.enh-rows { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 2px; }
+.enh-rows li { display: grid; grid-template-columns: 250px 92px 64px 1fr; gap: 12px; align-items: baseline; padding: 5px 8px; border-left: 3px solid transparent; }
+.enh-rows li.crit { border-left-color: #d84a3a; background: color-mix(in srgb, #d84a3a 8%, transparent); }
+.enh-rows .name { font-weight: 600; }
+.enh-crit { margin-left: 8px; font: 700 10px var(--mono); text-transform: uppercase; color: #d84a3a; }
+.enh-path { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 8px 0 0; padding: 0; }
+.enh-path li { padding: 4px 10px; border-radius: 6px; border: 1px solid currentColor; font: 12px var(--mono); }
+.enh-path li:not(:last-child)::after { content: " \2192"; }
+.enh-nav { display: flex; align-items: center; gap: 12px; }
 .enh-pill { justify-self: start; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: color-mix(in srgb, currentColor 16%, transparent); }
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface), var(--raised), var(--surface)); background-size: 200% 100%;
   animation: shimmer 1.4s linear infinite; min-height: 64px; margin-bottom: 10px; }
@@ -92,12 +97,15 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
 .ev[data-family="function.matched"] svg { color: var(--s-named); }
 .ev[data-family="case.diffed"] svg { color: var(--warn); }
 .empty { color: var(--dim); padding: 24px 12px; }
+body[data-route=enhanced] aside, body[data-route=enhanced] .search, body[data-route=enhanced] .chips { display: none; }
+body[data-route=enhanced] .frame, body[data-route=map] .frame { grid-template-columns: 1fr; }
+body[data-route=map] main { display: none; }
 @media (max-width: 820px) { .frame { grid-template-columns: 1fr; } aside { display: none; } .chips { display: none; } }
 </style>
 </head>
 <body>
 <header>
-  <a class="logo" href="#/"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>runner</a>
+  <a class="logo" href="#/" title="Enhanced"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 17l6-6-6-6M12 19h8"/></svg>runner</a>
   <label class="search"><svg class="i"><use href="/static/icons.svg#i-search"/></svg><input id="q" placeholder="Filter the feed" autocomplete="off"></label>
   <nav class="chips" id="chips" aria-label="live runs"></nav>
   <span class="live" id="live"><i></i>offline</span>
@@ -183,9 +191,11 @@ function parse() {
 }
 async function show() {
   const r = ctx.route = parse(), view = $("#view");
+  document.body.dataset.route = r.name === "map" ? "map" : REGION[r.name] ? r.name : "enhanced";
+  if (r.name === "map") return view.replaceChildren(); // the map sidebar fills the page; Enhanced links to it
   if (!REGION[r.name]) {
     const status = el("div", { class: "overview", id: "overview" }, el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
-    view.replaceChildren(el("h2", {}, "Enhanced"), status, el("h2", {}, "Feed"), el("ul", { class: "feed", id: "feed" }));
+    view.replaceChildren(el("h2", {}, "Enhanced MVP plan"), status, el("details", {}, el("summary", {}, "Feed"), el("ul", { class: "feed", id: "feed" })));
     import("/static/site/enhanced.js").then(mod => mod.mount(status, ctx)); // its own API, independent of every other region
     return renderFeed();
   }

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 import unittest
 from http import HTTPStatus
 from pathlib import Path
@@ -15,69 +16,143 @@ from unittest import mock
 from abu_decomp import DecompError, site_core, site_enhanced
 
 JS = Path(site_enhanced.__file__).parent / "static" / "site" / "enhanced.js"
-CONFIG = {
-    "butlermaster": "http://butler.example.lan:1",
-    "board": "board-1",
-    "story": "story-1",
-    "items": {"exit": "card-exit", "bindings": "card-bind", "packaging": "card-pack"},
+SPLIT = """# plan
+
+| key | scope | est_min | repositories | waits |
+| --- | --- | --- | --- | --- |
+| EXIT-WIRE | wire quit | 15 | RWE | none |
+| SEAM-BASE | base line | 10 | ADE | none |
+| SEAM-PERSIST | persist | 20 | ADE | SEAM-BASE |
+| EXIT-UNIT | unit | 5 | RWE | EXIT-WIRE |
+| LINUX-PROOF | proof | 10 | RWE | EXIT-UNIT, SEAM-PERSIST |
+| LAUNCH-GATE | gate | 5 | RWE | LINUX-PROOF |
+"""
+MVP = """| Item | Player-visible acceptance | Card (state) | Split rows |
+| --- | --- | --- | --- |
+| Clean quit | Quit exits 0. | EXIT old-card (NotReady) | EXIT-WIRE, EXIT-UNIT |
+| One settings file | One cfg. | SEAM old-seam (NotReady) | SEAM-BASE, SEAM-PERSIST |
+| Linux public-runtime proof | Linux launches. | EXIT and the above | LINUX-PROOF |
+
+Not in MVP: nothing.
+"""
+MADE = {
+    "EXIT-WIRE": "card-wire",
+    "SEAM-BASE": "card-base",
+    "SEAM-PERSIST": "card-persist",
+    "EXIT-UNIT": "card-unit",
+    "LINUX-PROOF": "card-proof",
+    "LAUNCH-GATE": "card-gate",
 }
 ROWS = {
-    "story-1": {"Progress": "6 closed / 3 working / 14 open", "Step": 0},
-    "card-bind": {"Step": 2, "Status": "Step 2 of 4: the bind table is read", "Eta": "~5 min"},
-    "card-pack": {"Step": 0, "Eta": "no step finished", "WaitsOn": "the port release preset"},
+    "card-persist": {"Step": 2, "Status": "Step 2 of 4: the bind table is read", "Eta": "~5 min"},
+    "card-unit": {"Step": 0, "Eta": "no step finished", "WaitsOn": "EXIT-WIRE"},
+    "card-proof": {"Step": 0, "Eta": "no step finished"},
+    "card-gate": {"Step": 0, "Eta": "~9 min"},
 }
 BUILD = {"port": "/p/port", "pin": "a" * 40, "built": 1.5, "format": 3}
 
 
-def server(config=CONFIG):
-    return SimpleNamespace(enhanced=config, state=lambda: {"build": BUILD, "runs": []})
+class Planned(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name)
+        (root / site_enhanced.SPLIT_FILE).write_text(SPLIT)
+        (root / site_enhanced.MVP_FILE).write_text(MVP)
+        (root / site_enhanced.MADE_FILE).write_text(json.dumps(MADE))
+        self.config = {
+            "butlermaster": "http://butler.example.lan:1",
+            "board": "board-1",
+            "kan": "http://kan.example.lan",
+            "plan": str(root),
+        }
+        self.edge = SimpleNamespace(enhanced=self.config, state=lambda: {"build": BUILD, "runs": []})
+
+    def get(self, rows=ROWS):
+        with mock.patch.object(site_enhanced, "eta_rows", return_value=rows) as eta:
+            result = site_enhanced.answer(self.edge, "GET", "", "", b"")
+        if result[0] == HTTPStatus.OK:
+            eta.assert_called_once_with("http://butler.example.lan:1", "board-1")
+        return result
 
 
-class Record(unittest.TestCase):
-    def test_the_record_joins_the_story_split_the_items_and_the_build(self):
-        with mock.patch.object(site_enhanced, "eta_rows", return_value=ROWS) as eta:
-            status, got = site_enhanced.answer(server(), "GET", "", "", b"")
-        eta.assert_called_once_with("http://butler.example.lan:1", "board-1")
+class Record(Planned):
+    def test_the_items_come_from_the_plan_with_their_rows_and_states(self):
+        status, got = self.get()
         self.assertEqual(status, HTTPStatus.OK)
-        self.assertEqual(got["story"], {"card": "story-1", "closed": 6, "working": 3, "open": 14})
+        self.assertEqual([item["name"] for item in got["items"]], ["Clean quit", "One settings file"])
+        quit_item, seam_item = got["items"]
         self.assertEqual(
-            got["items"],
-            [
-                {"name": "exit", "card": "card-exit", "state": "closed", "line": ""},
-                {"name": "bindings", "card": "card-bind", "state": "working", "line": ROWS["card-bind"]["Status"]},
-                {"name": "packaging", "card": "card-pack", "state": "open", "line": "waits on the port release preset"},
-            ],
+            [(r["key"], r["card"], r["state"]) for r in quit_item["rows"]],
+            [("EXIT-WIRE", "card-wire", "closed"), ("EXIT-UNIT", "card-unit", "open")],
         )
+        self.assertEqual(quit_item["state"], "working")  # one row closed, one open
+        self.assertEqual(quit_item["rows"][1]["line"], "waits on EXIT-WIRE")
+        self.assertEqual(seam_item["state"], "working")
+        self.assertEqual(seam_item["rows"][1]["line"], "Step 2 of 4: the bind table is read")
+        self.assertEqual(got["plan"], {"closed": 2, "working": 1, "open": 3})
+        self.assertEqual(got["kan"], "http://kan.example.lan")
         self.assertEqual(got["build"], {**BUILD, "play": "#/play"})
 
-    def test_a_story_without_a_split_is_refused_not_guessed(self):
-        with mock.patch.object(site_enhanced, "eta_rows", return_value={"story-1": {"Progress": "50%"}}):
-            status, got = site_enhanced.answer(server(), "GET", "", "", b"")
+    def test_a_closed_card_closes_its_item_and_old_cards_do_not_appear(self):
+        _, got = self.get({})
+        self.assertEqual({item["state"] for item in got["items"]}, {"closed"})
+        self.assertNotIn("old-card", json.dumps(got))
+        self.assertNotIn("old-seam", json.dumps(got))
+
+    def test_the_critical_path_is_the_longest_chain_and_its_rows_are_marked(self):
+        _, got = self.get()
+        self.assertEqual(
+            [r["key"] for r in got["critical"]["rows"]], ["SEAM-BASE", "SEAM-PERSIST", "LINUX-PROOF", "LAUNCH-GATE"]
+        )
+        self.assertEqual(got["critical"]["minutes"], 45)
+        marked = {r["key"] for item in got["items"] for r in item["rows"] if r["critical"]}
+        self.assertEqual(marked, {"SEAM-BASE", "SEAM-PERSIST"})
+
+    def test_the_finish_line_is_the_platform_proofs_and_the_gate(self):
+        _, got = self.get()
+        self.assertEqual([item["name"] for item in got["finish"]["proofs"]], ["Linux public-runtime proof"])
+        self.assertEqual([(r["key"], r["card"]) for r in got["finish"]["gate"]], [("LAUNCH-GATE", "card-gate")])
+
+    def test_a_row_without_a_card_is_refused_not_guessed(self):
+        (Path(self.config["plan"]) / site_enhanced.MADE_FILE).write_text(json.dumps({"EXIT-WIRE": "c"}))
+        status, got = self.get()
         self.assertEqual(status, HTTPStatus.BAD_GATEWAY)
-        self.assertIn("closed / working / open", got["error"])
+        self.assertIn("SEAM-BASE has no card", got["error"])
+
+    def test_a_waits_cycle_is_refused(self):
+        (Path(self.config["plan"]) / site_enhanced.SPLIT_FILE).write_text(
+            SPLIT.replace(
+                "| EXIT-WIRE | wire quit | 15 | RWE | none |", "| EXIT-WIRE | wire quit | 15 | RWE | EXIT-UNIT |"
+            )
+        )
+        status, got = self.get()
+        self.assertEqual(status, HTTPStatus.BAD_GATEWAY)
+        self.assertIn("cycle", got["error"])
 
     def test_butlermaster_refusing_shows_its_cause(self):
         with mock.patch.object(site_enhanced, "eta_rows", side_effect=DecompError("site.enhanced", "unreachable")):
-            status, got = site_enhanced.answer(server(), "GET", "", "", b"")
+            status, got = site_enhanced.answer(self.edge, "GET", "", "", b"")
         self.assertEqual((status, got), (HTTPStatus.BAD_GATEWAY, {"error": "unreachable"}))
 
     def test_an_unset_profile_section_answers_501_and_other_paths_refuse(self):
-        self.assertEqual(site_enhanced.answer(server(None), "GET", "", "", b"")[0], HTTPStatus.NOT_IMPLEMENTED)
-        self.assertEqual(site_enhanced.answer(server(), "POST", "", "", b"")[0], HTTPStatus.METHOD_NOT_ALLOWED)
-        self.assertEqual(site_enhanced.answer(server(), "GET", "x", "", b"")[0], HTTPStatus.BAD_REQUEST)
+        self.edge.enhanced = None
+        self.assertEqual(site_enhanced.answer(self.edge, "GET", "", "", b"")[0], HTTPStatus.NOT_IMPLEMENTED)
+        self.assertEqual(site_enhanced.answer(self.edge, "POST", "", "", b"")[0], HTTPStatus.METHOD_NOT_ALLOWED)
+        self.assertEqual(site_enhanced.answer(self.edge, "GET", "x", "", b"")[0], HTTPStatus.BAD_REQUEST)
 
     def test_the_region_is_routed_through_the_held_snapshot_not_a_read(self):
-        feed = site_core.Feed()
-        held = site_core.Snapshots(feed)
-        edge = server()
-        edge.snapshots = held
-        held.register("enhanced", lambda: site_enhanced.answer(edge, "GET", "", "", b""))
-        self.assertEqual(site_core.answer(edge, "GET", "/api/enhanced", "", b"")[0], HTTPStatus.SERVICE_UNAVAILABLE)
+        held = site_core.Snapshots(site_core.Feed())
+        self.edge.snapshots = held
+        held.register("enhanced", lambda: site_enhanced.answer(self.edge, "GET", "", "", b""))
+        self.assertEqual(
+            site_core.answer(self.edge, "GET", "/api/enhanced", "", b"")[0], HTTPStatus.SERVICE_UNAVAILABLE
+        )
         with mock.patch.object(site_enhanced, "eta_rows", return_value=ROWS) as eta:
             held.refresh("enhanced")
             for _ in range(3):
-                status, got = site_core.answer(edge, "GET", "/api/enhanced", "", b"")
-        self.assertEqual((status, got["story"]["working"]), (HTTPStatus.OK, 3))
+                status, got = site_core.answer(self.edge, "GET", "/api/enhanced", "", b"")
+        self.assertEqual((status, got["plan"]["working"]), (HTTPStatus.OK, 1))
         eta.assert_called_once()  # three requests, one ButlerMaster read
 
     def test_a_failing_source_holds_its_error_and_the_others_keep_theirs(self):
@@ -103,10 +178,11 @@ class Record(unittest.TestCase):
 
 class Settings(unittest.TestCase):
     def test_settings_are_validated(self):
+        good = {"butlermaster": "http://b", "board": "b", "kan": "http://k", "plan": "/p"}
         self.assertIsNone(site_enhanced.settings(None))
-        self.assertEqual(site_enhanced.settings(dict(CONFIG)), CONFIG)
-        lacking = {k: v for k, v in CONFIG.items() if k != "board"}
-        for bad in ({**CONFIG, "url": "x"}, lacking, {**CONFIG, "items": {"a": 1}}):
+        self.assertEqual(site_enhanced.settings(dict(good)), good)
+        lacking = {k: v for k, v in good.items() if k != "board"}
+        for bad in ({**good, "items": {}}, {**good, "story": "s"}, lacking, {**good, "plan": 1}):
             with self.assertRaises(DecompError):
                 site_enhanced.settings(bad)
 

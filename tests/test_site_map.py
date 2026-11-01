@@ -155,7 +155,8 @@ class BuildTest(unittest.TestCase):
         self.assertEqual({b["bytes"] for b in blocks}, {100})
         self.assertEqual([(b["start"], b["end"]) for b in blocks][:2], [(0, 10), (10, 20)])
         fewer = site_map.blocks_of([5, 7, 9], [0, 5, 12], [0, 1, 1], 160)
-        self.assertEqual([(b["start"], b["end"], b["rom"], b["regions"]) for b in fewer], [(0, 1, 0, [0]), (1, 2, 5, [1]), (2, 3, 12, [1])])
+        got = [(b["start"], b["end"], b["rom"], b["regions"]) for b in fewer]
+        self.assertEqual(got, [(0, 1, 0, [0]), (1, 2, 5, [1]), (2, 3, 12, [1])])
         self.assertEqual(site_map.blocks_of([], [], [], 4), [])
 
     def test_a_row_bigger_than_the_share_is_a_block_alone_and_regions_are_listed_once(self) -> None:

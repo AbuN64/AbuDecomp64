@@ -9,8 +9,9 @@ and the records beside it: a feedback record (`runs/feedback/ID/feedback.json`) 
 run reached, and a run with a packed stream (`runs/plays/ID/stream/index.json`) sets `streamed` on its reach. The
 rows are ROM-ordered and `blocks` cuts them into at most BLOCKS runs of about equal bytes (`blocks_of`), each
 `{start, end, rom, bytes, regions}` over the row slice [start, end), which the page draws as one spaced block each (read
-top to bottom, left to right) and lights by the share of its bytes a checked filter selects. The version is a hash of them, so the same data gives the same answer. The page lights a box
-when its flags share a bit with the checked filters (`lit`); all unchecked = all dark. `colour_key` is the one rule
+top to bottom, left to right) and lights by the share of its bytes a checked filter selects. The version is a hash of
+them, so the same data gives the same answer. The page lights a function when its flags share a bit with the checked
+filters (`lit`); all unchecked = all dark. `colour_key` is the one rule
 for a box's colour (progress; behaves green, differs red) and `COLOURS` maps its key to the page's CSS variable.
 """
 

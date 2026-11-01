@@ -53,6 +53,18 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(got["summary"], "build: 1 units failed")
         self.assertFalse(got["stale"])
 
+    def test_a_seat_stamped_port_is_not_read_against_the_decomp_unit_markers(self):
+        """Regression slice of the live rig: 5 *.failed markers of the decomp build, a seat with no build.ninja."""
+        self.cfg["build"] = {"units": self.units, "graph": [str(self.port.parent / "build.ninja")]}
+        with self.assertRaises(DecompError) as refused:
+            tas_health.read(self.cfg)
+        self.assertIn("none of the build files naming the port's units is readable", refused.exception.detail)
+        self.cfg["seat"] = {"stamp": "port-provenance.json"}
+        (self.port.parent / "port-provenance.json").write_text("{}")
+        got = tas_health.read(self.cfg)
+        self.assertEqual(got["failed"], [])
+        self.assertEqual(got["stale_markers"], [])
+
     def git_history(self):
         """A reference repo: commit `old`, its child `new` (HEAD), and an `orphan` sharing no history."""
         repo = self.port.parent / "ports"

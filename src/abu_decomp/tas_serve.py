@@ -674,16 +674,28 @@ class Server:
                 run_id += "-q"
             now = time.time()
             row = self._row(run_id, movie, 0, None, label, None, None, False, 0)
-            row.update(status="done", outcome="refused", error=reason, started=now, ended=now)
-            self.refused[run_id] = row
-            for old in list(self.refused)[:-RECENT_SHOWN]:
-                del self.refused[old]
+            row.update(started=now)
+            self._keep_refused(row, reason, now)
         self.live.touch()
         return {"id": run_id, "refused": reason}
 
-    def _forget(self, run_id: str) -> None:
+    def _keep_refused(self, row: dict[str, Any], reason: str, now: float) -> None:
+        """Keep `row` as a refused play (the feed shows run.refused with `reason`); the caller holds the lock."""
+        row.update(status="done", outcome="refused", error=reason, ended=now)
+        self.refused[row["id"]] = row
+        for old in list(self.refused)[:-RECENT_SHOWN]:
+            del self.refused[old]
+
+    def _ended(self, run_id: str, error: Exception | None = None) -> None:
+        """The start thread of queued run `run_id` is over. A thread that failed before the run wrote its record left
+        nothing for the page to show: the queued row becomes a refused row carrying the reason (the journal states it
+        too), so a play that cannot start is never left queued and never forgotten silently."""
         with self.lock:
-            self.queued.pop(run_id, None)
+            row = self.queued.pop(run_id, None)
+            if error is not None and row is not None and not tas.read_record(self.run_dir(run_id) or Path()):
+                reason = error.detail if isinstance(error, DecompError) else f"{type(error).__name__}: {error}"
+                self._keep_refused(row, reason, time.time())
+                print(f"tas page: play {run_id} refused: {reason}", flush=True)
         self.live.touch()
 
     def human_running(self) -> str | None:
@@ -720,6 +732,7 @@ class Server:
         self.live.touch()
 
         def go() -> None:
+            failure: Exception | None = None
             try:
                 tas.play(
                     self.profile,
@@ -732,10 +745,10 @@ class Server:
                     cpak=cpak,
                     fps_unlock=fps_unlock,
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                failure = error
             finally:
-                self._forget(run_id)
+                self._ended(run_id, failure)
 
         threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
         return {"id": run_id, "movie": movie}
@@ -841,6 +854,7 @@ class Server:
         self._placeholder(run_id, movie, speed, exe, label, pak, cpak, fps_unlock)
 
         def go() -> None:
+            failure: Exception | None = None
             try:
                 options = {
                     "port": port or None,
@@ -853,10 +867,10 @@ class Server:
                     "fps_unlock": fps_unlock,
                 }
                 tas.play(self.profile, movie, speed=speed, run_id=run_id, start=start, **options)
-            except Exception:  # the record says done; the page shows it
-                pass
+            except Exception as error:  # with a record the page shows it; without one the play is refused
+                failure = error
             finally:
-                self._forget(run_id)
+                self._ended(run_id, failure)
 
         self.pool.submit(go)
         return {"id": run_id}
@@ -886,6 +900,7 @@ class Server:
         self.live.touch()
 
         def go() -> None:
+            failure: Exception | None = None
             try:
                 tas.play(
                     self.profile,
@@ -897,10 +912,10 @@ class Server:
                     take=True,
                     fps_unlock=fps_unlock,
                 )
-            except Exception:
-                pass
+            except Exception as error:
+                failure = error
             finally:
-                self._forget(run_id)
+                self._ended(run_id, failure)
 
         threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
         return {"id": run_id, "movie": movie, "start": start}
@@ -928,15 +943,16 @@ class Server:
         self.live.touch()
 
         def go() -> None:
+            failure: Exception | None = None
             try:
                 tas.play(
                     self.profile, None, run_id=run_id, port=port or None, label=label or None, source=source,
                     take_at=take_at, fps_unlock=fps_unlock,
                 )  # fmt: skip
-            except Exception:
-                pass
+            except Exception as error:
+                failure = error
             finally:
-                self._forget(run_id)
+                self._ended(run_id, failure)
 
         threading.Thread(target=go, daemon=True).start()  # never takes a replay slot
         return {"id": run_id, "movie": found["movie"]}
@@ -962,6 +978,9 @@ class Server:
         run = self.run_dir(run_id)
         row = tas.read_record(run) if run else None
         if not run or not row:
+            with self.lock:
+                if run_id in self.refused:  # refused at the start: no process was ever there to stop
+                    return {"id": run_id, "stopped": False, "refused": self.refused[run_id]["error"]}
             raise DecompError("tas.stop", f"no run {run_id}")
         if row.get("status") != "running" or not row.get("pgid"):
             return {"id": run_id, "stopped": False}

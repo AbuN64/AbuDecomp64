@@ -170,6 +170,13 @@ def pins_lag(build: dict[str, Any], key: str, what: str, tree: str) -> str:
     return f"{what} older than pins: built at {tree} {built[:9] or 'unknown'}, pins are at {now[:9]} ({relation})"
 
 
+def stamped(cfg: dict[str, Any], port: Path | None) -> bool:
+    """True when the build beside `port` states its provenance (module tas_seat): the seat is built by its own repo, so
+    the failed-unit markers of the decomp build do not describe it and no unit graph of ours names its files."""
+    stamp = (cfg.get("seat") or {}).get("stamp")
+    return bool(port and stamp and (port.parent / stamp).is_file())
+
+
 def read(cfg: dict[str, Any], profile: Any = None, now: float | None = None) -> dict[str, Any]:
     """{failed, stale_markers, stale: bool, stale_by, rebuild, summary}; {} when the profile configures no build
     section. `failed` holds only units of the port's current build; `stale_markers` the leftovers, with their age."""
@@ -179,7 +186,7 @@ def read(cfg: dict[str, Any], profile: Any = None, now: float | None = None) -> 
     out: dict[str, Any] = {"failed": [], "stale_markers": [], "stale": False, "rebuild": build.get("rebuild", "")}
     port = Path(cfg["port"]) if cfg.get("port") else None
     sources = build.get("sources")
-    if build.get("units"):
+    if build.get("units") and not stamped(cfg, port):
         when = time.time() if now is None else now
         for row in current_units(failed_units(Path(build["units"])), build, port):
             age = max(0.0, when - row.pop("mtime"))

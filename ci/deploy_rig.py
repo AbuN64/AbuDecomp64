@@ -8,16 +8,15 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
              build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
              deploys its own toolkit, never this one), so the name digests all of them;
-  build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64
-             --sha SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of
-             the live toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine
-             swaps, starts as scratch and is never read), BUILD ends linked to that venv, and the full test suite
-             (pytest over tests/) runs in the tree with BUILD's python and the tree's src first on the import path. After
-             the gate passes the built tree is
-             made read-only (`chmod -R a-w`): the live toolkit is never written in place. The imported abu_decomp path
-             must lie inside the tree. A failing suite exits non-zero, the live and previous links stay and the failed
-             build's folder and link are removed at once; on exit 0 the close switches the live link to BUILD and keeps
-             the replaced venv as <toolkit>.previous;
+  build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
+             SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of the live
+             toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine swaps, starts
+             as scratch and is never read), BUILD ends linked to that venv, and the full test suite (pytest over tests/)
+             runs in the tree with BUILD's python and the tree's src first on the import path. After the gate passes the
+             built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place. The imported
+             abu_decomp path must lie inside the tree. A failing suite exits non-zero, the live and previous links stay
+             and the failed build's folder and link are removed at once; on exit 0 the close switches the live link to
+             BUILD and keeps the replaced venv as <toolkit>.previous;
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
              refuses (fix forward, no rollback). After it holds, the deploy prunes: only the live and the previous

@@ -164,6 +164,7 @@ class PruneTests(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="deploy-rig-prune-"))
         self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.addCleanup(subprocess.run, ["chmod", "-R", "u+w", str(self.home)], check=False)  # sealed builds kept
         self.toolkit = str(self.home / "venv-decomp")
         # the rig as found: stale stage folders (some sealed read-only), old links, the live and previous builds
         for name in ("aaa", "bbb", "live0", "prev0"):

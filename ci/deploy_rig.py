@@ -20,20 +20,28 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              on exit 0 the close switches the live link to BUILD and keeps the replaced venv as <toolkit>.previous;
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
-             refuses (fix forward, no rollback). The deploy removes nothing: pruning old builds is the activation's;
-  profile    the live tas profile (~/rig-state/tas/profile.json) is written from the landed tree's ci/tas-profile.json,
+             refuses (fix forward, no rollback). Then `decomp` is linked by name into the one command directory
+             `commands` beside the toolkit link, through the live link, and read back: it resolves into the live
+             toolkit. The toolkit's carried unbake and the rest are never published, so a consumer's `unbake` is
+             CakeUnbake64's own. The deploy removes nothing: pruning old builds is the activation's;
+  profile    the live tas profile (`rig-state/tas/profile.json` under the deploy user's home) is written from the
+             landed tree's ci/tas-profile.json,
              never edited anywhere else: its `${home}` is the deploy user's home and every other `${name}` comes from
-             the host's site file (~/.config/abu-decomp/site.json, a flat object of strings, one key per name the
+             the host's site file (`.config/abu-decomp/site.json` there, a flat object of strings, one key per name the
              template uses). The previous live profile is not read, so a key the tree does not know cannot survive a
              deploy; a name without a value, a site key the template does not use or a template that is not a JSON
              object refuses before the live file is touched, and the file is replaced whole (never half written);
+             The same step owns the rig job environment's login defaults: the block between the `rig-deploy decomp
+             defaults` markers of the deploy user's .profile and .zshenv is rewritten whole with the one command
+             directory as the toolkit entry of PATH (no toolkit bin is on it) and the live profile as
+             DECOMP_TAS_PROFILE, so a rig job finds `decomp` and `unbake` by name and nothing else of a toolkit;
   serve      the site unit ci/abu-decomp-tas.service (ExecStart in the live toolkit link, Type=notify) is installed,
              enabled and restarted; it returns when the page listens, so the unit's own result is the signal. The page
              on :8099 is read back: its `deployed-sha` meta tag must equal the landed SHA.
 
-  deploy-env TOOLKIT=/home/abu/venv-decomp
+  deploy-env TOOLKIT=<live link>
   rig run ci/deploy_rig.py name
-  rig activate ci/deploy_rig.py /home/abu/venv-decomp build
+  rig activate ci/deploy_rig.py <live link> build
   rig run ci/deploy_rig.py readback
   rig run ci/deploy_rig.py profile
   rig run ci/deploy_rig.py serve"""
@@ -50,6 +58,10 @@ from pathlib import Path
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
 SHA = re.compile(r"[0-9a-f]{40}")
 NAME_RE = re.compile(r"[0-9a-f]{12}")
+COMMANDS = "commands"  # the command directory beside the toolkit link
+PUBLISHED = ("decomp",)  # this repository's own command; unbake and the rest are never published from here
+LOGIN_FILES = (".profile", ".zshenv")  # what the rig job environment reads
+OPEN, CLOSE = "# rig-deploy decomp defaults", "# end rig-deploy decomp defaults"
 TEMPLATE = Path("ci/tas-profile.json")  # in the tree: the one source of the live profile
 SITE_FILE = Path(".config/abu-decomp/site.json")  # under the deploy user's home: the host's values for the template
 LIVE_PROFILE = Path("rig-state/tas/profile.json")  # under the deploy user's home: what abu-decomp-tas.service reads
@@ -59,11 +71,11 @@ HOLE = re.compile(r"\$\{([a-z_]+)\}")
 Bash = Callable[..., "tuple[int, str]"]
 
 # NAME runs in the tree before the activation and answers the build's name: the engine's JSON envelope on stdout,
-# whose result.name is the digest of the whole content. Arguments: SHA TOOLKIT.
+# whose result.name is the digest of the whole content. Arguments: SHA TOOLKIT HOME.
 NAME = r"""set -u
-sha=$1 toolkit=$2
+sha=$1 toolkit=$2 home=$3
 work=$(pwd -P)
-(cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools name --package abu-decomp-64 \
+(cd "$home" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools name --package abu-decomp-64 \
   --sha "$sha" --carry-from "$toolkit") || { echo "name-error: decomp tools name exit $?" >&2; exit 1; }
 """
 
@@ -71,14 +83,14 @@ work=$(pwd -P)
 # toolkit and `decomp tools deploy` builds `$BUILD.<name>` (or -N when that name is taken) and swaps only that link, so
 # BUILD ends linked to the new venv, a failed gate leaves the live and previous links unchanged and the close's switch
 # is the only way a venv goes live. The job runs with the caller's own environment as Dos admits it.
-# Arguments: SHA TOOLKIT NAME.
+# Arguments: SHA TOOLKIT NAME HOME.
 BUILD = r"""set -u
-sha=$1 toolkit=$2 name=$3
+sha=$1 toolkit=$2 name=$3 home=$4
 : "${BUILD:?the close sets BUILD for an activation}"
 work=$(pwd -P)
 # the link the deploy swaps is scratch it never reads: the packages carried over are the live toolkit's
 ln -sfn "$(readlink -f "$toolkit")" "$BUILD" || exit 1
-(cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
+(cd "$home" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
   --sha "$sha" --venv "$BUILD" --carry-from "$toolkit" --name "$name") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
 built=$(readlink -f "$BUILD")
@@ -162,13 +174,14 @@ if bad:
 PY
 """
 
-# SERVE runs in the tree after the readback. Argument: SHA. It refuses when the restarted page carries another sha.
+# SERVE runs in the tree after the readback. Arguments: SHA HOME. It refuses when the restarted page carries
+# another sha.
 SERVE = r"""set -u
-sha=$1
+sha=$1 home=$2
 unit=abu-decomp-tas.service
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
-mkdir -p "$HOME/.config/systemd/user" || exit 9
-install -m 644 "ci/$unit" "$HOME/.config/systemd/user/$unit" || exit 9
+mkdir -p "$home/.config/systemd/user" || exit 9
+install -m 644 "ci/$unit" "$home/.config/systemd/user/$unit" || exit 9
 systemctl --user daemon-reload && systemctl --user enable "$unit" || exit 9
 if ! systemctl --user restart "$unit"; then
   systemctl --user status --no-pager "$unit" | tail -n 5 >&2
@@ -310,8 +323,15 @@ def landed(environ: dict[str, str]) -> tuple[str, str]:
     return sha, toolkit
 
 
-def name(sha: str, toolkit: str, run: Bash) -> str:
-    code, out = run(NAME, sha, toolkit, capture=True)
+def home_of(environ: dict[str, str]) -> str:
+    home = environ.get("HOME", "")
+    if not home.startswith("/"):
+        raise Refused(f"HOME is not an absolute path: {home!r}")
+    return home
+
+
+def name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> str:
+    code, out = run(NAME, sha, toolkit, home_of(environ), capture=True)
     sys.stdout.write(out)
     if code:
         raise Refused(f"name exit {code}: {last_line(out, 'no output')}")
@@ -361,8 +381,56 @@ def install_profile(template: Path, home: Path) -> Path:
     return live
 
 
+def commands(toolkit: str) -> str:
+    """The one command directory, beside the live toolkit link: the folder the rig job PATH holds."""
+    return os.path.join(os.path.dirname(toolkit), COMMANDS)
+
+
+def publish(toolkit: str) -> list[str]:
+    """Link each command of this repository into the command directory by name, through the live toolkit link, and
+    read each back: it must resolve into the live toolkit. Returns the names published."""
+    folder = commands(toolkit)
+    os.makedirs(folder, exist_ok=True)
+    live = os.path.realpath(toolkit)
+    for command in PUBLISHED:
+        link = os.path.join(folder, command)
+        tmp = f"{link}.{os.getpid()}.new"
+        os.symlink(os.path.join(toolkit, "bin", command), tmp)
+        os.replace(tmp, link)
+        if os.path.commonpath([os.path.realpath(link), live]) != live:
+            raise Refused(f"{link} resolves to {os.path.realpath(link)}, outside the live toolkit {live}")
+    return list(PUBLISHED)
+
+
+def login_block(commands_dir: str, profile: Path) -> str:
+    """The rig job environment's defaults: the one command directory first on PATH and the live tas profile."""
+    # guarded, so the command directory is on PATH once whichever login files run
+    guard = f'case ":$PATH:" in *":{commands_dir}:"*) ;; *) export PATH={commands_dir}:"$PATH" ;; esac'
+    return f"{OPEN}\n{guard}\nexport DECOMP_TAS_PROFILE={profile}\n{CLOSE}\n"
+
+
+def install_login_defaults(home: Path, commands_dir: str, profile: Path) -> list[Path]:
+    """Rewrite the block between the markers in the login files of the deploy user (appended when a file has none)."""
+    block = login_block(commands_dir, profile)
+    written = []
+    for name in LOGIN_FILES:
+        path = home / name
+        text = path.read_text() if path.exists() else ""
+        start = text.find(OPEN)
+        end = text.find(CLOSE, start) if start >= 0 else -1
+        if start >= 0 and end >= 0:
+            text = text[:start] + block + text[end + len(CLOSE) :].removeprefix("\n")
+        else:
+            text = text + ("" if text.endswith("\n") or not text else "\n") + block
+        staged = path.with_name(f"{path.name}.{os.getpid()}.new")
+        staged.write_text(text)
+        os.replace(staged, path)
+        written.append(path)
+    return written
+
+
 def step_name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
-    revision = name(sha, toolkit, run)
+    revision = name(sha, toolkit, run, environ)
     opened = unseal_old_builds(toolkit)  # a stuck activation cannot delete a sealed read-only build
     sys.stdout.write(f"unseal: {len(opened)} old builds writable for the activation\n")
     sys.stdout.write(f"name: {revision}\n")
@@ -370,8 +438,8 @@ def step_name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> Non
 
 
 def step_build(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
-    revision = name(sha, toolkit, run)
-    code, _ = run(BUILD + SUITE.replace("__RUNNER__", RUNNER), sha, toolkit, revision)
+    revision = name(sha, toolkit, run, environ)
+    code, _ = run(BUILD + SUITE.replace("__RUNNER__", RUNNER), sha, toolkit, revision, home_of(environ))
     if code:
         raise Refused(f"build exit {code}, links unchanged")
 
@@ -380,18 +448,19 @@ def step_readback(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) ->
     code, _ = run(READBACK, sha, toolkit, f"{toolkit}.{sha}")
     if code:
         raise Refused(f"readback exit {code}")
+    sys.stdout.write(f"publish: {', '.join(publish(toolkit))} -> {commands(toolkit)}\n")
 
 
 def step_profile(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
-    home = environ.get("HOME", "")
-    if not home.startswith("/"):
-        raise Refused(f"HOME is not an absolute path: {home!r}")
-    sys.stdout.write(f"profile: {install_profile(TEMPLATE, Path(home))} from {TEMPLATE} at {sha}\n")
+    home = Path(home_of(environ))
+    live = install_profile(TEMPLATE, home)
+    install_login_defaults(home, commands(toolkit), live)
+    sys.stdout.write(f"profile: {live} from {TEMPLATE} at {sha}; login defaults name {commands(toolkit)}\n")
     sys.stdout.flush()
 
 
 def step_serve(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
-    code, _ = run(SERVE, sha)
+    code, _ = run(SERVE, sha, home_of(environ))
     if code:
         raise Refused(f"serve exit {code}")
 

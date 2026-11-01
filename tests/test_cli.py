@@ -46,6 +46,11 @@ class CliTests(unittest.TestCase):
             self.assertEqual(json.loads(run(["profile"])[1])["result"]["name"], "other")
             self.assertEqual(json.loads(run(["--profile", str(seat), "profile"])[1])["result"]["name"], "seat")
 
+    def test_roms_answers_the_directory_of_the_seats_rom(self):
+        seat = self.profile({"schema_version": 1, "name": "seat", "tas": {"rom": "roms/baserom.de.z64"}})
+        code, text = run(["--profile", str(seat), "roms"])
+        self.assertEqual((code, json.loads(text)["result"]["directory"]), (0, str(self.root / "roms")))
+
     def test_a_sigterm_kill_names_itself_not_a_bad_argument(self):
         with mock.patch("abu_decomp.cli._tool_call", side_effect=SystemExit(143)):
             code, text = run(["data"])

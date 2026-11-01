@@ -19,12 +19,11 @@ deploy_rig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
-RIG_TOOLKIT = "/home/abu/venv-decomp"  # the .deploy line; no step ever runs on it
 HOME = tempfile.mkdtemp(prefix="deploy-rig-home-")  # the name step opens builds in its home: a mocked one
 atexit.register(shutil.rmtree, HOME, ignore_errors=True)
 TOOLKIT = f"{HOME}/venv-decomp"
 NAME = "0123456789ab"  # the engine's digest of the whole content; never the SHA
-ENVIRON = {deploy_rig.ENV: SHA, "TOOLKIT": TOOLKIT}
+ENVIRON = {deploy_rig.ENV: SHA, "TOOLKIT": TOOLKIT, "HOME": HOME}
 ENVELOPE = json.dumps({"result": {"name": NAME}}) + "\n"
 
 
@@ -68,7 +67,7 @@ class StepTests(unittest.TestCase):
         code, out, _ = main("name", bash)
         self.assertEqual(code, 0)
         self.assertIn(f"name: {NAME}", out)
-        self.assertEqual(bash.calls, [(deploy_rig.NAME, (SHA, TOOLKIT), True)])
+        self.assertEqual(bash.calls, [(deploy_rig.NAME, (SHA, TOOLKIT, HOME), True)])
 
     def test_a_failed_name_refuses(self):
         code, _, err = main("name", Bash((1, "name-error\n")))
@@ -80,7 +79,7 @@ class StepTests(unittest.TestCase):
         code, _, _ = main("build", bash)
         self.assertEqual(code, 0)
         script, args, capture = bash.calls[1]
-        self.assertEqual((args, capture), ((SHA, TOOLKIT, NAME), False))
+        self.assertEqual((args, capture), ((SHA, TOOLKIT, NAME, HOME), False))
         self.assertTrue(script.startswith(deploy_rig.BUILD))
         self.assertIn("pytest.main", script)
         self.assertNotIn("__RUNNER__", script)
@@ -107,7 +106,7 @@ class StepTests(unittest.TestCase):
     def test_serve_restarts_the_unit_for_the_landed_sha(self):
         bash = Bash((0, ""))
         self.assertEqual(main("serve", bash)[0], 0)
-        self.assertEqual(bash.calls, [(deploy_rig.SERVE, (SHA,), False)])
+        self.assertEqual(bash.calls, [(deploy_rig.SERVE, (SHA, HOME), False)])
         code, _, err = main("serve", Bash((1, "")))
         self.assertEqual((code, "serve exit 1" in err), (1, True))
 
@@ -140,12 +139,14 @@ class StepTests(unittest.TestCase):
 
     def test_the_deploy_file_is_the_step_grammar(self):
         lines = (Path(__file__).parent.parent / ".deploy").read_text().splitlines()
-        self.assertEqual(lines[0], f"deploy-env TOOLKIT={RIG_TOOLKIT}")
+        rig_toolkit = lines[0].removeprefix("deploy-env TOOLKIT=")  # the activation needs the live link absolute
+        self.assertTrue(rig_toolkit.startswith("/") and rig_toolkit.endswith("/venv-decomp"))
+        self.assertNotIn("/home", (Path(__file__).parent.parent / "ci" / "deploy_rig.py").read_text())
         self.assertEqual(
             [line.split()[:4] for line in lines[1:]],
             [
                 ["rig", "run", "ci/deploy_rig.py", "name"],
-                ["rig", "activate", "ci/deploy_rig.py", RIG_TOOLKIT],
+                ["rig", "activate", "ci/deploy_rig.py", rig_toolkit],
                 ["rig", "run", "ci/deploy_rig.py", "readback"],
                 ["rig", "run", "ci/deploy_rig.py", "profile"],
                 ["rig", "run", "ci/deploy_rig.py", "serve"],
@@ -188,7 +189,7 @@ class UnsealTests(unittest.TestCase):
         return all(os.access(path / sub, os.W_OK) for sub in ("", "lib", "lib/mod.py", "lib/deep", "lib/deep/leaf.py"))
 
     def name_step(self):
-        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit}
+        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit, "HOME": str(self.home)}
         bash = Bash((0, ENVELOPE))
         with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
             code = deploy_rig.main(["name"], environ, bash)
@@ -220,10 +221,34 @@ class UnsealTests(unittest.TestCase):
         self.assertFalse(self.writable("venv-decomp.live0"))
 
     def test_a_failed_name_opens_nothing(self):
-        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit}
+        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit, "HOME": str(self.home)}
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             self.assertEqual(deploy_rig.main(["name"], environ, Bash((1, ""))), 1)
         self.assertFalse(self.writable("venv-decomp.old1"))
+
+    def test_readback_publishes_decomp_by_name_and_the_login_block_names_only_the_command_dir(self):
+        home = Path(HOME)
+        build = home / "venv-decomp.abc"
+        wrapper(build / "bin" / "decomp", "exit 0")
+        wrapper(build / "bin" / "unbake", "exit 0")
+        Path(TOOLKIT).unlink(missing_ok=True)
+        Path(TOOLKIT).symlink_to(build)
+        code, _, _ = main("readback", Bash((0, "")))
+        folder = home / deploy_rig.COMMANDS
+        self.assertEqual((code, sorted(os.listdir(folder))), (0, ["decomp"]))  # unbake is never published from here
+        self.assertEqual((folder / "decomp").resolve(), (build / "bin" / "decomp").resolve())
+        (home / ".profile").write_text(
+            "a\n# rig-deploy decomp defaults\nexport PATH=old:$PATH\n# end rig-deploy decomp defaults\nz\n"
+        )
+        deploy_rig.install_login_defaults(home, str(folder), home / "p.json")
+        deploy_rig.install_login_defaults(home, str(folder), home / "p.json")  # idempotent
+        profile = (home / ".profile").read_text()
+        self.assertEqual(profile.count(deploy_rig.OPEN), 1)
+        # guarded: the command dir lands on PATH once
+        self.assertIn(f'*) export PATH={folder}:"$PATH" ;; esac', profile)
+        self.assertNotIn("old", profile)
+        self.assertTrue(profile.startswith("a\n") and profile.endswith("z\n"))
+        self.assertIn(deploy_rig.OPEN, (home / ".zshenv").read_text())  # a file with no block gets one appended
 
     def test_the_deploy_has_no_prune(self):
         self.assertFalse(hasattr(deploy_rig, "prune"))
@@ -368,7 +393,7 @@ class BuildScriptTests(ScriptCase):
 
     def run_build(self):
         env = sh_env(BUILD=str(self.build), HOME=str(self.root))  # the caller's own environment, as Dos admits it
-        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, env=env)
+        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, str(self.root), env=env)
 
     def test_the_build_links_build_to_its_own_venv_and_never_touches_the_live_link(self):
         live = self.root / "live-target"
@@ -427,11 +452,11 @@ class NameScriptTests(ScriptCase):
         )
         self.toolkit.symlink_to(live)
         env = sh_env(HOME=str(self.root))
-        done = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), env=env)
+        done = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), env=env)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(deploy_rig.build_name(done.stdout), NAME)
         wrapper(live / "bin/python", "exit 3")
-        failed = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), env=env)
+        failed = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), env=env)
         self.assertEqual(failed.returncode, 1)
         self.assertIn("name-error", failed.stderr)
 
@@ -532,7 +557,7 @@ class ServeScriptTests(ScriptCase):
         wrapper(bins / "systemctl", f'echo "systemctl $*" >> {calls}\n{restart}\nexit 0')
         wrapper(bins / "curl", f"echo curl >> {calls}\nprintf '%s' '{page}'")
         env = sh_env(HOME=str(home), PATH=f"{bins}:{os.environ['PATH']}")
-        done = self.bash(deploy_rig.SERVE, SHA, cwd=self.root / "work", env=env)
+        done = self.bash(deploy_rig.SERVE, SHA, str(self.root / "home"), cwd=self.root / "work", env=env)
         return done, calls.read_text().splitlines() if calls.exists() else []
 
     def test_it_installs_the_unit_restarts_it_then_prints_the_served_sha(self):

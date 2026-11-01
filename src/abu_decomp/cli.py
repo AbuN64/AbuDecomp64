@@ -73,6 +73,11 @@ def _run_profile(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     return _profile(args.profile).describe(), 0, []
 
 
+def _run_roms(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    profile = _profile(args.profile)
+    return {"directory": str(profile.path("tas.rom", profile.section("tas")["rom"]).parent)}, 0, []
+
+
 def _run_dependencies(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp.tools import verify_dependencies
 
@@ -1686,6 +1691,7 @@ def _run_describe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[d
 
 COMMANDS: dict[str, Command] = {
     "profile": Command("show the loaded seat profile", _none, _run_profile),
+    "roms": Command("the directory holding the seat's ROMs (baserom.<version>.z64)", _none, _run_roms),
     "dependencies": Command("check every pinned tool is installed at its commit", _none, _run_dependencies),
     "unbake": Command("run unbake on the profile's project (or --project)", _tool_arguments, _run_tool),
     "recipe": Command("run Recipe Maker on the profile's project (or --project)", _tool_arguments, _run_tool),

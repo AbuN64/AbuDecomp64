@@ -11,6 +11,7 @@ stops every thread before the breaker unwinds the spinning one, and DIR/hang-<n>
   32-bit word it holds (what the spin waits on; guest RAM is identity-mapped at 0x80000000).
 The boot then continues, so one run lists every hang with its core. The boot's own stdout/stderr go to DIR/boot.log.
 Only this script's own gdb child is ever signalled (the boot's timeout is gdb's, by PID)."""
+import contextlib
 import os
 import re
 import subprocess
@@ -49,10 +50,8 @@ def in_gdb(out_dir):
     def frame_regs(frame):
         regs = {}
         for r in regnames:
-            try:
+            with contextlib.suppress(gdb.error):
                 regs[r] = int(frame.read_register(r)) & 0xFFFFFFFF
-            except gdb.error:
-                pass
         return regs
 
     def core(text_out):
@@ -119,7 +118,7 @@ def in_gdb(out_dir):
         watchdog = gdb.selected_thread()
         try:
             core(lines)
-        except Exception as exc:  # noqa: BLE001 -- debugger boundary reports every core-reader fault
+        except Exception as exc:
             lines.append(f"hangcore error: {exc!r}")
         watchdog.switch()
         path = os.path.join(out_dir, f"hang-{state['n']}.txt")

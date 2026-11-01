@@ -30,6 +30,8 @@ import sys
 import threading
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import contextlib
+
 import portdir
 import srcfiles
 
@@ -134,10 +136,8 @@ def build_unit(rw, unit, work, python="python3"):
         rec["error"] = f"sweep: {exc}"
     finally:
         for path in files.values():
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(path)
-            except OSError:
-                pass
     return rec
 
 
@@ -405,10 +405,8 @@ def summarize(rows):
 
 
 def event(actor, status, message):
-    try:
+    with contextlib.suppress(OSError):
         run(["decomp", "event", "append", "--actor", actor, "--status", status, "--message", message])
-    except OSError:
-        pass
 
 
 HEADER = "symbol\torder\tcheck\tverdict\tfirst_error\tunit\tlinked\tblockers\tmore\tbehave\n"

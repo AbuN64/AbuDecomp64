@@ -21,7 +21,7 @@ def native_functions(port_dir):
     glue = port_dir / "sched_glue.c"
     if not glue.is_file():
         raise ValueError(f"the port facts directory has no sched_glue.c: {glue}")
-    files = sorted(here.parent.glob("n64c_*.[ch]")) + [glue]
+    files = [*sorted(here.parent.glob("n64c_*.[ch]")), glue]
     return {name for path in files for name in policy.functions(path.read_text())}
 
 

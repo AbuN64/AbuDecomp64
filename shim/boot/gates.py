@@ -108,7 +108,7 @@ def preprocess_flags(source, adapter=HERE):
 def run(command, timeout=TIMEOUT):
     """(returncode, stdout, stderr); a timeout is returncode -9."""
     try:
-        done = subprocess.run(["nice", "-n", "10"] + command, capture_output=True, text=True, errors="replace", timeout=timeout,
+        done = subprocess.run(["nice", "-n", "10", *command], capture_output=True, text=True, errors="replace", timeout=timeout,
                               env=dict(os.environ, LC_ALL="C"), check=False)
         return done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired:
@@ -197,8 +197,7 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=
     out.parent.mkdir(parents=True, exist_ok=True)
     if not exact:
         dep = out.with_name(out.name + ".d")
-        code, text, _ = run(["gcc"] + HOST_FLAGS + preprocess_flags(source, adapter)
-                            + ["-x", "c", "-E", "-MD", "-MF", str(dep), "-MT", str(out), str(pathlib.Path(source) / unit)])
+        code, text, _ = run(["gcc", *HOST_FLAGS, *preprocess_flags(source, adapter), "-x", "c", "-E", "-MD", "-MF", str(dep), "-MT", str(out), str(pathlib.Path(source) / unit)])
         if not code:
             out.write_text(text)
             if deps is not None and dep.exists():
@@ -206,10 +205,7 @@ def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=
             dep.unlink(missing_ok=True)
             return out, "NON_MATCHING"
         dep.unlink(missing_ok=True)
-    code, _, err = run([sys.executable, "-I", str(adapter / "prepare.py"), "--compiler", "gcc", "--source",
-                        str(pathlib.Path(source) / unit), "--output", str(out), "--stubs", str(stubs),
-                        "--inventory", str(inv), "--depfile", str(dep), "--"] + HOST_FLAGS
-                       + preprocess_flags(source, adapter))
+    code, _, err = run([sys.executable, "-I", str(adapter / "prepare.py"), "--compiler", "gcc", "--source", str(pathlib.Path(source) / unit), "--output", str(out), "--stubs", str(stubs), "--inventory", str(inv), "--depfile", str(dep), "--", *HOST_FLAGS, *preprocess_flags(source, adapter)])
     mode = "NON_MATCHING"
     if not code and inv.exists():
         mode = json.loads(inv.read_text()).get("mode", mode)
@@ -667,7 +663,7 @@ def probe_unit(ipath, structs, compilers, scratch):
             src = pathlib.Path(scratch) / (f'probe_{label!s}_{serial:d}.i')
             serial += 1
             src.write_text(base + "\n" + probe_source([structs[i] for i in batch]))
-            code, out, _ = run(argv + ["-w", "-O0", "-S", "-x", "cpp-output", str(src), "-o", "-"])
+            code, out, _ = run([*argv, "-w", "-O0", "-S", "-x", "cpp-output", str(src), "-o", "-"])
             src.unlink(missing_ok=True)
             if code:
                 if len(batch) > 1:
@@ -779,7 +775,7 @@ def scan_one(args):
     deps = [] if ctx.get("cache") else None
     path, mode = prepare_unit(unit, source, work, ctx["adapter"], ctx.get("build"), deps, exact=False)
     if path is not None and not ctx.get("build"):
-        code, _, err = run(["gcc"] + HOST_FLAGS + ["-O1"] + WARNINGS + ["-x", "cpp-output", "-c", str(path), "-o", os.devnull])
+        code, _, err = run(["gcc", *HOST_FLAGS, "-O1", *WARNINGS, "-x", "cpp-output", "-c", str(path), "-o", os.devnull])
         if code and "error:" in err:  # the fuzzy NON_MATCHING C does not compile: prepare.py's matched-C fallback
             path, mode = prepare_unit(unit, source, work, ctx["adapter"], None, deps)
             code = None
@@ -792,7 +788,7 @@ def scan_one(args):
         return result
     result["mode"] = mode
     if code is None:
-        _, _, err = run(["gcc"] + HOST_FLAGS + ["-O1"] + WARNINGS + ["-x", "cpp-output", "-c", str(path), "-o", os.devnull])
+        _, _, err = run(["gcc", *HOST_FLAGS, "-O1", *WARNINGS, "-x", "cpp-output", "-c", str(path), "-o", os.devnull])
     result["warnings"] = parse_warnings(err, source)
     scan = scan_text(pathlib.Path(path).read_text(errors="replace"), unit in ctx["sdk"])
     result["defs"] = scan["defs"]
@@ -801,8 +797,7 @@ def scan_one(args):
     if result["boot"] and ctx["layout"]:
         obj = pathlib.Path(work) / "o" / (unit + ".o")
         obj.parent.mkdir(parents=True, exist_ok=True)
-        code, _, err = run(["gcc"] + HOST_FLAGS + ["-g1", "-gdwarf-4", "-fno-eliminate-unused-debug-types", "-O0",
-                                                   "-w", "-x", "cpp-output", "-c", str(path), "-o", str(obj)])
+        code, _, err = run(["gcc", *HOST_FLAGS, "-g1", "-gdwarf-4", "-fno-eliminate-unused-debug-types", "-O0", "-w", "-x", "cpp-output", "-c", str(path), "-o", str(obj)])
         if code == 0:
             code, dump, _ = run(["readelf", "--debug-dump=info", str(obj)])
             result["structs"] = dwarf_structs(dump)
@@ -824,8 +819,8 @@ def probe_one(args):
         ipath = pathlib.Path(ctx["work"]) / "i" / (unit + ".i")
         if ctx.get("build") and (pathlib.Path(ctx["build"]) / "decomp" / (unit + ".i")).exists():
             ipath = pathlib.Path(ctx["build"]) / "decomp" / (unit + ".i")
-        compilers = {"host": ["gcc"] + HOST_FLAGS, "aligned": ["gcc"] + HOST_FLAGS + ["-malign-double"],
-                     "mips": [ctx["mips_gcc"]] + MIPS_FLAGS}
+        compilers = {"host": ["gcc", *HOST_FLAGS], "aligned": ["gcc", *HOST_FLAGS, "-malign-double"],
+                     "mips": [ctx["mips_gcc"], *MIPS_FLAGS]}
         return unit, wanted, probe_unit(ipath, wanted, compilers, scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -933,8 +928,7 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
         stampf = pathlib.Path(obj + ".sha")
         if cache and os.path.exists(obj) and stampf.exists() and stampf.read_text() == json.dumps(sha):
             return obj  # same prepared unit as the last LTO object: reuse it
-        code, _, _ = run(["gcc"] + HOST_FLAGS + ["-flto", "-fno-fat-lto-objects", "-O0", "-w", "-x", "cpp-output",
-                                                 "-c", ipath, "-o", obj])
+        code, _, _ = run(["gcc", *HOST_FLAGS, "-flto", "-fno-fat-lto-objects", "-O0", "-w", "-x", "cpp-output", "-c", ipath, "-o", obj])
         if code == 0:
             stampf.write_text(json.dumps(sha))
         return obj if code == 0 else None
@@ -958,7 +952,7 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
         if m:
             names = QUOTED.findall(m["msg"])
             notes = [x.split("note: ", 1)[1].strip() for x in lines[i + 1:i + 4] if "note:" in x]
-            rows.append((names[0] if names else "", m["file"], int(m["line"]), " ".join([m["msg"]] + notes)))
+            rows.append((names[0] if names else "", m["file"], int(m["line"]), " ".join([m["msg"], *notes])))
     if memo:
         memo.write_text(json.dumps({"key": link_key, "rows": rows, "code": code, "err": err}))
     return rows, code, err

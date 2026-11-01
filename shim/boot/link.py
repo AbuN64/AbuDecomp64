@@ -78,7 +78,7 @@ def graph_program(item, label):
     types, root = item.get("types"), item.get("root")
     if item.get("fields") is not None or not isinstance(types, dict) or root not in types:
         raise ValueError("invalid graph: " + label)
-    order = [root] + sorted(name for name in types if name != root)
+    order = [root, *sorted(name for name in types if name != root)]
     index = {name: i for i, name in enumerate(order)}
 
     def ref(name, what):
@@ -180,7 +180,7 @@ def graph_program(item, label):
 def descriptor(item, label, unpacked=False):
     """The (kind, fields, record bytes) of a loads/resources row; raises on anything the PI layer cannot fix up."""
     kind = item["kind"]
-    if kind not in KINDS or kind == "graph" and not unpacked:
+    if kind not in KINDS or (kind == "graph" and not unpacked):
         raise ValueError("unsupported untyped/pointer layout: " + label)
     if unpacked and kind not in UNPACKED_KINDS:
         raise ValueError("unsupported unpacked layout: " + label)
@@ -198,7 +198,7 @@ def descriptor(item, label, unpacked=False):
         return kind, None, WIDTHS[kind]
     text = item.get("fields")
     if not isinstance(text, str):
-        raise ValueError("missing field widths: " + label)  # noqa: TRY004 -- missing descriptor fields are invalid values
+        raise ValueError("missing field widths: " + label)
     widths = [c for c in text if c != " "]
     if not widths or len(widths) > MAX_FIELDS or not all(FIELD_WIDTH.fullmatch(c) for c in widths) or \
             not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip()):
@@ -300,7 +300,7 @@ def unfacted_streams(rom, project, source):
         at = rom.find(b"RNC" + bytes([method]))
         while at != -1:
             unpacked, packed = struct.unpack_from(">II", rom, at + 4) if at + 12 <= len(rom) else (0, 0)
-            if 0 < unpacked <= 16 << 20 and 0 < packed and at + 18 + packed <= len(rom):
+            if 0 < unpacked <= 16 << 20 and packed > 0 and at + 18 + packed <= len(rom):
                 i = bisect.bisect_right(starts, at) - 1
                 if i < 0 or ends[i] <= at:
                     out.append((at, method, unpacked, packed))
@@ -415,7 +415,7 @@ def generate(manifest, source, output):
         if size % width:
             raise ValueError("partial load field: " + symbol)
         for old_rom, old_ram, old_size in ranges:
-            if rom < old_rom + old_size and rom + size > old_rom or physical < old_ram + old_size and physical + size > old_ram:
+            if (rom < old_rom + old_size and rom + size > old_rom) or (physical < old_ram + old_size and physical + size > old_ram):
                 raise ValueError("overlapping load range: " + symbol)
         ranges.append((rom, physical, size))
         rom_ranges.append((rom, rom + size, symbol))
@@ -483,7 +483,7 @@ def generate(manifest, source, output):
     # and names it (n64c_pi.h), instead of a big-endian count crashing a reader later.
     classes = byte_order(project, source)
     untyped_streams = set()
-    for blob, (kind, ranges, codec, _) in sorted(classes.items(), key=lambda pair: pair[1][1][0]):
+    for blob, (kind, ranges, _codec, _) in sorted(classes.items(), key=lambda pair: pair[1][1][0]):
         if kind != "untyped":
             continue
         if blob in streams:

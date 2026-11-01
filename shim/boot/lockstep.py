@@ -490,7 +490,7 @@ def same_word(matcher, kind, ov, pv, osp, psp):
     if (ov & m) == (pv & m):
         return True
     if kind in ("ptr", "int32", "unknown"):
-        if abs(ov - osp) < ORACLE_STACK and abs(pv - psp) < PORT_STACK or matcher.both_stack(ov, pv):
+        if (abs(ov - osp) < ORACLE_STACK and abs(pv - psp) < PORT_STACK) or matcher.both_stack(ov, pv):
             return True
         return matcher.same_address(ov, pv)
     return False
@@ -502,7 +502,7 @@ def oracle_fields(kinds, ret_kind, call, returned):
     if call is not None and kinds is not None:
         where, _ = o32_slots(kinds)
         words = [int(x, 16) for x in call["a"]]
-        for index, (kind, at) in enumerate(zip(kinds, where)):
+        for index, (kind, at) in enumerate(zip(kinds, where, strict=False)):
             if kind in ("var", "agg") or at is None:
                 break
             if at[0] == "f":
@@ -560,7 +560,7 @@ def compare_call(matcher, kinds, local, oc, pc):
     if kinds is None:  # no prototype: the arity is unknown, so registers past it hold anything
         return differences
     where, port_at = o32_slots(kinds)
-    for index, (k, at, pos) in enumerate(zip(kinds, where, port_at)):
+    for index, (k, at, pos) in enumerate(zip(kinds, where, port_at, strict=False)):
         if k in ("var", "agg") or at is None or pos + (8 if k in ("double", "int64") else 4) > 32:
             break
         lo = words[pos // 4]
@@ -638,7 +638,7 @@ def boot_unmask(diff, pg, oracle_page, boot, seen):
     out = {}
     for w, cls in diff.items():
         at = base + 4 * w
-        if 0 <= at and at + 4 <= len(boot) and oracle_page[4 * w:4 * w + 4] == boot[at:at + 4]:
+        if at >= 0 and at + 4 <= len(boot) and oracle_page[4 * w:4 * w + 4] == boot[at:at + 4]:
             seen.add(pg * WORDS + w)
         else:
             out[w] = cls

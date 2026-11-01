@@ -39,8 +39,7 @@ class PrepareTests(unittest.TestCase):
         src.write_text(code)
         files = [self.path / n for n in ("source.i", "stubs.c", "inventory.json", "source.d")]
         status = module.prepare(args.compiler, src, *files,
-            self.flags + ["-DNON_MATCHING", "-DVERSION_US_REV1",
-                          "-include", str(ROOT / "native.h")])
+            [*self.flags, "-DNON_MATCHING", "-DVERSION_US_REV1", "-include", str(ROOT / "native.h")])
         self.assertEqual(status, 0)
         return files, json.loads(files[2].read_text())
 
@@ -85,7 +84,7 @@ INCLUDE_ASM("text", fuzzy);
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):
             status = module.prepare(args.compiler, src, *files,
-                self.flags + ["-DNON_MATCHING", "-include", str(ROOT / "native.h")], cache=cache)
+                [*self.flags, "-DNON_MATCHING", "-include", str(ROOT / "native.h")], cache=cache)
         self.assertNotEqual(status, 0)
         self.assertIn("conflicting types", stderr.getvalue())
         self.assertIn("unit conflict.c", stderr.getvalue())
@@ -160,7 +159,7 @@ int read_table(void) { return table[0]; }
             (root / "u.c").write_text('#include "h.h"\nint value(void) { return VALUE; }\nconst char *f = __FILE__;\n')
             files = [root / n for n in ("u.i", "u.stubs.c", "u.json", "u.d")]
             def run():
-                return module.prepare(args.compiler, root / "u.c", *files, self.flags + ["-I" + str(root / "include")],
+                return module.prepare(args.compiler, root / "u.c", *files, [*self.flags, "-I" + str(root / "include")],
                                       [(str(root), "tree")], cache)
             return root, files, run
         a, files_a, run_a = tree("a")

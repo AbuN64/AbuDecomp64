@@ -119,7 +119,7 @@ class Cache:
             entries = json.loads(self.manifest.read_text())
         except (OSError, ValueError):
             entries = []
-        entries = [entry] + [e for e in entries if e["result"] != name][:7]
+        entries = [entry, *[e for e in entries if e["result"] != name][:7]]
         write_atomic(self.manifest, json.dumps(entries).encode())
         if int(name[:4], 16) % 64 == 0:
             self.trim()

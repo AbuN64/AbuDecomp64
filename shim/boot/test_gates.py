@@ -178,8 +178,8 @@ class LayoutTests(unittest.TestCase):
             structs = [{"expr": "struct Msg", "members": [{"name": "tag", "bit": False},
                                                           {"name": "stamp", "bit": False}]},
                        {"expr": "struct Ok", "members": [{"name": "a", "bit": False}, {"name": "b", "bit": False}]}]
-            comps = {"host": ["gcc"] + gates.HOST_FLAGS, "aligned": ["gcc"] + gates.HOST_FLAGS + ["-malign-double"],
-                     "mips": [mips] + gates.MIPS_FLAGS}
+            comps = {"host": ["gcc", *gates.HOST_FLAGS], "aligned": ["gcc", *gates.HOST_FLAGS, "-malign-double"],
+                     "mips": [mips, *gates.MIPS_FLAGS]}
             got = gates.probe_unit(unit, structs, comps, tmp)
             msg = gates.differences(structs[0], got["host"][0], got["mips"][0])
             self.assertEqual([d[0] for d in msg], ["sizeof", "alignof", "stamp"])

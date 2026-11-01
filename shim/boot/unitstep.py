@@ -21,6 +21,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import contextlib
+
 from digests import Digests
 
 VERSION = 1
@@ -130,7 +132,7 @@ class ObjectCache:
             return False
         for entry in entries:
             if not entry.get("deps") or any(path.endswith(".failed") and payload is not None
-                                            for path, payload in zip(self.opts["outs"], entry["files"])):
+                                            for path, payload in zip(self.opts["outs"], entry["files"], strict=False)):
                 continue
             if not self.unchanged(entry):
                 continue
@@ -147,7 +149,7 @@ class ObjectCache:
                     files[index] = gcno_cwd(text, os.getcwd())
                     if files[index] is None:  # a layout this cannot rewrite: build it, never restore a wrong one
                         return False
-            for path, text in zip(outs, files):
+            for path, text in zip(outs, files, strict=False):
                 if text is None:
                     if os.path.exists(path):
                         os.unlink(path)
@@ -166,10 +168,8 @@ class ObjectCache:
                 with open(self.opts["depfile"], "w") as stream:
                     stream.write(f"{target}: " + " \\\n ".join(unmapped(path, self.maps) for path, _ in entry["deps"]) + "\n")
             self.digests.save()
-            try:
+            with contextlib.suppress(OSError):
                 os.utime(self.manifest)
-            except OSError:
-                pass
             return True
         return False
 
@@ -212,7 +212,7 @@ class ObjectCache:
             except (OSError, ValueError):
                 entries = []
             entry = {"deps": deps, "sigs": sigs, "files": files}
-            self.write([entry] + [e for e in entries if e["deps"] != deps][:3])
+            self.write([entry, *[e for e in entries if e["deps"] != deps][:3]])
             if int(self.key[:4], 16) % 128 == 0:
                 self.trim()
         except OSError as error:  # a full or read-only cache never fails the build

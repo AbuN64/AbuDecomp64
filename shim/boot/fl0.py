@@ -40,7 +40,7 @@ def compare_dl(native, goldens, boot_log=None):
         report.update(native_sha256=digest(native), native_bytes=len(actual))
         if not actual or len(actual) % 8:
             raise ValueError("invalid native DL size")
-        offset = next((i for i, (a, b) in enumerate(zip(actual, expected)) if a != b),
+        offset = next((i for i, (a, b) in enumerate(zip(actual, expected, strict=False)) if a != b),
                       min(len(actual), len(expected)) if len(actual) != len(expected) else None)
         if offset is not None:
             base = offset // 8 * 8
@@ -57,7 +57,7 @@ def compare_dl(native, goldens, boot_log=None):
             if not match:
                 raise ValueError("missing first graphics submission receipt")
             report["submission"] = dict(zip(["seq", "retrace", "data", "bytes", "audio_before"],
-                                             [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()]))
+                                             [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()], strict=False))
             if report["submission"]["bytes"] != len(actual):
                 raise ValueError("first graphics receipt size differs from dump")
             hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[:match.start()], re.MULTILINE)

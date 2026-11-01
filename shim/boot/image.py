@@ -228,7 +228,7 @@ class Elf:
         for index in range(shnum):
             fields = struct.unpack_from("<IIIIIIIIII", data, shoff + index * shentsize)
             self.sections.append(dict(zip(
-                ("name", "type", "flags", "addr", "offset", "size", "link", "info", "align", "entsize"), fields)))
+                ("name", "type", "flags", "addr", "offset", "size", "link", "info", "align", "entsize"), fields, strict=False)))
         names = self.sections[shstrndx]
         for section in self.sections:
             section["label"] = self._string(data, names, section["name"])
@@ -395,7 +395,7 @@ def build(manifest, source, objects, linked, output, rom=None):
                 else:
                     overlay_placed.append({"name": name, "rom": lma + address - vma, "elf": elf, "symbol": symbol})
                 continue
-            if not 0x80000000 <= address or address - 0x80000000 + symbol["size"] > ram:
+            if not address >= 0x80000000 or address - 0x80000000 + symbol["size"] > ram:
                 refused[name] = "outside mapped RDRAM"
                 continue
             item = {"name": name, "address": address, "elf": elf, "symbol": symbol}
@@ -511,7 +511,8 @@ def build(manifest, source, objects, linked, output, rom=None):
             else:
                 runs.append([start, base, size])
     stops -= resolved_names
-    covered = lambda address: any(start <= address < start + size for start, _, size in extents)
+    def covered(address):
+        return any(start <= address < start + size for start, _, size in extents)
     binds = {}
     for name in sorted(linked_undefined - linked_defined - claimed - stops):
         if name in table and table[name][1] == "data" and covered(table[name][0]):

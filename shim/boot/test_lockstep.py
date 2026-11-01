@@ -171,7 +171,7 @@ class CompareTests(unittest.TestCase):
         self.both(4)
         self.both(5)
         report = self.run_compare()
-        review = dict(zip(ls.ACCEPT_FIELDS, ["memory", 2, "fn_two", "0x80001800", "00000001/00000002", "known", "reviewer"]))
+        review = dict(zip(ls.ACCEPT_FIELDS, ["memory", 2, "fn_two", "0x80001800", "00000001/00000002", "known", "reviewer"], strict=False))
         ls.apply_acceptances(report, [review], [1, 2, 3, 4, 5])
         self.assertEqual(report["matched_through"], 1)
         self.assertEqual(report["matched_through_after_accepted"], 3)

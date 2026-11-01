@@ -173,9 +173,10 @@ class EndpointTest(unittest.TestCase):
 class PageTest(unittest.TestCase):
     def test_the_page_loads_every_region_module_that_ships(self):
         page = (ROOT / "runner.html").read_text()
-        for path in ("/api/contract", "/api/feed", "/api/feed/stream", "/static/site/map.js", "/static/icons.svg"):
+        for path in ("/api/contract", "/api/feed", "/api/feed/stream", "/static/site/", "/static/icons.svg", "#/map"):
             self.assertIn(path, page)
         shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")}
         self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
+        self.assertIn('map: "map"', page)  # the map is a whole-page route
         for name in shipped:
             self.assertRegex((ROOT / "static" / "site" / f"{name}.js").read_text(), r"export function mount\(el, ctx\)")

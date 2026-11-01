@@ -13,11 +13,12 @@ from abu_decomp import site_core, site_map
 ROOT = Path(__file__).resolve().parents[1] / "src" / "abu_decomp"
 BIT = site_core.FILTER_BITS
 COLS = ["name", "rom", "size", "state", "file", "reach", "foundation", "behaviour"]
+FILES = ["src/game/LEVEL/a.CPP", "src/game/MENU_SCREEN/b.CPP", "src/os/c.CPP"]
 ROWS = [
     ["fn_a", 0, 64, "named", 0, "both", 0, "behaves"],
-    ["fn_b", 0, 32, "exact", 0, "port", 0, "differs-args"],
-    ["fn_c", 0, 16, "asm", 0, "oracle", 0, ""],
-    ["fn_d", 0, 8, "fuzzy", 0, "none", 0, "missing"],
+    ["fn_b", 100, 32, "exact", 1, "port", 0, "differs-args"],
+    ["fn_c", 200, 16, "asm", 0, "oracle", 0, ""],
+    ["fn_d", 300, 8, "fuzzy", 2, "none", 0, "missing"],
 ]
 
 
@@ -88,7 +89,7 @@ class BuildTest(unittest.TestCase):
         self.runs = Path(self.tmp.name)
         site = self.runs / "site"
         site.mkdir()
-        (site / "fns.abc.json").write_text(json.dumps({"ref": "r1", "cols": COLS, "rows": ROWS}))
+        (site / "fns.abc.json").write_text(json.dumps({"ref": "r1", "files": FILES, "cols": COLS, "rows": ROWS}))
         (site / "manifest.json").write_text(json.dumps({"fns": "fns.abc.json"}))
         self.server = SimpleNamespace(cfg={"runs": self.runs}, site=site)
 
@@ -116,16 +117,35 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(status, HTTPStatus.OK)
         return body["rows"]
 
-    def test_rows_are_name_size_state_flags_in_rom_order(self) -> None:
+    def test_rows_are_name_size_state_flags_region_in_rom_order(self) -> None:
         self.assertEqual(
             self.rows(),
             [
-                ["fn_a", 64, "named", bits("named", "exercised", "behaves")],
-                ["fn_b", 32, "exact", bits("exact", "exercised", "differs")],
-                ["fn_c", 16, "asm", bits("asm", "original-only")],
-                ["fn_d", 8, "fuzzy", 0],
+                ["fn_a", 64, "named", bits("named", "exercised", "behaves"), 0],
+                ["fn_b", 32, "exact", bits("exact", "exercised", "differs"), 1],
+                ["fn_c", 16, "asm", bits("asm", "original-only"), 0],
+                ["fn_d", 8, "fuzzy", 0, 2],
             ],
         )
+
+    def test_regions_are_source_folders_in_proper_case_by_first_rom_address(self) -> None:
+        _, body = site_map.answer(self.server, "GET", "", "", b"")
+        self.assertEqual(
+            body["regions"],
+            [
+                {"key": "src/game/LEVEL", "label": "Level", "count": 2, "bytes": 80, "rom": 0},
+                {"key": "src/game/MENU_SCREEN", "label": "Menu Screen", "count": 1, "bytes": 32, "rom": 100},
+                {"key": "src/os", "label": "Os", "count": 1, "bytes": 8, "rom": 300},
+            ],
+        )
+
+    def test_two_folders_with_one_last_part_are_told_apart_by_their_parent(self) -> None:
+        files = ["src/game/UTIL/a.CPP", "src/os/UTIL/b.CPP"]
+        rows = [["x", 0, 4, "asm", 0, "none", 0, ""], ["y", 8, 4, "asm", 1, "none", 0, ""]]
+        at = {name: COLS.index(name) for name in COLS}
+        regions, index = site_map.regions_of(files, rows, at)
+        self.assertEqual([r["label"] for r in regions], ["Game Util", "Os Util"])
+        self.assertEqual(index, [0, 1])
 
     def test_feedback_and_streamed_flags_come_from_the_run_reach(self) -> None:
         self.reach("p1", [1, 3])
@@ -200,7 +220,7 @@ class PageLogicTest(unittest.TestCase):
             site_map.colour_key("zzz", 0),
         ]
         self.assertEqual(got["colours"], server)
-        self.assertEqual(got["layout"], {"cols": 12, "rows": 3, "height": 24})
+        self.assertEqual(got["layout"], {"cols": 12, "rows": 3, "height": 48})
         self.assertEqual(got["lit"], ["named,differs", ["exact", "asm"], []])
         self.assertEqual(got["box"], 12 + 2)
 

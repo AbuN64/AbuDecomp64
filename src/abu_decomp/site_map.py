@@ -1,4 +1,8 @@
-"""Site region `map`: the function rows `[name, size, state, flags]` the sidebar map draws and the filters light.
+"""Site region `map`: the function rows `[name, size, state, flags, region]` the map page draws and the filters light.
+
+`regions` lists the ROM segments the page draws and labels: the source folder of each function's file (`src/game/LEVEL`
+is the region "Level"), in order of first ROM address, each `{key, label, count, bytes, rom}`; a row's last cell is its
+region's index. A label repeated by two folders is spelled with its parent folder.
 
 `flags` is the bitmask of site_core.FILTER_BITS, built from the baked site (fns.json: decomp state, reach, behaviour)
 and the records beside it: a feedback record (`runs/feedback/ID/feedback.json`) sets `feedback` on every function its
@@ -83,13 +87,41 @@ def runs_with(runs: Path, feedback: Path) -> tuple[list[str], list[str]]:
     return sorted(flagged), streamed
 
 
+def region_label(key: str) -> str:
+    """The proper-case name of a source folder: its last part, underscores as spaces ("src/game/LEVEL" -> "Level")."""
+    return key.rsplit("/", 1)[-1].replace("_", " ").title() if key else "Unsorted"
+
+
+def regions_of(files: list[str], rows: list[list[Any]], at: dict[str, int]) -> tuple[list[dict[str, Any]], list[int]]:
+    """(regions, region index per row): functions grouped by the folder of their file, regions by first ROM address."""
+    keys = [file.rsplit("/", 1)[0] if "/" in file else "" for file in files]
+    order: dict[str, int] = {}
+    for row in rows:
+        order.setdefault(keys[row[at["file"]]], len(order))
+    regions = [{"key": key, "label": region_label(key), "count": 0, "bytes": 0, "rom": -1} for key in order]
+    labels = [region["label"] for region in regions]
+    for region in regions:
+        if labels.count(region["label"]) > 1:
+            parts = region["key"].split("/")
+            region["label"] = f"{region_label(parts[-2])} {region['label']}" if len(parts) > 1 else region["key"]
+    index = []
+    for row in rows:
+        region = regions[order[keys[row[at["file"]]]]]
+        region["count"] += 1
+        region["bytes"] += row[at["size"]]
+        region["rom"] = row[at["rom"]] if region["rom"] < 0 else min(region["rom"], row[at["rom"]])
+        index.append(order[keys[row[at["file"]]]])
+    return regions, index
+
+
 def build(site: Path, runs: Path, feedback: Path) -> dict[str, Any]:
     """The /api/map answer from the baked site and the run and feedback folders."""
     manifest = json.loads((site / "manifest.json").read_text())
     baked = json.loads((site / manifest["fns"]).read_text())
     cols = baked["cols"]
-    at = {name: cols.index(name) for name in ("name", "size", "state", "reach", "behaviour")}
+    at = {name: cols.index(name) for name in ("name", "rom", "size", "state", "file", "reach", "behaviour")}
     rows = baked["rows"]
+    regions, region_of = regions_of(baked["files"], rows, at)
     flagged, streamed = runs_with(runs, feedback)
 
     def hits(ids: list[str]) -> set[int]:
@@ -114,6 +146,7 @@ def build(site: Path, runs: Path, feedback: Path) -> dict[str, Any]:
                 feedback=i in feedback_rows,
                 streamed=i in streamed_rows,
             ),
+            region_of[i],
         ]
         for i, row in enumerate(rows)
     ]
@@ -123,6 +156,7 @@ def build(site: Path, runs: Path, feedback: Path) -> dict[str, Any]:
         "ref": baked.get("ref"),
         "filters": [{"key": key, "bit": BIT[key]} for key in BIT],
         "colours": COLOURS,
+        "regions": regions,
         "rows": out,
     }
 

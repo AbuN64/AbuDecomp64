@@ -51,8 +51,8 @@ class NoSeatTests(unittest.TestCase):
 
 
 class StartFailureTests(unittest.TestCase):
-    """A play whose start thread fails before the run writes its record is refused with the reason, never left queued
-    and never forgotten (the live slice: tas.play raised the unreadable-build-graph DecompError, the thread swallowed it)."""
+    """A play whose start thread fails before the run writes its record is refused with the reason, never left
+    queued and never forgotten (live: tas.play raised the unreadable-build-graph DecompError, the thread ate it)."""
 
     REASON = "5 *.failed markers but none of the build files naming the port's units is readable: /seat/build.ninja"
 

@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
-from typing import ClassVar
 from unittest import mock
 
 spec = importlib.util.spec_from_file_location("deploy_rig", Path(__file__).parent.parent / "ci" / "deploy_rig.py")
@@ -21,7 +20,7 @@ spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
 RIG_TOOLKIT = "/home/abu/venv-decomp"  # the .deploy line; no step ever runs on it
-HOME = tempfile.mkdtemp(prefix="deploy-rig-home-")  # the name step opens builds in its toolkit's home: always a mocked one
+HOME = tempfile.mkdtemp(prefix="deploy-rig-home-")  # the name step opens builds in its home: a mocked one
 atexit.register(shutil.rmtree, HOME, ignore_errors=True)
 TOOLKIT = f"{HOME}/venv-decomp"
 NAME = "0123456789ab"  # the engine's digest of the whole content; never the SHA
@@ -196,9 +195,7 @@ class UnsealTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("unseal: 2 old builds", out)
         self.assertIn(f"name: {NAME}", out)
-        self.assertEqual(
-            [self.writable(n) for n in ("venv-decomp.old1", "venv-decomp.old2-2")], [True, True]
-        )
+        self.assertEqual([self.writable(n) for n in ("venv-decomp.old1", "venv-decomp.old2-2")], [True, True])
         self.assertEqual(
             [self.writable(n) for n in ("venv-decomp.live0", "venv-decomp.prev0", "venv-decomp-w3.361f")],
             [False, False, False],
@@ -398,7 +395,7 @@ class BuildScriptTests(ScriptCase):
         done = self.run_build()
         self.assertEqual(done.returncode, 1)
         self.assertIn("deploy-error: decomp tools deploy exit 3", done.stderr)
-        self.assertEqual(self.build.resolve(), live.resolve())  # BUILD never left the live toolkit 
+        self.assertEqual(self.build.resolve(), live.resolve())  # BUILD never left the live toolkit
 
     def test_a_build_link_that_reads_another_build_exits_1(self):
         live = self.root / "live-target"

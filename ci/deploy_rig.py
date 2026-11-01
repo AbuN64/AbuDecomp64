@@ -41,7 +41,6 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -274,7 +273,9 @@ def unseal_old_builds(toolkit: str) -> list[str]:
     for entry in sorted(os.listdir(home)):
         path = os.path.join(home, entry)
         folder = os.path.realpath(path)
-        if not entry.startswith(f"{base}.") or entry == f"{base}.previous" or folder in keep or not os.path.isdir(folder):
+        if not entry.startswith(f"{base}.") or entry == f"{base}.previous" or folder in keep:
+            continue
+        if not os.path.isdir(folder):
             continue
         for here, _dirs, _ in os.walk(folder):
             os.chmod(here, os.stat(here).st_mode | stat.S_IWUSR)

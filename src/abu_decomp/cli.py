@@ -1782,12 +1782,30 @@ COMMANDS: dict[str, Command] = {
 }
 
 
-def parser() -> _Parser:
+def _selected(args: list[str]) -> str | None:
+    """The command named in argv (the first word after the root options), or None when argv names none."""
+    words = iter(args)
+    for word in words:
+        if word == "--profile":
+            next(words, None)
+        elif word in COMMANDS:
+            return word
+        elif not word.startswith("-"):
+            return None
+    return None
+
+
+def parser(args: list[str] | None = None) -> _Parser:
+    """The root parser. Given argv, only the named command's arguments are built: a command's argument builder may
+    import its own stack (data imports unbake), and one command's stack must never stop another from parsing."""
     root = _Parser(prog="decomp", description="The decompilation dev cycle and its seat")
     root.add_argument("--profile", type=Path, help="explicit seat JSON profile")
     commands = root.add_subparsers(dest="command", required=True, parser_class=_Parser)
+    chosen = _selected(args) if args is not None else None
     for name, command in COMMANDS.items():
-        command.arguments(commands.add_parser(name, help=command.help, description=command.help))
+        sub = commands.add_parser(name, help=command.help, description=command.help)
+        if args is None or name == chosen:
+            command.arguments(sub)
     return root
 
 
@@ -1896,7 +1914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = "parse"
     parsed_profile: Path | None = None
     try:
-        parsed = _tool_call(args) or parser().parse_args(args)
+        parsed = _tool_call(args) or parser(list(args)).parse_args(args)
         command = parsed.command
         parsed_profile = parsed.profile
         if command == "mcp":

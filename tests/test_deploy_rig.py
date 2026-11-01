@@ -78,6 +78,8 @@ class StepTests(unittest.TestCase):
 
     def test_build_names_the_build_then_runs_build_and_suite_with_the_name(self):
         bash = Bash((0, ENVELOPE), (0, ""))
+        os.makedirs(f"{TOOLKIT}.{SHA}")  # what the build script leaves and the record is written into
+        self.addCleanup(shutil.rmtree, f"{TOOLKIT}.{SHA}", ignore_errors=True)
         code, _, _ = main("build", bash)
         self.assertEqual(code, 0)
         script, args, capture = bash.calls[1]
@@ -157,7 +159,7 @@ class StepTests(unittest.TestCase):
 
 
 class PruneTests(unittest.TestCase):
-    """Two deploys on a mocked home: the build, the close's switch, the readback; only live and previous remain."""
+    """Deploys on a mocked home: the build, the close's switch, the readback; each removes only what it owns."""
 
     NAMES: ClassVar[dict[str, str]] = {"1" * 40: "111111111111", "2" * 40: "222222222222"}
 
@@ -217,68 +219,74 @@ class PruneTests(unittest.TestCase):
                 os.replace(link + ".new", link)
             return deploy_rig.main(["readback"], environ, bash)
 
-    def test_after_two_deploys_only_live_and_previous_remain(self):
+    def sibling_names(self):
+        return ["venv-decomp-w3", "venv-decomp-w3.361f", "venv-unbake.dafd"]
+
+    def litter(self):
+        """What was on the rig before: no deploy owns it, so none removes it."""
+        return [n for n in self.listing() if n not in (*self.sibling_names(), "venv-decomp", "venv-decomp.previous")]
+
+    def test_a_swap_removes_only_the_build_it_pushed_out_of_previous(self):
         one, two = "1" * 40, "2" * 40
+        before = self.litter()
         self.assertEqual(self.deploy(one), 0)
+        # prev0 (link and folder) was in `.previous` when the swap ran: the build of `one` owns pushing it out
         self.assertEqual(
-            self.listing(),
+            self.litter(),
             sorted(
-                [
-                    *self.sibling_names(),
-                    "venv-decomp",
-                    "venv-decomp.previous",
-                    "venv-decomp.live0",
-                    "venv-decomp-stage.live0",  # the replaced build, now previous
-                    f"venv-decomp.{one}",
-                    f"venv-decomp.{one}.{self.NAMES[one]}",
-                ]
+                [n for n in before if n not in ("venv-decomp.prev0", "venv-decomp-stage.prev0")]
+                + [f"venv-decomp.{one}", f"venv-decomp.{one}.{self.NAMES[one]}"]
             ),
         )
         self.assertEqual(self.deploy(two), 0)
-        self.assertEqual(
-            self.listing(),
-            sorted(
-                [
-                    *self.sibling_names(),
-                    "venv-decomp",
-                    "venv-decomp.previous",
-                    f"venv-decomp.{one}",
-                    f"venv-decomp.{one}.{self.NAMES[one]}",
-                    f"venv-decomp.{two}",
-                    f"venv-decomp.{two}.{self.NAMES[two]}",
-                ]
-            ),
-        )
         self.assertEqual(os.path.realpath(self.toolkit), str(self.home / f"venv-decomp.{two}.{self.NAMES[two]}"))
         self.assertEqual(
             os.path.realpath(self.toolkit + ".previous"), str(self.home / f"venv-decomp.{one}.{self.NAMES[one]}")
         )
+        left = self.listing()
+        self.assertFalse({"venv-decomp.live0", "venv-decomp-stage.live0"} & set(left), left)  # pushed out by `two`
+        self.assertTrue({"venv-decomp-stage.aaa", "venv-decomp.ccc-2", "venv-decomp-stage"} <= set(left), left)
+        self.assertTrue(set(self.sibling_names()) <= set(left))
 
-    def sibling_names(self):
-        return ["venv-decomp-w3", "venv-decomp-w3.361f", "venv-unbake.dafd"]
-
-    def test_a_failed_build_removes_its_folder_and_link_at_once(self):
+    def test_a_failed_build_removes_its_own_link_and_folder_only(self):
         bad = "1" * 40
+        before = self.listing()
         self.assertEqual(self.deploy(bad, fail=True), 1)
         left = self.listing()
         self.assertFalse([n for n in left if bad in n], left)
+        self.assertEqual(left, [n for n in before])  # the build was not there before; nothing else went
         self.assertEqual(os.path.realpath(self.toolkit), str(self.home / "venv-decomp-stage.live0"))
         self.assertEqual(os.path.realpath(self.toolkit + ".previous"), str(self.home / "venv-decomp-stage.prev0"))
-        self.assertTrue(set(self.sibling_names()) <= set(left))
 
-    def test_the_prune_touches_only_its_own_toolkit_and_is_a_noop_when_clean(self):
-        self.assertEqual(
-            sorted(deploy_rig.prune(self.toolkit))[:3],
-            ["venv-decomp-stage", "venv-decomp-stage.aaa", "venv-decomp-stage.bbb"],
-        )
-        self.assertEqual(deploy_rig.prune(self.toolkit), [])
+    def test_a_readback_keeps_a_build_in_progress_beside_it(self):
+        """The real race (rig-20261101T081122Z and rig-20261101T081301Z): the build of one deploy is in progress,
+        a link and a half-installed folder with no bin/python yet, while the other deploy swaps and reads back."""
+        mine, theirs = "1" * 40, "2" * 40
+        progress = self.home / f"venv-decomp.{theirs}.{self.NAMES[theirs]}"
+        (progress / "lib" / "site-packages").mkdir(parents=True)  # unsealed: the install is still writing
+        os.symlink(progress.name, self.home / f"venv-decomp.{theirs}")
+        self.assertEqual(self.deploy(mine), 0)
+        self.assertTrue(os.path.islink(self.home / f"venv-decomp.{theirs}"))
+        self.assertTrue((progress / "lib" / "site-packages").is_dir())
+        self.assertNotIn("venv-decomp.prev0", self.listing())  # its own displaced build did go
+
+    def test_the_prune_removes_only_what_it_is_given_and_is_a_noop_when_clean(self):
+        before = self.listing()
+        self.assertEqual(deploy_rig.prune(self.toolkit, []), [])
+        self.assertEqual(self.listing(), before)
+        owned = [str(self.home / "venv-decomp-stage.aaa"), str(self.home / "venv-decomp.aaa")]
+        self.assertEqual(deploy_rig.prune(self.toolkit, owned), ["venv-decomp-stage.aaa", "venv-decomp.aaa"])
+        self.assertEqual(deploy_rig.prune(self.toolkit, owned), [])
         self.assertTrue(set(self.sibling_names()) <= set(self.listing()))
+
+    def test_the_live_and_previous_builds_are_never_removed_even_when_owned(self):
+        owned = [str(self.home / n) for n in ("venv-decomp.live0", "venv-decomp-stage.live0", "venv-decomp.prev0")]
+        self.assertEqual(deploy_rig.prune(self.toolkit, owned), [])
 
     def test_a_missing_previous_link_is_fine(self):
         os.unlink(self.toolkit + ".previous")
-        deploy_rig.prune(self.toolkit)
+        self.assertEqual(self.deploy("1" * 40), 0)
         self.assertIn("venv-decomp-stage.live0", self.listing())
-        self.assertNotIn("venv-decomp-stage.prev0", self.listing())
 
 
 def wrapper(path, body):
@@ -358,6 +366,16 @@ class SuiteScriptTests(ScriptCase):
         self.assertTrue(facts["suite-summary"].startswith("2 passed, 0 failed, 0 skipped in "))
         self.assertTrue(PurePosixPath(facts["suite-import"]).is_relative_to(facts["suite-checkout"]))
         self.assertIn(f"suite-sha: {sha}", (self.built / "suite.txt").read_text())
+
+    def test_the_suite_leaves_nothing_in_the_checkout(self):
+        self.write_test("import os; assert not os.environ['TMPDIR'].startswith(os.getcwd())")
+        git("add", "-A", cwd=self.repo)
+        git("commit", "-q", "-m", "t", cwd=self.repo)
+        done, _ = self.suite()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(status.stdout, "")
+        self.assertFalse((self.repo / ".tmp").exists())
 
     def test_a_passing_suite_leaves_the_built_tree_read_only_and_a_failing_one_leaves_it_alone(self):
         (self.built / "lib").mkdir()

@@ -7,22 +7,20 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
   name       the engine's `decomp tools name` answers the build's NAME, a digest of every package commit the new toolkit
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
              build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
-             deploys its own toolkit, never this one), so the name digests all of them;
+             deploys its own toolkit, never this one), so the name digests all of them. It also makes the sealed old
+             builds `<toolkit>.<x>` that are neither live nor `.previous` writable (u+w) so the activation can delete
+             them; the deploy itself deletes nothing;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
              SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of the live
              toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine swaps, starts
              as scratch and is never read), BUILD ends linked to that venv, and the full test suite (pytest over tests/)
              runs in the tree with BUILD's python and the tree's src first on the import path. After the gate passes the
              built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place. The imported
-             abu_decomp path must lie inside the tree. A failing suite exits non-zero, the live and previous links stay
-             and the failed build's folder and link are removed at once; on exit 0 the close switches the live link to
-             BUILD and keeps the replaced venv as <toolkit>.previous;
+             abu_decomp path must lie inside the tree. A failing suite exits non-zero, the live and previous links stay;
+             on exit 0 the close switches the live link to BUILD and keeps the replaced venv as <toolkit>.previous;
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
-             refuses (fix forward, no rollback). After it holds, the deploy prunes only what it owns: the build its
-             swap pushed out of `.previous` (the build step records it in the built tree). It never matches a name:
-             a sibling deploy's `<toolkit>.<x>` build in progress stays. A failed build removes its own link and
-             folder, never the live or the previous;
+             refuses (fix forward, no rollback). The deploy removes nothing: pruning old builds is the activation's;
   profile    the live tas profile (~/rig-state/tas/profile.json) is written from the landed tree's ci/tas-profile.json,
              never edited anywhere else: its `${home}` is the deploy user's home and every other `${name}` comes from
              the host's site file (~/.config/abu-decomp/site.json, a flat object of strings, one key per name the
@@ -53,7 +51,6 @@ from pathlib import Path
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
 SHA = re.compile(r"[0-9a-f]{40}")
 NAME_RE = re.compile(r"[0-9a-f]{12}")
-DISPLACED = "displaced.txt"  # in the built tree: what its swap pushes out of `.previous`, for its readback to prune
 TEMPLATE = Path("ci/tas-profile.json")  # in the tree: the one source of the live profile
 SITE_FILE = Path(".config/abu-decomp/site.json")  # under the deploy user's home: the host's values for the template
 LIVE_PROFILE = Path("rig-state/tas/profile.json")  # under the deploy user's home: what abu-decomp-tas.service reads
@@ -267,61 +264,22 @@ def bash(script: str, *args: str, capture: bool = False) -> tuple[int, str]:
     return done.returncode, done.stdout or ""
 
 
-def force_remove(path: str) -> None:
-    """Remove a link (never followed) or a folder; a built tree is sealed read-only, so owner write returns first."""
-    if os.path.islink(path) or not os.path.isdir(path):
-        os.unlink(path)
-        return
-    for here, _dirs, _ in os.walk(path):
-        os.chmod(here, os.stat(here).st_mode | stat.S_IWUSR)
-    shutil.rmtree(path)
-
-
-def chain(link: str) -> list[str]:
-    """LINK, each link it points through and the path it ends at (the folder), as absolute paths."""
-    out = []
-    path = link
-    while os.path.islink(path):
-        out.append(path)
-        path = os.path.normpath(os.path.join(os.path.dirname(path), os.readlink(path)))
-    out.append(path)
-    return out
-
-
-def built_by(toolkit: str, sha: str) -> list[str]:
-    """What the build of SHA left beside TOOLKIT: its link `<toolkit>.<sha>`, the folders `<toolkit>.<sha>.<x>` and
-    whatever the link chain ends at. Nothing another deploy built shares the SHA."""
+def unseal_old_builds(toolkit: str) -> list[str]:
+    """Make the sealed old builds `<toolkit>.<x>` that are neither the live toolkit nor `.previous` writable by their
+    owner (u+w on every folder), so the activation can delete them. Returns the folders opened. The deploy removes
+    nothing itself: the activation owns pruning."""
     home, base = os.path.split(toolkit)
-    mine = [os.path.join(home, e) for e in os.listdir(home) if e == f"{base}.{sha}" or e.startswith(f"{base}.{sha}.")]
-    return sorted(set(mine) | {p for p in chain(f"{toolkit}.{sha}") if os.path.lexists(p)})
-
-
-def prune(toolkit: str, owned: list[str]) -> list[str]:
-    """Remove OWNED, the links and folders this deploy built or displaced, and nothing else: a `<toolkit>.<x>` of a
-    deploy running beside it is never matched by a name, so its build in progress stays. The live link, the previous
-    link, each link of their chains and the folders they end at are never removed. Returns the removed names."""
-    home = os.path.dirname(toolkit)
-    keep = {*chain(toolkit), *chain(toolkit + ".previous")}
-    removed = []
-    for path in owned:
-        if os.path.dirname(path) == home and path not in keep and os.path.lexists(path):
-            force_remove(path)
-            removed.append(os.path.basename(path))
-    return removed
-
-
-def record_displaced(built: str, owned: list[str]) -> None:
-    """Write what the swap will push out of `.previous` into the sealed BUILT tree, the one place the readback of
-    this deploy (and no other) finds it; the root opens for the write and seals again."""
-    mode = os.stat(built).st_mode
-    os.chmod(built, mode | stat.S_IWUSR)
-    Path(built, DISPLACED).write_text("".join(f"{p}\n" for p in owned))
-    os.chmod(built, mode)
-
-
-def displaced(built: str) -> list[str]:
-    path = Path(built, DISPLACED)
-    return path.read_text().splitlines() if path.is_file() else []
+    keep = {os.path.realpath(toolkit), os.path.realpath(f"{toolkit}.previous")}
+    opened = []
+    for entry in sorted(os.listdir(home)):
+        path = os.path.join(home, entry)
+        folder = os.path.realpath(path)
+        if not entry.startswith(f"{base}.") or entry == f"{base}.previous" or folder in keep or not os.path.isdir(folder):
+            continue
+        for here, _dirs, _ in os.walk(folder):
+            os.chmod(here, os.stat(here).st_mode | stat.S_IWUSR)
+        opened.append(folder)
+    return sorted(set(opened))
 
 
 def last_line(text: str, default: object) -> str:
@@ -403,26 +361,24 @@ def install_profile(template: Path, home: Path) -> Path:
 
 
 def step_name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
-    sys.stdout.write(f"name: {name(sha, toolkit, run)}\n")
+    revision = name(sha, toolkit, run)
+    opened = unseal_old_builds(toolkit)  # a stuck activation cannot delete a sealed read-only build
+    sys.stdout.write(f"unseal: {len(opened)} old builds writable for the activation\n")
+    sys.stdout.write(f"name: {revision}\n")
     sys.stdout.flush()
 
 
 def step_build(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     revision = name(sha, toolkit, run)
-    pushed_out = chain(toolkit + ".previous")  # the swap pushes this build out of `.previous`
     code, _ = run(BUILD + SUITE.replace("__RUNNER__", RUNNER), sha, toolkit, revision)
     if code:
-        prune(toolkit, built_by(toolkit, sha))  # live and previous are still the old ones: only this build goes
         raise Refused(f"build exit {code}, links unchanged")
-    record_displaced(os.path.realpath(f"{toolkit}.{sha}"), [p for p in pushed_out if os.path.lexists(p)])
 
 
 def step_readback(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     code, _ = run(READBACK, sha, toolkit, f"{toolkit}.{sha}")
     if code:
         raise Refused(f"readback exit {code}")
-    removed = prune(toolkit, displaced(os.path.realpath(f"{toolkit}.{sha}")))  # the swap held: its displaced build goes
-    sys.stdout.write(f"prune: removed {len(removed)}, the build the swap pushed out of the previous\n")
 
 
 def step_profile(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:

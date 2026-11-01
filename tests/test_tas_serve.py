@@ -311,12 +311,12 @@ class DeployedTests(unittest.TestCase):
 
     def test_ready_is_sent_to_the_notify_socket_and_only_then(self):
         self.assertFalse(tas_serve.notify_ready({}))
-        with tempfile.TemporaryDirectory() as tmp:
-            path = str(Path(tmp) / "notify")
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as listener:
-                listener.bind(path)
-                self.assertTrue(tas_serve.notify_ready({"NOTIFY_SOCKET": path}))
-                self.assertEqual(listener.recv(64), b"READY=1")
+        # An abstract `@name` socket: a filesystem path under a rig run folder is past the 108 bytes AF_UNIX allows.
+        name = "abu-test-notify-" + hashlib.sha1(os.urandom(8)).hexdigest()[:12]
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as listener:
+            listener.bind("\0" + name)
+            self.assertTrue(tas_serve.notify_ready({"NOTIFY_SOCKET": "@" + name}))
+            self.assertEqual(listener.recv(64), b"READY=1")
 
 
 class HttpTests(Base):

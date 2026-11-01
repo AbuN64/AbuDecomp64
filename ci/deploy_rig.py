@@ -6,7 +6,8 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
 
   name       the engine's `decomp tools name` answers the build's NAME, a digest of every package commit the new toolkit
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
-             build holds several packages, and another repository's deploy must not collide with this one's name;
+             build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
+             deploys its own toolkit, never this one), so the name digests all of them;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64
              --sha SHA` installs the landed commit into a fresh venv beside every other package of the live toolkit
              carried over as installed (`--carry-from` the live link; the private `<toolkit>-stage` link the

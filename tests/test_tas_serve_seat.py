@@ -111,6 +111,34 @@ class StartFailureTests(unittest.TestCase):
             self.server.stop("never-existed")
 
 
+class SeatFlipTests(unittest.TestCase):
+    """The shared seat is a live link the port deploy flips to each landed build; a site started before a flip plays
+    the build the link names now (live 11-01 10:51:54Z: it kept port.74ec472 and refused every play as stale)."""
+
+    def test_a_play_checks_the_build_the_link_names_now_not_the_one_at_start(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        (root / "game.z64").write_bytes(b"rom")
+        (root / "movies").mkdir()
+        for build in ("port.old", "port.new"):
+            (root / build).mkdir()
+            (root / build / "ragewars").write_bytes(build.encode())
+        (root / "port").symlink_to(root / "port.old")
+        profile = root / "seat.json"
+        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": [], "port": "port/ragewars"}
+        profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
+        server = tas_serve.Server(load_profile(profile))
+        self.assertEqual(server.cfg["port"], root / "port.old" / "ragewars")
+        (root / "port").unlink()
+        (root / "port").symlink_to(root / "port.new")
+        checked = []
+        with mock.patch("abu_decomp.tas_seat.check", side_effect=lambda cfg: checked.append(cfg["port"])):
+            self.assertIsNone(server.seat_refusal(None, "m", None))
+        self.assertEqual(checked, [root / "port.new" / "ragewars"])
+        self.assertEqual(server.cfg["port"], root / "port.new" / "ragewars")
+
+
 class PortExitTests(unittest.TestCase):
     """A port that exits before its first poll ends as run.refused with the reason (live 11-01 10:12:10Z: the seat held
     no shader archive, the port printed so and exited 4 at once; the feed said only run.ended outcome exit, poll 0)."""

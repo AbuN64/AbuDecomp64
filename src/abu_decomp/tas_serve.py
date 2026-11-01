@@ -657,10 +657,19 @@ class Server:
         row.update(pak=pak or "on", oracle=None, fps_unlock=fps_unlock, shown=None, **{"from": None, "at": None})
         return row
 
+    def follow_seat(self) -> None:
+        """The profile's shared seat is a live link the port deploy flips to each landed build: resolve it again at
+        every play, not once at start (live: a site started before the flip kept the old build and refused every
+        play as stale). The dict is updated in place, the holders of self.cfg see the new build."""
+        port = tas.settings(self.profile)["port"]
+        with self.lock:
+            self.cfg["port"] = port
+
     def seat_refusal(self, port: str | None, movie: str, label: str | None) -> dict[str, Any] | None:
         """A play on the shared seat that cannot start ends at once: it is never queued, its refused row (error = the
         reason, shown by the feed as run.refused) is kept instead, and the answer carries the id and the reason. None
         when the play can start."""
+        self.follow_seat()
         if port:
             return None
         try:

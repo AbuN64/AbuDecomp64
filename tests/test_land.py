@@ -170,7 +170,7 @@ class LandTests(unittest.TestCase):
         self.assertEqual(lanes["L1"]["converted"], 1)
         self.assertEqual(lanes["L1"]["names"], ["func_1"])
         self.assertEqual(result["functions"], {"converted": 2, "added": 0})
-        run_bin = str(Path(sys.executable).parent / "unbake-run")
+        run_bin = "unbake-run"  # by name: the one command directory on the job PATH
         self.assertEqual(
             [c[0] for c in self.commands], [("admit", "8"), (run_bin, "--work", "6", "--", "make", "-j{j}", "check")]
         )

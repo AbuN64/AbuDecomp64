@@ -643,7 +643,7 @@ def build_command(argv: Sequence[str], cap: int | str | None = None) -> list[str
     explicit, rest = explicit_jobs(argv)
     work = explicit or cap
     return [
-        str(Path(sys.executable).parent / "unbake-run"),
+        "unbake-run",
         *(["--work", str(work)] if work else []),
         "--",
         *rest[:1],
@@ -1671,7 +1671,6 @@ class Landing:
             jobs = int(out.strip()) if not code and out.strip().isdigit() and int(out) > 0 else None
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
-        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
 
         def make(targets: list[str]) -> tuple[int, str]:
             command = build_command([*self.config["check"][:1], *targets], jobs)
@@ -1706,7 +1705,6 @@ class Landing:
         first non-zero exit refuses the input (its CPU and wall ride the gate row beside the step name)."""
         started, rows = self.clock(), []
         env = dict(os.environ)
-        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         for step in self.config["steps"]:
             begun, mark = self.clock(), meter.cpu()
             command = self.expand(step["argv"])
@@ -1754,7 +1752,6 @@ class Landing:
         command = build_command(self.config["check"], jobs)
         env = dict(os.environ)
         env["UNBAKE_HOST"] = str(tools.host_file(self.profile))
-        env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
         code, out, err = self.build(command, self.tree, env, self.config["timeout"])
         if code:
             tail = "\n".join((out + err).strip().splitlines()[-12:])

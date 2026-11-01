@@ -22,8 +22,9 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
              refuses (fix forward, no rollback). Then `decomp` is linked by name into the one command directory
              `commands` beside the toolkit link, through the live link, and read back: it resolves into the live
-             toolkit. The toolkit's carried unbake and the rest are never published, so a consumer's `unbake` is
-             CakeUnbake64's own. The deploy removes nothing: pruning old builds is the activation's;
+             toolkit. The toolkit holds the unbake library but none of its commands (the deploy removes them), and
+             nothing but `decomp` is published from here, so a consumer's `unbake` and
+             `unbake-run` are CakeUnbake64's own. The deploy removes nothing: pruning old builds is the activation's;
   profile    the live tas profile (`rig-state/tas/profile.json` under the deploy user's home) is written from the
              landed tree's ci/tas-profile.json,
              never edited anywhere else: its `${home}` is the deploy user's home and every other `${name}` comes from

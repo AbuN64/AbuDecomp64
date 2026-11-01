@@ -100,6 +100,10 @@ class DeployTests(unittest.TestCase):
         )  # per venv: fresh, then via the link
         symbols = [c for c in self.commands if c[0].endswith("unbake")]
         self.assertEqual(len(symbols), 4)
+        self.assertEqual({c[0] for c in symbols}, {"unbake"})  # by name on PATH, never the venv's carried script
+        retire = [c for c in self.commands if deploy.RETIRE in c]
+        self.assertEqual(len(retire), 2)  # per venv: the carried unbake commands are removed after the install
+        self.assertTrue(all(c[0].endswith("bin/python") for c in retire))
         self.assertEqual(symbols[0][-3:], ["symbols", "--version", "us-rev1"])
         self.assertIn("--host", symbols[0])
         self.assertEqual(
@@ -337,10 +341,9 @@ class DeployTests(unittest.TestCase):
                 requirements_of=self.requirements_of,
             )
         self.assertEqual((code, findings), (0, []))  # a refused or held tree never fails the deploy
-        live = self.root / "venv-a"  # the link, already swapped: the files name the live path, never a versioned one
-        self.assertEqual(
-            [(Path(argv[0]).parent.parent, argv[-2:], cwd) for argv, cwd in calls],
-            [(live, ["sync", "--makefile"], trees[0]), (live, ["sync", "--makefile"], trees[2])],
+        self.assertEqual(  # `unbake` by name (CakeUnbake64's own), never a venv path
+            [(argv[0], argv[-2:], cwd) for argv, cwd in calls],
+            [("unbake", ["sync", "--makefile"], trees[0]), ("unbake", ["sync", "--makefile"], trees[2])],
         )
         self.assertEqual(
             [(Path(r["tree"]).name, r["outcome"]) for r in result["venvs"][0]["resync"]],

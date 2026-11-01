@@ -32,9 +32,13 @@ a deployer that must name the build before the activation (`content_name` is the
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
 carried packages and the package are installed into a fresh venv beside it (`PATH.<name>`, pip run by that venv's own
 python so console script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake
-symbols --version V` on the project) runs against the fresh venv, the fresh tree is made read-only (`chmod -R a-w`, so
+symbols --version V` on the project, `unbake` by name) runs against the fresh venv, the fresh tree is made
+read-only (`chmod -R a-w`, so
 a job's pip install into the live toolkit fails loudly instead of rewriting it in place), and only then is the symlink
-swapped with rename(2). Processes started through PATH's console scripts keep their versioned tree; superseded
+swapped with rename(2). The venv keeps the unbake library (decomp imports it) but none of its commands: the install
+ends by removing the console scripts the unbake distribution declares (`retire`), so `unbake` and `unbake-run` resolve
+by name to CakeUnbake64's published commands on the job PATH, never to a carried copy.
+Processes started through PATH's console scripts keep their versioned tree; superseded
 versions stay until purge removes them (policy `venv_versions`: not the live target, not the newest rollback, no
 process using it). A live path that is still a real directory is refused (a deploy only swaps symlinks), and the link
 is read back.
@@ -151,6 +155,21 @@ print(json.dumps(sorted(rows)))
 """
 
 
+# CakeUnbake64's commands (`unbake`, `unbake-run`, ...) belong to its own toolkit, published into the one command
+# directory the job PATH holds. This venv keeps the unbake library (decomp imports it) and nothing runnable of it.
+RETIRE = """\
+import importlib.metadata as metadata
+import json
+import pathlib
+import sys
+
+names = sorted(e.name for e in metadata.distribution("unbake").entry_points if e.group == "console_scripts")
+for name in names:
+    (pathlib.Path(sys.prefix) / "bin" / name).unlink(missing_ok=True)
+print(json.dumps(names))
+"""
+
+
 def carried(source: Path, package: str, project_packages: Sequence[str], run: Run) -> list[str]:
     """The requirements the `source` venv holds (the live toolkit), other than `package` and the project's own pinned
     packages (those are installed at the versions asked for)."""
@@ -258,6 +277,7 @@ def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], 
         ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
         *([("carry", [str(python), "-m", "pip", "install", "--no-deps", *carry])] if carry else []),
         ("install", [str(python), "-m", "pip", "install", *specs]),
+        ("retire", [str(python), "-c", RETIRE]),  # the venv carries no unbake command: land and the rig find it by name
     ]
     done: list[dict[str, Any]] = []
     for name, argv in steps:
@@ -270,7 +290,8 @@ def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], 
 
 def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequence[str] = ()) -> list[dict[str, Any]]:
     """`decomp dependencies` (every installed tool from a git install), an import of every declared project package,
-    and `unbake symbols --version V` on the project, V being the first version directory of the project."""
+    and `unbake symbols --version V` on the project (the `unbake` command found by name on PATH, CakeUnbake64's own),
+    V being the first version directory of the project."""
     results = []
     code, output = run([str(venv / "bin" / "decomp"), "dependencies"], None)
     results.append({"check": "decomp dependencies", "ok": code == 0, "tail": output[-300:] if code else ""})
@@ -287,7 +308,7 @@ def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequ
         )
         return results
     argv = [
-        str(venv / "bin" / "unbake"),
+        "unbake",
         "--host",
         str(host),
         "--project",
@@ -387,7 +408,7 @@ def resync(venv: Path, host: Path, project: Path, run: Run) -> list[dict[str, An
         if pids := holders(tree):
             rows.append({"tree": str(tree), "outcome": "skipped", "held_by": pids[:5]})
             continue
-        argv = [str(venv / "bin" / "unbake"), "--host", str(host), "--project", str(tree), "sync", "--makefile"]
+        argv = ["unbake", "--host", str(host), "--project", str(tree), "sync", "--makefile"]
         code, output = run(argv, tree)
         rows.append(
             {"tree": str(tree), "outcome": "refused" if code else "synced", "tail": output[-300:] if code else ""}

@@ -30,12 +30,12 @@ import sys
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import addrscan
-import hostabi  # noqa: E402
-import policy  # noqa: E402
-import srcfiles  # noqa: E402
+import hostabi
+import policy
+import srcfiles
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
-FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.M)
+FUNCTION = re.compile(r"INCLUDE_ASM|\)\s*\{|^\{", re.MULTILINE)
 OUTPUT = re.compile(r"^\s*(\.\w+)\s+(0x[0-9A-Fa-f]+)\s*:\s*AT\((0x[0-9A-Fa-f]+)\)")
 INPUT = re.compile(r"^\s*(src/\S+?)\.o\(")
 FACT = re.compile(r"(\w+)\s*=\s*(0x[0-9A-Fa-f]+);(.*)")
@@ -306,7 +306,7 @@ class Coff:
                 text = string(struct.unpack_from("<I", name, 4)[0])
             else:
                 text = name.rstrip(b"\0").decode()
-            shndx = number if number > 0 else 0
+            shndx = max(0, number)
             section = self.sections[shndx] if shndx else None
             if cls == 3 and shndx and text == section["label"] and value == 0:
                 stype = STT_SECTION
@@ -414,9 +414,9 @@ def build(manifest, source, objects, linked, output, rom=None):
         if target["type"] == STT_SECTION:
             for symbol in elf.symbols:
                 if symbol["type"] == STT_OBJECT and symbol["shndx"] == target["shndx"] \
-                        and symbol["value"] <= addend < symbol["value"] + max(symbol["size"], 1):
-                    if symbol["name"] in table and table[symbol["name"]][1] == "data":
-                        return ("addr", table[symbol["name"]][0] + addend - symbol["value"])
+                        and symbol["value"] <= addend < symbol["value"] + max(symbol["size"], 1) \
+                        and symbol["name"] in table and table[symbol["name"]][1] == "data":
+                    return ("addr", table[symbol["name"]][0] + addend - symbol["value"])
             return None
         name = target["name"]
         if name in resolved_names:
@@ -478,7 +478,7 @@ def build(manifest, source, objects, linked, output, rom=None):
             offset = where - symbol["value"]
             taken.add(offset)
             if kind != R_386_32 or offset + 4 > size:
-                failure = "unsupported relocation kind %d" % kind
+                failure = f'unsupported relocation kind {kind:d}'
                 break
             addend, = struct.unpack_from("<i", chunk, offset)
             value = resolve(elf, symbol_index, addend)
@@ -593,7 +593,7 @@ def compile_unit(prepare, compiler, source, output, flags):
     output.parent.mkdir(parents=True, exist_ok=True)
     failure = None
     for step in steps:
-        result = subprocess.run(step, capture_output=True, text=True)
+        result = subprocess.run(step, capture_output=True, text=True, check=False)
         if result.returncode:
             failure = result.stderr[-4000:] or "failed\n"
             break

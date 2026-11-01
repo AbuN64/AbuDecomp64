@@ -12,7 +12,7 @@ import json
 import pathlib
 import re
 
-SITE = re.compile(r"(src/\S+?\.(?:CPP|c)):(\d+)\s*(.*)", re.S)
+SITE = re.compile(r"(src/\S+?\.(?:CPP|c)):(\d+)\s*(.*)", re.DOTALL)
 UNIT = re.compile(r"src/\S+?\.(?:CPP|c)")
 DECL = re.compile(r"conflicting types|redefinition|redeclared|unknown type name|undeclared|incompatible|"
                   r"has no member|NEEDS one declaration|previous declaration|storage class")
@@ -30,7 +30,7 @@ def classify(why):
         return None
     site = SITE.match(why)
     unit, file_line = (site.group(1), f"{site.group(1)}:{site.group(2)}") if site else (unit_of(why), "")
-    error = re.sub(r"\s+at [0-9a-f]{7}\b.*$", "", site.group(3) if site else why, flags=re.S).strip()
+    error = re.sub(r"\s+at [0-9a-f]{7}\b.*$", "", site.group(3) if site else why, flags=re.DOTALL).strip()
     if "no libultra-range function" in why:
         kind = "placement"
     elif why.startswith("libultra") or "original SDK unit" in why or "SDK: shim binding decision" in why:

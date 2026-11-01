@@ -16,9 +16,10 @@ import shutil
 import subprocess
 import sys
 import zlib
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
-from digests import Digests  # noqa: E402
+import portdir
+from digests import Digests
 
 IDENT = r"[A-Za-z_][A-Za-z_0-9]*"
 
@@ -158,13 +159,13 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
     if mode == "NON_MATCHING":
         check = subprocess.run([compiler, *flags, "-x", "c", "-fsyntax-only", "-MD", "-MF", str(depfile),
                                 "-MT", str(output), str(source)],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                               capture_output=True, text=True, check=False)
         if check.returncode:
             rejected = [line for line in check.stderr.splitlines() if "error:" in line]
             matched = [flag for flag in flags if flag != "-DNON_MATCHING"]
             if listed(source, fallbacks):
                 again = subprocess.run([compiler, *matched, "-x", "c", "-fsyntax-only", str(source)],
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                       capture_output=True, text=True, check=False)
             if not listed(source, fallbacks) or again.returncode:
                 sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): NON_MATCHING compile failed\n")
                 sys.stderr.write(check.stderr)
@@ -173,8 +174,7 @@ def prepare(compiler, source, output, stubs, inventory, depfile, flags, maps=(),
             sys.stderr.write(f"decomp-prepare: {source}: known NON_MATCHING failure; using matched C with stops\n")
     command = [compiler, *flags, "-x", "c", "-E", "-MD", "-MF", str(depfile),
                "-MT", str(output), str(source)]
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True)
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode:
         sys.stderr.write(f"decomp-prepare: unit {source.name} ({source}): preprocessing failed\n")
         sys.stderr.write(result.stderr)

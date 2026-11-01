@@ -41,7 +41,7 @@ def address(op, regs):
 
 
 def in_gdb(out_dir):
-    import gdb  # noqa: provided by gdb
+    import gdb  # Provided by gdb.
 
     state = {"n": 0}
     regnames = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip")
@@ -69,7 +69,7 @@ def in_gdb(out_dir):
                 continue  # parked in a host wait, or the watchdog itself
             # the innermost original function (a thunk or shim frame may sit above it)
             number = next((int(m.group(1)) for m in re.finditer(r"^#(\d+)\s+(?:0x[0-9a-f]+ in )?(func_\w+|rw_\w+)",
-                                                                 bt, re.M)), 0)
+                                                                 bt, re.MULTILINE)), 0)
             gdb.execute(f"frame {number}", to_string=True)
             f = gdb.selected_frame()
             regs = frame_regs(f)
@@ -119,7 +119,7 @@ def in_gdb(out_dir):
         watchdog = gdb.selected_thread()
         try:
             core(lines)
-        except Exception as exc:  # keep the boot going whatever the core reading hit
+        except Exception as exc:  # noqa: BLE001 -- debugger boundary reports every core-reader fault
             lines.append(f"hangcore error: {exc!r}")
         watchdog.switch()
         path = os.path.join(out_dir, f"hang-{state['n']}.txt")
@@ -141,7 +141,7 @@ def main(argv):
     seconds = int(os.environ.get("N64C_RUN_ON_LIMIT", "300")) + 60
     with open(os.path.join(out_dir, "boot.log"), "w") as log:
         try:  # the timeout kills only this gdb child (by PID); the boot ends with it
-            return subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=env, timeout=seconds).returncode
+            return subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, env=env, timeout=seconds, check=False).returncode
         except subprocess.TimeoutExpired:
             log.write(f"hangcore: gdb ran past {seconds} s; killed\n")
             return 124

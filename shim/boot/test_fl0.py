@@ -4,14 +4,14 @@ import argparse
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 import zlib
+from pathlib import Path
+from unittest.mock import patch
 
 parser=argparse.ArgumentParser()
 parser.add_argument("--work",type=Path,required=True)

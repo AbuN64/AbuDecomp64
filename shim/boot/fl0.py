@@ -6,11 +6,11 @@ import importlib.util
 import json
 import math
 import os
-import struct
-from pathlib import Path
 import re
+import struct
 import subprocess
 import tempfile
+from pathlib import Path
 
 
 def digest(path):
@@ -53,14 +53,14 @@ def compare_dl(native, goldens, boot_log=None):
         report["accepted"] = offset is None
         if boot_log is not None:
             text = boot_log.read_text()
-            match = re.search(r"^boot-gfx: first submit seq=(\d+) retrace=(\d+) data=(0x[0-9a-f]+) bytes=(\d+) audio_before=(\d+)$", text, re.M)
+            match = re.search(r"^boot-gfx: first submit seq=(\d+) retrace=(\d+) data=(0x[0-9a-f]+) bytes=(\d+) audio_before=(\d+)$", text, re.MULTILINE)
             if not match:
                 raise ValueError("missing first graphics submission receipt")
             report["submission"] = dict(zip(["seq", "retrace", "data", "bytes", "audio_before"],
                                              [int(v, 16 if v.startswith("0x") else 10) for v in match.groups()]))
             if report["submission"]["bytes"] != len(actual):
                 raise ValueError("first graphics receipt size differs from dump")
-            hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[:match.start()], re.M)
+            hits = re.findall(r"^boot-step: (\d+)/(\d+) (\S+)$", text[:match.start()], re.MULTILINE)
             report["last_first_hit"] = {"count": int(hits[-1][0]), "name": hits[-1][2]} if hits else None
     except (ValueError, OSError, KeyError, TypeError, IndexError) as error:
         report.update(accepted=False, error=str(error))

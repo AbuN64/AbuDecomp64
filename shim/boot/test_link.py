@@ -4,7 +4,6 @@ import argparse
 import copy
 import importlib.util
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -96,7 +95,7 @@ int main(void) { return n64c_boot_entry(); }
         if args.m32:
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 78, result.stderr)
         self.assertEqual(result.stderr, "binding-ok\nboot-missing: missing_runtime\n")
 
@@ -140,7 +139,7 @@ int main(void) { return n64c_boot_entry(); }
         if args.m32:
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_resource_descriptor_rejections(self):

@@ -39,8 +39,9 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import link
 import policy
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+import portdir
 
 HERE = pathlib.Path(__file__).resolve().parent
 KSEG0, KUSEG_END, KUSEG_LOW, RDRAM_END = 0x80000000, 0x00800000, 0x10000, 0x80800000

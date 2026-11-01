@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Route undefined boot symbols: libultra to the shim or a stop, D_auto data by its name, data never a stop."""
 import argparse
-import json
 import importlib.util
+import json
 import pathlib
 import subprocess
 import sys
@@ -248,7 +248,7 @@ class RouteTests(unittest.TestCase):
     def test_versioned_alias_of_a_function_binds_to_the_function_not_to_storage(self):
         # D_0024B52C_us_rev1 pins 0x0024B52C; a function sits at 0x8024B52C, and the game calls through the address.
         self.facts.addrs["D_00200000_us_rev1"] = ("0x00200000", "")
-        kind, detail = self.route("D_00200000_us_rev1")
+        _kind, _detail = self.route("D_00200000_us_rev1")
         self.assertEqual(self.d["bindings"].get("D_00200000_us_rev1"), "func_80200000_de")
         self.assertNotIn("D_00200000_us_rev1", self.d["data"], "zeroed data would be executed as code")
     def test_alias_of_a_renamed_function_binds_and_an_unbindable_one_is_listed(self):
@@ -556,7 +556,7 @@ class LinkAllTests(unittest.TestCase):
         self.assertEqual((self.root / "u.failed").read_text(), "src/X.c:3 conflicting types\n")
         self.assertEqual((self.root / "u.o").stat().st_size, 0)
         self.assertEqual((self.root / "u.stubs.o").stat().st_size, 0)
-        touch = [sys.executable, "-c", "import pathlib; pathlib.Path('%s').write_text('ok')" % (self.root / "u.o")]
+        touch = [sys.executable, "-c", "import pathlib; pathlib.Path('{!s}').write_text('ok')".format(self.root / "u.o")]
         self.assertEqual(unitstep.unit(["--base", str(base), "--source", "src/X.c", "--", *touch, "---", *touch]), 0)
         self.assertFalse((self.root / "u.failed").exists(), "a unit that compiles again drops its marker")
     def test_archive_holds_the_non_empty_objects_of_the_plan(self):
@@ -572,7 +572,7 @@ class LinkAllTests(unittest.TestCase):
         linkall.archive(["--plan", str(self.root / "plan.txt"), "--objdir", str(objdir), "--closure-objects",
                          str(self.root / "closure.txt"), "--output", str(out), "--members", str(self.root / "m.txt"),
                          "--linked", str(self.root / "l.txt")])
-        names = subprocess.run(["nm", "-g", "-P", str(out)], capture_output=True, text=True).stdout
+        names = subprocess.run(["nm", "-g", "-P", str(out)], capture_output=True, text=True, check=False).stdout
         self.assertIn("a_v", names)
         self.assertNotIn("b_v", names)
         self.assertEqual((self.root / "m.txt").read_text().split(), [str(objdir / "src/A.c.o")])

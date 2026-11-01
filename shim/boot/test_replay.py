@@ -109,7 +109,7 @@ fn {spin:x} i
 go
 """
             (path / "plan.txt").write_text(plan)
-            done = subprocess.run([exe, str(path / "plan.txt")], capture_output=True, text=True, timeout=60)
+            done = subprocess.run([exe, str(path / "plan.txt")], capture_output=True, text=True, timeout=60, check=False)
             self.assertEqual(done.returncode, 0, done.stderr)
             lines = (path / "out.txt").read_text().splitlines()
             by = {}

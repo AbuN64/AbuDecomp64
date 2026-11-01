@@ -1,9 +1,9 @@
 """Type extraction must use the native C dialect and expose compiler failures."""
 import importlib.util
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 spec=importlib.util.spec_from_file_location("lockstep",Path(__file__).with_name("lockstep.py"))
 ls=importlib.util.module_from_spec(spec);spec.loader.exec_module(ls)

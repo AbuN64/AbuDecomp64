@@ -53,9 +53,9 @@ class FailClosedTests(unittest.TestCase):
             argv += ["--" + option, str(path)]
         argv += ["--cache", str(self.cache), "--", *self.flags]
         failed = subprocess.CompletedProcess([], 2, "", diagnostic)
-        with mock.patch.object(prepare.subprocess, "run", return_value=failed) as compiler:
-            with mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(self.stderr):
-                self.assertEqual(prepare.main(), 2)
+        with mock.patch.object(prepare.subprocess, "run", return_value=failed) as compiler, \
+                mock.patch.object(sys, "argv", argv), contextlib.redirect_stderr(self.stderr):
+            self.assertEqual(prepare.main(), 2)
         compiler.assert_called_once()
         command = compiler.call_args.args[0]
         self.assertIn("-DNON_MATCHING", command)

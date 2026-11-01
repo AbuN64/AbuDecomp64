@@ -78,7 +78,7 @@ class PortDirArgument(unittest.TestCase):
         return subprocess.run(
             [sys.executable, "-I", str(ROOT / "charged.py"), "--manifest", str(self.path / "manifest/input.json"),
              "--source", str(self.path / "source"), "--ns-per-entry", "4702.01", "--output", str(self.path / "out"),
-             *port_dir], capture_output=True, text=True, env=env)
+             *port_dir], capture_output=True, text=True, env=env, check=False)
 
     def test_the_given_dir_supplies_sched_glue(self):
         facts = self.path / "facts"

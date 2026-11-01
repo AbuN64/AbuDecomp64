@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", required=True)
 parser.add_argument("--work", type=pathlib.Path, required=True)
@@ -106,7 +107,7 @@ class TraceTests(unittest.TestCase):
         exe = self.path / "check"
         subprocess.run([args.compiler, *flags, "-no-pie", str(main_obj), *objects,
                         "-ldl", "-lpthread", "-o", str(exe)], check=True, capture_output=True, text=True)
-        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr.splitlines(), [
             "boot-shim-bind: host_shim host_shim shimmed shimmed_alias",
@@ -192,7 +193,7 @@ int main(void) { n64c_trace_init(); return real_main(); }
         subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-ldl", "-lpthread", "-o", str(exe)],
                        check=True, capture_output=True, text=True)
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5,
-                                env={"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(self.path / "lockstep")})
+                                env={"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(self.path / "lockstep")}, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("boot-lockstep:", result.stderr)
         points = [json.loads(line) for line in (self.path / "lockstep/lockstep.jsonl").read_text().splitlines()]
@@ -225,7 +226,7 @@ int main(void) { n64c_trace_init(); return real_main(); }
         subprocess.run([args.compiler, "-m32", "-no-pie", *objects, "-lpthread", "-o", str(exe)],
                        check=True, capture_output=True, text=True)
         env = {"N64C_RUN_ON": "1", "N64C_RUN_ON_HANG": "1", "PATH": "/usr/bin:/bin"}
-        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env)
+        result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
         lines = [line for line in result.stderr.splitlines() if not line.startswith("boot-step: ")]
         self.assertEqual(result.returncode, 78, result.stderr)
         self.assertEqual(result.stdout.split(), ["unlinked=0", "keep=15", "div=0", "spin=0", "after=9"],
@@ -240,7 +241,7 @@ int main(void) { n64c_trace_init(); return real_main(); }
         self.assertIn("boot-diag: end 6 failures (1 missing, 1 stop, 0 code-pointer, 2 fault, 1 layout, 1 hang), "
                       "census 3/4", result.stderr)
         # Without N64C_RUN_ON the same binary stops at the first failure, as the fail-fast walk and the gate need.
-        plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"})
+        plain = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env={"PATH": "/usr/bin:/bin"}, check=False)
         self.assertEqual(plain.returncode, 78)
         self.assertIn("boot-missing: unlinked", plain.stderr)
         self.assertNotIn("boot-diag:", plain.stderr)

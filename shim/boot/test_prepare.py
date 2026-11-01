@@ -2,8 +2,8 @@
 """Exercise real preprocessing, compilation, ABI calls and terminal stops."""
 import argparse
 import contextlib
-import io
 import importlib.util
+import io
 import json
 import os
 import pathlib
@@ -121,8 +121,8 @@ int main(int argc, char **argv) {
     return 0;
 }
 """)
-        self.assertEqual(subprocess.run([exe]).returncode, 0)
-        stopped = subprocess.run([exe, "stop"], capture_output=True, text=True)
+        self.assertEqual(subprocess.run([exe], check=False).returncode, 0)
+        stopped = subprocess.run([exe, "stop"], capture_output=True, text=True, check=False)
         self.assertEqual((stopped.returncode, stopped.stderr), (78, "boot-missing: absent\n"))
 
     def test_data_remains_unresolved(self):
@@ -138,7 +138,7 @@ int read_table(void) { return table[0]; }
         driver = self.path / "main.c"
         driver.write_text("extern int read_table(void); int main(void) { return read_table(); }")
         result = subprocess.run([args.compiler, *self.flags, str(files[0]), str(files[1]),
-            str(driver), "-o", str(self.path / "invalid")], capture_output=True, text=True)
+            str(driver), "-o", str(self.path / "invalid")], capture_output=True, text=True, check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("table", result.stderr)
 
@@ -182,7 +182,7 @@ int read_table(void) { return table[0]; }
         self.assertIn("return 6", files_b[0].read_text(), "a changed header misses the cache")
 
     def test_native_varargs(self):
-        files, data = self.generate("""
+        files, _data = self.generate("""
 #include <stdarg.h>
 double sum(int count, ...) {
     va_list ap;
@@ -198,7 +198,7 @@ double sum(int count, ...) {
 extern double sum(int count, ...);
 int main(void) { return sum(2, 3.25, 7) != 10.25; }
 """)
-        self.assertEqual(subprocess.run([exe]).returncode, 0)
+        self.assertEqual(subprocess.run([exe], check=False).returncode, 0)
 
 
 class ObjectCacheTests(unittest.TestCase):
@@ -301,7 +301,7 @@ class ObjectCacheTests(unittest.TestCase):
         link = self.path / "link"
         link.symlink_to(real)
         trees = [link / "a", link / "b"]
-        first, second = self.gcno_restored(trees)
+        _first, second = self.gcno_restored(trees)
         self.assertNotEqual(os.path.realpath(trees[1]), str(trees[1]))
         self.assertFalse(second[0])
         self.assertEqual(second[1], self.gcno_expect(trees[1]))
@@ -313,7 +313,7 @@ class ObjectCacheTests(unittest.TestCase):
         memo = self.path / "cache" / "digests.memo"
         self.unit("a")
         memo.write_text("not json")  # a restore that read the memo would start from an empty one and rewrite it
-        build, text, ran = self.unit("a")
+        _build, text, ran = self.unit("a")
         self.assertEqual((text, ran), ("1", False))
         self.assertEqual(memo.read_text(), "not json")
         header = self.path / "src" / "h.h"
@@ -329,7 +329,7 @@ class ObjectCacheTests(unittest.TestCase):
         spec.loader.exec_module(module)
         value = [1, ["a b", "caf\u00e9 \"q\" \\ \n", "/x/y.h"], ["0f" * 32], ["/usr/bin/cc", 123, 456789], None, []]
         self.assertEqual(module.dumps(value), json.dumps(value))
-        build, text, ran = self.unit("a")
+        _build, text, ran = self.unit("a")
         manifest = next((self.path / "cache").glob("??/*.json"))
         entries = module.load_manifest(manifest)[0]
         self.assertTrue(manifest.read_bytes().startswith(module.MAGIC))
@@ -338,7 +338,7 @@ class ObjectCacheTests(unittest.TestCase):
         for entry in old:
             del entry["sigs"]
         manifest.write_text(json.dumps(old))
-        build, text, ran = self.unit("a")
+        _build, text, ran = self.unit("a")
         self.assertEqual((text, ran), ("1", False))
         self.assertTrue(manifest.read_bytes().startswith(module.MAGIC))
         self.assertIn("sigs", module.load_manifest(manifest)[0][0])

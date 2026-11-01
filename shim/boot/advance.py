@@ -22,10 +22,11 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
-import closure  # noqa: E402
-import needs as needsfeed  # noqa: E402
+import closure
+import needs as needsfeed
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+import portdir
 
 
 def next_unit(d, symbol, facts):
@@ -89,7 +90,7 @@ def boot(binary, rom, work, run_on=False, seconds=120):
     # -k: the boot catches SIGTERM (SDL/LUS handlers) and a hung boot kept running past it, stalling the walk.
     r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), "--no-dialog", "--user-dir", str(work / "user"),
                         "--rom", str(rom), "--capture", str(picture), "--retrace", "180", "--fb", "284x222",
-                        "--window", "320x240"], env=env, capture_output=True, text=True)
+                        "--window", "320x240"], env=env, capture_output=True, text=True, check=False)
     (work / "boot.log").write_text(r.stderr)
     lines = [line for line in r.stderr.splitlines() if line.startswith("boot-")]
     stops = [line for line in lines if re.fullmatch(r"boot-missing: \S+", line)]
@@ -121,7 +122,7 @@ def main():
                             "--build", str(args.build), "--source", str(args.source), "--work", str(args.work),
                             "--manifest", str(args.manifest), "--shim-bindings", str(args.shim_bindings),
                             "--jobs", str(args.jobs), *(["--worklist", str(args.worklist)] if args.worklist else [])],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         (args.work / "advance-closure.log").write_text(c.stdout + c.stderr)
         if c.returncode != 0 or "closure: links" not in c.stdout.splitlines():
             print("halt: closure did not link after", why_unit, c.stdout.strip().splitlines()[-1:], flush=True)
@@ -161,7 +162,7 @@ def main():
                     d = trial
                     moved.append(sym)
                 continue
-            unit, why = next_unit(d, sym, facts)
+            unit, _why = next_unit(d, sym, facts)
             if unit:
                 del d["stops"][sym]
                 unit in d["sources"] or d["sources"].append(unit)

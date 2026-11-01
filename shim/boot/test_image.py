@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", required=True)
 parser.add_argument("--work", type=pathlib.Path, required=True)
@@ -426,7 +427,7 @@ class ImageTests(unittest.TestCase):
         if args.m32:
             command.insert(1, "-m32")
         subprocess.run(command, check=True, capture_output=True, text=True)
-        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
+        result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 78)
         self.assertEqual(result.stdout.splitlines(),
                          ["1000 0 24", "11223344 4 1", "boot-missing: absent"])

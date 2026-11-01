@@ -16,14 +16,14 @@ class RefusalCacheTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = pathlib.Path(temporary.name)
         self.base = self.root / "unit"
-        self.opts = dict(objcache=str(self.root / "cache"), root=str(self.root), maps=[],
-                         outs=[str(self.base) + ".o", str(self.base) + ".failed"], drops=[],
-                         base=str(self.base), depfile=str(self.root / "unit.d"))
+        self.opts = {"objcache": str(self.root / "cache"), "root": str(self.root), "maps": [],
+                         "outs": [str(self.base) + ".o", str(self.base) + ".failed"], "drops": [],
+                         "base": str(self.base), "depfile": str(self.root / "unit.d")}
         self.cache = unitstep.ObjectCache(self.opts, [[sys.executable, "-c", "pass"]])
 
     def test_old_zero_dependency_refusal_is_not_restored(self):
         # Real failure shape: syntax checking stopped before a depfile was populated.
-        self.cache.write([dict(deps=[], sigs=[], files=[b"", b"shared.h:181 duplicate member team\n"])])
+        self.cache.write([{"deps": [], "sigs": [], "files": [b"", b"shared.h:181 duplicate member team\n"]}])
         self.assertFalse(self.cache.restore())
         self.assertFalse(pathlib.Path(str(self.base) + ".failed").exists())
 

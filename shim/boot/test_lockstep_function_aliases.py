@@ -1,8 +1,8 @@
 import importlib.util
-from pathlib import Path
 import unittest
-from unittest.mock import patch
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location("lockstep",Path(__file__).with_name("lockstep.py"))
 ls=importlib.util.module_from_spec(spec);spec.loader.exec_module(ls)

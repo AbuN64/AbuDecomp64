@@ -39,8 +39,9 @@ import re
 import struct
 import subprocess
 import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+import portdir
 
 sys.dont_write_bytecode = True
 PAGE = 4096

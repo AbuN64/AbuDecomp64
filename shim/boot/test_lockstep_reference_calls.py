@@ -1,10 +1,10 @@
 """Reference instability must never suppress unrelated stable call differences."""
 import importlib.util
 import json
-from pathlib import Path
 import struct
 import tempfile
 import unittest
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('lockstep', Path(__file__).with_name('lockstep.py'))
 ls = importlib.util.module_from_spec(spec)
@@ -12,8 +12,8 @@ spec.loader.exec_module(ls)
 
 
 def call(a, sp=0x80003f00, f12=0, f14=0):
-    return dict(a=[f'{v:08x}' for v in a], sp=f'{sp:08x}',
-                f12=f'{f12:016x}', f14=f'{f14:016x}')
+    return {'a': [f'{v:08x}' for v in a], 'sp': f'{sp:08x}',
+                'f12': f'{f12:016x}', 'f14': f'{f14:016x}'}
 
 
 class ReferenceCallTests(unittest.TestCase):
@@ -36,8 +36,8 @@ class ReferenceCallTests(unittest.TestCase):
 
     def test_return_kind_and_observation_coverage(self):
         a = call([1, 0, 0, 0])
-        left = dict(r=['11223344', '55667788'], f0='000000003f800000')
-        right = dict(r=['11223344', '55667789'], f0='0000000040000000')
+        left = {'r': ['11223344', '55667788'], 'f0': '000000003f800000'}
+        right = {'r': ['11223344', '55667789'], 'f0': '0000000040000000'}
         for kind in ('int64', 'float', 'double'):
             self.assertEqual(set(ls.reference_call_changes([], kind, a, a, left, right)), {'return'})
         for kind in ('void', 'int32', None):
@@ -58,7 +58,7 @@ class ReferenceCallTests(unittest.TestCase):
                 directory.mkdir()
                 original = name != 'port'
                 identity = {'fn': 'fixture'} if original else {'order': 1}
-                data = [dict(k='meta', ram=4096, bytes='canonical-be' if original else 'native'),
+                data = [{'k': 'meta', 'ram': 4096, 'bytes': 'canonical-be' if original else 'native'},
                         dict(k='hit', pages=[[0, f'{h:016x}']], **identity),
                         dict(k='call', i=0, thr=1, **identity, **call(values))]
                 (directory / 'lockstep.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in data))

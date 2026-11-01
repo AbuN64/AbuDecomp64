@@ -21,7 +21,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from digests import Digests  # noqa: E402
+from digests import Digests
 
 VERSION = 1
 MAGIC = b"RWOC1\n"  # a manifest of this format starts with it; anything else is the JSON of before
@@ -244,6 +244,7 @@ def run(command):
         sys.dont_write_bytecode = True
         sys.path.insert(0, here)
         import io
+
         import prepare
         err = io.StringIO()
         saved = sys.argv, sys.stderr
@@ -255,7 +256,7 @@ def run(command):
         finally:
             sys.argv, sys.stderr = saved
         return subprocess.CompletedProcess(command, code or 0, "", err.getvalue())
-    return subprocess.run(command, capture_output=True, text=True)
+    return subprocess.run(command, capture_output=True, text=True, check=False)
 
 
 def parse(argv):

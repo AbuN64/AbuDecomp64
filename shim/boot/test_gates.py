@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 import pathlib
-import re
 import shutil
 import sys
 import tempfile
@@ -9,7 +8,7 @@ import unittest
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.dont_write_bytecode = True
-import gates  # noqa: E402
+import gates
 
 SAMPLE = '''# 1 "src/A/a.CPP"
 typedef unsigned long long u64;
@@ -80,7 +79,7 @@ class ScanTests(unittest.TestCase):
         got = sorted((r["class"], r["unit"]) for r in rows)
         self.assertEqual(got, [("gate-knr-args", "src/A/a.CPP"), ("gate-knr-args", "src/B/b.CPP"),
                                ("gate-knr-extra", "src/A/a.CPP")])
-        self.assertTrue([r for r in rows if r["unit"] == "src/B/b.CPP"][0]["boot"])
+        self.assertTrue(next(r for r in rows if r["unit"] == "src/B/b.CPP")["boot"])
 
 
 DWARF = '''
@@ -243,8 +242,8 @@ class CacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             d = pathlib.Path(d)
             (d / "a.h").write_text("one")
-            (d / "x.d").write_text("x.i: x.c \\\n  %s/a.h\n" % d)
-            self.assertEqual(gates.read_depfile(d / "x.d"), ["%s/a.h" % d, "x.c"])
+            (d / "x.d").write_text(f'x.i: x.c \\\n  {d!s}/a.h\n')
+            self.assertEqual(gates.read_depfile(d / "x.d"), [f'{d!s}/a.h', "x.c"])
             state = {str(d / "a.h"): gates.file_state(str(d / "a.h"))}
             self.assertTrue(gates.deps_unchanged(state))
             (d / "a.h").write_text("two")

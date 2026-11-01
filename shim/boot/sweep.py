@@ -28,9 +28,10 @@ import shutil
 import subprocess
 import sys
 import threading
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
-import srcfiles  # noqa: E402
+import portdir
+import srcfiles
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True

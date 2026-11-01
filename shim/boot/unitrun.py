@@ -6,6 +6,6 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import unitstep  # noqa: E402
+import unitstep
 
 raise SystemExit(unitstep.unit(sys.argv[1:]))

@@ -8,8 +8,8 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import gates  # noqa: E402
-import srcfiles  # noqa: E402
+import gates
+import srcfiles
 
 
 class SourceFilesTest(unittest.TestCase):
@@ -53,7 +53,7 @@ class SourceFilesTest(unittest.TestCase):
             'file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/units.txt" "${listing}\\n")\n'
         )
         build = self.root / "build"
-        result = subprocess.run(["cmake", "-S", str(self.root), "-B", str(build)], capture_output=True, text=True)
+        result = subprocess.run(["cmake", "-S", str(self.root), "-B", str(build)], capture_output=True, text=True, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         found = (build / "units.txt").read_text().splitlines()
         expected = [str(p) for p in srcfiles.sources(self.root)]

@@ -15,9 +15,11 @@ import pathlib
 import re
 import subprocess
 import sys
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import hostabi  # noqa: E402
-import portdir  # noqa: E402
+import hostabi
+import portdir
+
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
@@ -86,7 +88,7 @@ def symbols(paths):
     result = {str(p): (set(), set()) for p in paths}
     for start in range(0, len(paths), 400):
         r = subprocess.run([hostabi.NM, "-g", "-A", "-P", *map(str, paths[start:start + 400])],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         for line in r.stdout.splitlines():
             m = NM_LINE.match(line)
             if m and m.group(1) in result:
@@ -101,7 +103,7 @@ def library_names(libs):
     """Global names the platform libraries define: the linker resolves them there, so they are never routed."""
     names = set()
     for lib in libs:
-        r = subprocess.run([hostabi.NM, "-g", "--defined-only", "-P", lib], capture_output=True, text=True)
+        r = subprocess.run([hostabi.NM, "-g", "--defined-only", "-P", lib], capture_output=True, text=True, check=False)
         for line in r.stdout.splitlines():
             fields = line.split()
             if len(fields) >= 2 and not line.endswith(":"):
@@ -148,7 +150,7 @@ def autogen(argv):
     image_objects = lines(args.boot / "image-objects.txt")
     syms = symbols([pathlib.Path(p) for p in boot_objects + members + image_objects])
     have = set(d["data"]) | set(d["bindings"]) | set(d["stops"]) | set(d.get("rom_offsets", {}))
-    have |= {hostabi.strip(m.group(1)) for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.M)}
+    have |= {hostabi.strip(m.group(1)) for m in re.finditer(r"^\s*(\w+)\s*=", (args.boot / "image.ld").read_text(), re.MULTILINE)}
     have |= set(json.loads((args.boot / "image.json").read_text()).get("function_stops", []))
     have |= library_names(args.libs)
     seeds = {d["entry"], *d["bindings"].values()}
@@ -227,7 +229,7 @@ def autogen(argv):
     report.update(pulled=len(pulled), members=len(members), refused=deny)
     args.output.with_suffix(".report.json").write_text(json.dumps(report, indent=1, sort_keys=True) + "\n")
     print(f"link-all: {len(pulled)}/{len(members)} archive units pulled, {len(report['routed'])} names routed "
-          f"({sum(1 for v in report['routed'].values() if v.startswith('stop') or v.startswith('frontier'))} stops), "
+          f"({sum(1 for v in report['routed'].values() if v.startswith(('stop', 'frontier')))} stops), "
           f"{len(report['needs'])} data needs, {len(report['skipped'])} unrouted, {len(deny)} units refused")
     return 0
 

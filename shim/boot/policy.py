@@ -7,7 +7,7 @@ import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+import portdir
 
 HERE = pathlib.Path(__file__).resolve().parent
 SDK_LO, SDK_HI = 0x802AE000, 0x802C8000
@@ -57,8 +57,8 @@ def sdk_address(symbol, addresses, game=frozenset()):
 
 def functions(text):
     # Inspect declarations only. No original implementation is emitted.
-    text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-    bodies = re.findall(r"^[A-Za-z_][^;{}=\n]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{", text, re.M)
+    text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.DOTALL)
+    bodies = re.findall(r"^[A-Za-z_][^;{}=\n]*?\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*\{", text, re.MULTILINE)
     asm = re.findall(r"INCLUDE_ASM\([^)]*,\s*([A-Za-z_]\w*)\s*\)", text)
     return sorted(set(bodies + asm))
 

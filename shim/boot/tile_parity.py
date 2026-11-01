@@ -63,7 +63,7 @@ def run(binary, args, rom, seconds, picture):
     argv = [a.format(rom=rom, picture=picture, user=pathlib.Path(picture).parent / "user") for a in args]
     env = {**os.environ, "SDL_VIDEODRIVER": "offscreen", "SDL_AUDIODRIVER": "dummy", "N64C_RUN_ON": "1",
            "N64C_RUN_ON_LIMIT": str(max(seconds - 15, 10))}
-    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), *argv], env=env, capture_output=True, text=True)
+    r = subprocess.run(["timeout", "-k", "10", str(seconds), str(binary), *argv], env=env, capture_output=True, text=True, check=False)
     return census(r.stderr), r.returncode
 
 

@@ -44,9 +44,10 @@ import subprocess
 import sys
 import tempfile
 import time
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
-import srcfiles  # noqa: E402
+import portdir
+import srcfiles
 
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -92,8 +93,7 @@ def boot_units(source, manifest, adapter=HERE):
         project = load_policy(adapter).load_project(filtered, source)
         units = set(project.get("sources", []))
         image = subprocess.run([sys.executable, "-I", str(adapter / "image.py"), "select", "--source", str(source),
-                                "--manifest", str(filtered)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               text=True)
+                                "--manifest", str(filtered)], capture_output=True, text=True, check=False)
     if image.returncode == 0:
         units |= {u for u in re.split(r"[;\s]+", image.stdout.strip()) if u}
     return {u for u in units if (source / u).exists()}
@@ -108,12 +108,11 @@ def preprocess_flags(source, adapter=HERE):
 def run(command, timeout=TIMEOUT):
     """(returncode, stdout, stderr); a timeout is returncode -9."""
     try:
-        done = subprocess.run(["nice", "-n", "10"] + command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              text=True, errors="replace", timeout=timeout,
-                              env=dict(os.environ, LC_ALL="C"))
+        done = subprocess.run(["nice", "-n", "10"] + command, capture_output=True, text=True, errors="replace", timeout=timeout,
+                              env=dict(os.environ, LC_ALL="C"), check=False)
         return done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired:
-        return -9, "", "timeout after %ds" % timeout
+        return -9, "", f'timeout after {timeout:d}s'
 
 
 def read_depfile(path):
@@ -172,7 +171,7 @@ def cache_store(ctx, unit, deps, result):
         return
     target = cache_file(ctx, unit)
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".%d.tmp" % os.getpid())
+    tmp = target.with_name(target.name + f'.{os.getpid():d}.tmp')
     tmp.write_text(json.dumps({"fp": unit_fingerprint(ctx, unit), "deps": state, "result": result}))
     tmp.replace(target)
 def prepare_unit(unit, source, work, adapter=HERE, build=None, deps=None, exact=True):
@@ -233,7 +232,7 @@ QUOTED = re.compile(r"'([^']+)'")
 def relative(path, source):
     path = str(path)
     root = str(source).rstrip("/") + "/"
-    return path[len(root):] if path.startswith(root) else path
+    return path.removeprefix(root)
 
 
 def parse_warnings(text, source):
@@ -369,7 +368,7 @@ def scan_text(text, unit_is_sdk=False):
     for head, body, file, line in top_level(text):
         h = strip_attributes(head).strip()
         if body is None:
-            td = re.match(r"typedef\s+(.*?)(\w+)\s*$", h, re.S)
+            td = re.match(r"typedef\s+(.*?)(\w+)\s*$", h, re.DOTALL)
             if td:
                 kind = td.group(1)
                 words = kind.split()
@@ -454,13 +453,12 @@ def knr_rows(scans, source, pin, boot):
                 options = extern_defs.get(callee, set())
                 if len({n for n, _ in options}) != 1:
                     continue
-                n, where = sorted(options)[0]
+                n, where = min(options)
             if n < 0 or n == nargs:
                 continue
             cls = "gate-knr-args" if nargs < n else "gate-knr-extra"
-            rows.append(row(cls, callee, unit, "%s:%d" % (relative(file, source), line), pin, unit in boot,
-                            "%s calls %s with %d argument(s), the definition in %s takes %d" % (
-                                caller, callee, nargs, where, n)))
+            rows.append(row(cls, callee, unit, f'{relative(file, source)!s}:{line:d}', pin, unit in boot,
+                            f'{caller!s} calls {callee!s} with {nargs:d} argument(s), the definition in {where!s} takes {n:d}'))
     return rows
 
 
@@ -559,7 +557,7 @@ def dwarf_structs(dump):
             continue
         kind = "struct" if die["tag"] == "DW_TAG_structure_type" else "union"
         name = die["attrs"].get("DW_AT_name")
-        expr = "%s %s" % (kind, name) if name else typedef_of.get(off)
+        expr = f'{kind!s} {name!s}' if name else typedef_of.get(off)
         if not expr:
             continue
         members, wide, bitfields = [], 0, 0
@@ -620,10 +618,10 @@ def probe_source(structs):
     sizeof, alignof, then the offset of every named non-bit-field member."""
     lines = ["\n"]
     for i, s in enumerate(structs):
-        facts = ["sizeof(%s)" % s["expr"], "__alignof__(%s)" % s["expr"]]
-        facts += ["__builtin_offsetof(%s, %s)" % (s["expr"], m["name"]) for m in s["members"] if not m["bit"]]
+        facts = ['sizeof({!s})'.format(s["expr"]), '__alignof__({!s})'.format(s["expr"])]
+        facts += ['__builtin_offsetof({!s}, {!s})'.format(s["expr"], m["name"]) for m in s["members"] if not m["bit"]]
         for j, fact in enumerate(facts):
-            lines.append("unsigned __gp%d_%d = (unsigned)(%s) + 1;\n" % (i, j, fact))
+            lines.append(f'unsigned __gp{i:d}_{j:d} = (unsigned)({fact!s}) + 1;\n')
     return "".join(lines)
 
 
@@ -666,7 +664,7 @@ def probe_unit(ipath, structs, compilers, scratch):
         batches = [list(range(len(structs)))]
         while batches:
             batch = batches.pop()
-            src = pathlib.Path(scratch) / ("probe_%s_%d.i" % (label, serial))
+            src = pathlib.Path(scratch) / (f'probe_{label!s}_{serial:d}.i')
             serial += 1
             src.write_text(base + "\n" + probe_source([structs[i] for i in batch]))
             code, out, _ = run(argv + ["-w", "-O0", "-S", "-x", "cpp-output", str(src), "-o", "-"])
@@ -719,8 +717,7 @@ def subword_rows(source, version, pin):
                 files = sorted(users[view])
                 unit = next((f for f in files if f.startswith("src/")), files[0])
                 rows.append(row("gate-subword", view, unit, files[0], pin, None,
-                                "%s (%s) views +%d of %s (%s)" % (view, "/".join(sorted(vtypes)), a & 3, container,
-                                                                  "/".join(sorted(ctypes)))))
+                                '{!s} ({!s}) views +{:d} of {!s} ({!s})'.format(view, "/".join(sorted(vtypes)), a & 3, container, "/".join(sorted(ctypes)))))
     return rows
 
 
@@ -732,7 +729,7 @@ def row(cls, symbol, unit, file_line, pin, boot, error):
 
 
 def key(r):
-    return "%s\t%s\t%s" % (r["class"], r["unit"], r["symbol"])
+    return '{!s}\t{!s}\t{!s}'.format(r["class"], r["unit"], r["symbol"])
 
 
 def read_baseline(path):
@@ -755,18 +752,14 @@ def render_classes(rows, meta):
     by = collections.defaultdict(list)
     for r in rows:
         by[r["class"]].append(r)
-    lines = ["# GATES-1 classes (%s)" % meta.get("when", ""), "",
-             "RW %s, pin %s; %d units swept, %d boot units. One needs.jsonl row per site; folder = first path "
-             "component under src/. A subword row carries no boot flag (symbol-level)." % (
-                 meta.get("rw", "?"), meta.get("pin", "?"), meta.get("units", 0), meta.get("boot_units", 0)), "",
+    lines = ['# GATES-1 classes ({!s})'.format(meta.get("when", "")), "",
+             'RW {!s}, pin {!s}; {:d} units swept, {:d} boot units. One needs.jsonl row per site; folder = first path component under src/. A subword row carries no boot flag (symbol-level).'.format(meta.get("rw", "?"), meta.get("pin", "?"), meta.get("units", 0), meta.get("boot_units", 0)), "",
              "| class | sites | boot sites | boot units | units | folder split (sites) |", "|---|---|---|---|---|---|"]
     for cls in sorted(by):
         rs = by[cls]
         split = collections.Counter(r["unit"].split("/")[1] if r["unit"].startswith("src/") else r["unit"].split("/")[0]
                                     for r in rs)
-        lines.append("| %s | %d | %d | %d | %d | %s |" % (
-            cls, len(rs), sum(1 for r in rs if r["boot"]), len({r["unit"] for r in rs if r["boot"]}),
-            len({r["unit"] for r in rs}), ", ".join("%s %d" % kv for kv in split.most_common())))
+        lines.append('| {!s} | {:d} | {:d} | {:d} | {:d} | {!s} |'.format(cls, len(rs), sum(1 for r in rs if r["boot"]), len({r["unit"] for r in rs if r["boot"]}), len({r["unit"] for r in rs}), ", ".join('{!s} {:d}'.format(*(kv)) for kv in split.most_common())))
     return "\n".join(lines) + "\n"
 
 
@@ -882,7 +875,7 @@ def layout_rows(boot_scans, pin, ctx, pool):
             live = {pkey(u, s) for u, ss in by_unit.items() for s in ss}
             saved = {k: v for k, v in saved.items() if k in live}
         store.write_text(json.dumps(saved))
-    print("layout: %d structs from cache, %d probed" % (len(cached), len(fresh)), file=sys.stderr, flush=True)
+    print(f'layout: {len(cached):d} structs from cache, {len(fresh):d} probed', file=sys.stderr, flush=True)
     for unit, structs in sorted(by_unit.items()):
         for s in structs:
             res = fresh.get((unit, signature(s))) or cached[(unit, signature(s))]
@@ -897,18 +890,16 @@ def layout_rows(boot_scans, pin, ctx, pool):
             evidence.append(rec)
             if s["bitfields"]:
                 rows.append(row("gate-layout-bitfield", s["expr"], unit, unit, pin, True,
-                                "%d bit-field member(s); size host %s / mips %s; bit order differs by endianness" % (
-                                    s["bitfields"], rec["host_size"], rec["mips_size"])))
+                                '{:d} bit-field member(s); size host {!s} / mips {!s}; bit order differs by endianness'.format(s["bitfields"], rec["host_size"], rec["mips_size"])))
             if rec["host_vs_mips"]:
-                shown = ", ".join("%s host %s mips %s" % d for d in rec["host_vs_mips"][:6])
+                shown = ", ".join('{!s} host {!s} mips {!s}'.format(*(d)) for d in rec["host_vs_mips"][:6])
                 rows.append(row("gate-layout", s["expr"], unit, unit, pin, True,
-                                "layout differs (%d facts, %d 64-bit members): %s" % (
-                                    len(rec["host_vs_mips"]), s["wide"], shown)))
+                                'layout differs ({:d} facts, {:d} 64-bit members): {!s}'.format(len(rec["host_vs_mips"]), s["wide"], shown)))
     for expr, sigs in sorted(layouts.items()):
         if len(sigs) > 1:
-            unit = first[sorted(sigs)[0]][0]
+            unit = first[min(sigs)][0]
             rows.append(row("gate-struct-conflict", expr, unit, unit, pin, True,
-                            "%d layouts across %d boot units" % (len(sigs), len({u for s in sigs for u in users[s]}))))
+                            f'{len(sigs):d} layouts across {len({u for s in sigs for u in users[s]}):d} boot units'))
     return rows, evidence, unprobed
 
 
@@ -952,15 +943,14 @@ def lto_rows(scans, work, pin, jobs, cache=None, ctx=None):
     listing = outdir / "objects.txt"
     listing.write_text("\n".join(objs) + "\n")
     if len(objs) < len(todo):
-        print("lto: %d of %d units reached the link (%d dropped by prepare/compile)" % (
-            len(objs), len(todo), len(todo) - len(objs)), file=sys.stderr, flush=True)
+        print(f'lto: {len(objs):d} of {len(todo):d} units reached the link ({len(todo) - len(objs):d} dropped by prepare/compile)', file=sys.stderr, flush=True)
     memo = pathlib.Path(cache) / "lto.json" if cache else None
     link_key = hashlib.sha1(json.dumps([[o, file_state(o + ".sha")[2:]] for o in objs]).encode()).hexdigest()
     if memo and memo.exists():
         old = json.loads(memo.read_text())
         if old["key"] == link_key:
             return [tuple(r) for r in old["rows"]], old["code"], old["err"]
-    code, _, err = run(["gcc", "-m32", "-flto=%d" % jobs, "-flinker-output=nolto-rel", "-r", "-nostdlib",
+    code, _, err = run(["gcc", "-m32", f'-flto={jobs:d}', "-flinker-output=nolto-rel", "-r", "-nostdlib",
                         "-Wlto-type-mismatch", "@" + str(listing), "-o", str(outdir / "linked.o")], timeout=3600)
     rows, lines = [], err.splitlines()
     for i, line in enumerate(lines):
@@ -1003,16 +993,16 @@ def sweep(args):
             scans[res["unit"]] = res
             hits += bool(res.get("cached"))
             if i % 500 == 0:
-                print("scan %d/%d" % (i, len(units)), file=sys.stderr, flush=True)
+                print(f'scan {i:d}/{len(units):d}', file=sys.stderr, flush=True)
         for unit, res in sorted(scans.items()):
             if res["prepare_error"]:
                 rows.append(row("gate-prepare-failed", unit, unit, unit, pin, res["boot"], res["prepare_error"]))
             for cls, symbol, file, line, message in res["warnings"]:
-                rows.append(row(cls, symbol, unit, "%s:%d" % (file, line), pin, res["boot"], message))
+                rows.append(row(cls, symbol, unit, f'{file!s}:{line:d}', pin, res["boot"], message))
             for name, index, param, file, line in res["u64"]:
-                rows.append(row("gate-u64-param", name, unit, "%s:%d" % (relative(file, source), line), pin,
-                                res["boot"], "parameter %d `%s` is a 64-bit integer in non-SDK code" % (index, param)))
-        print("scan: %d of %d units from cache, %d rescanned" % (hits, len(units), len(units) - hits),
+                rows.append(row("gate-u64-param", name, unit, f'{relative(file, source)!s}:{line:d}', pin,
+                                res["boot"], f'parameter {index:d} `{param!s}` is a 64-bit integer in non-SDK code'))
+        print(f'scan: {hits:d} of {len(units):d} units from cache, {len(units) - hits:d} rescanned',
               file=sys.stderr, flush=True)
         rows += knr_rows({u: {"defs": r["defs"], "calls": r["calls"]} for u, r in scans.items()}, source, pin, boot)
         rows += subword_rows(source, version, pin)
@@ -1029,19 +1019,19 @@ def sweep(args):
             names.update(c for c in line.split("\t")[2:4] if c)
         listed = sorted(u for u, r in scans.items() if names & set(r["defs"]))
         pathlib.Path(args.ubsan_units).write_text("".join(u + "\n" for u in listed))
-        print("ubsan units: %d of %d define a boot-trace function" % (len(listed), len(scans)), file=sys.stderr)
+        print(f'ubsan units: {len(listed):d} of {len(scans):d} define a boot-trace function', file=sys.stderr)
     if args.lto:
-        lrows, code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"], ctx)
+        lrows, _code, err = lto_rows(scans, work, pin, args.jobs, ctx["cache"], ctx)
         for symbol, file, line, message in lrows:
             f = relative(file, source)
-            rows.append(row("gate-lto-type", symbol, f, "%s:%d" % (f, line), pin, f in boot, message))
+            rows.append(row("gate-lto-type", symbol, f, f'{f!s}:{line:d}', pin, f in boot, message))
         (out / "lto.log").write_text(err)
     rows.sort(key=lambda r: (r["class"], r["unit"], r["symbol"], r["file_line"]))
     (out / "needs.jsonl").write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
     meta = {"when": time.strftime("%Y-%m-%d %H:%M"), "pin": pin, "units": len(units),
             "boot_units": len(boot & set(units)), "rw": subprocess.run(
                 ["git", "-C", str(source), "rev-parse", "--short", "HEAD"], stdout=subprocess.PIPE,
-                text=True).stdout.strip()}
+                text=True, check=False).stdout.strip()}
     (out / "meta.json").write_text(json.dumps(meta) + "\n")
     if args.classes_md:
         pathlib.Path(args.classes_md).write_text(render_classes(rows, meta))
@@ -1080,17 +1070,17 @@ def main(argv=None):
             ap.error("--source and --out are required")
         rows = sweep(args)
     for cls, n in sorted(collections.Counter(r["class"] for r in rows).items()):
-        print("%6d  %s" % (n, cls))
+        print(f'{n:6d}  {cls!s}')
     if args.update_baseline:
         keys = sorted({key(r) for r in rows if r["class"] not in INFORMATIONAL})
         args.baseline.write_text("".join(k + "\n" for k in keys))
-        print("baseline: %d sites -> %s" % (len(keys), args.baseline))
+        print(f'baseline: {len(keys):d} sites -> {args.baseline!s}')
     if args.check:
         fresh = new_sites(rows, read_baseline(args.baseline))
         for k in fresh:
             print("NEW SITE\t" + k, file=sys.stderr)
         if fresh:
-            print("gates: %d new site(s) not in %s" % (len(fresh), args.baseline), file=sys.stderr)
+            print(f'gates: {len(fresh):d} new site(s) not in {args.baseline!s}', file=sys.stderr)
             return 1
     return 0
 

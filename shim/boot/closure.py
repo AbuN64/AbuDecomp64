@@ -29,12 +29,14 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(HERE))
-import hostabi  # noqa: E402
-import needs as needsfeed  # noqa: E402
-import policy  # noqa: E402
-import srcfiles  # noqa: E402
+import hostabi
+import needs as needsfeed
+import policy
+import srcfiles
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir  # noqa: E402
+import portdir
+
 NAMED = re.compile(r"D_auto_(8[0-9A-F]{7})")
 
 
@@ -65,10 +67,10 @@ class Facts:
             for name in wanted.intersection(re.findall(r"\w+", text)):
                 self.pool[name].append(unit)
     def definers(self, sym, functions_only=False):
-        fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;{]*(?:\)\s*\{|$)", re.M)  # a one-line body counts
+        fn = re.compile(r"^[A-Za-z_][^;\n=]*\b" + re.escape(sym) + r"\s*\([^;{]*(?:\)\s*\{|$)", re.MULTILINE)  # a one-line body counts
         asm = re.compile(r"INCLUDE_ASM\([^)]*\b" + re.escape(sym) + r"\s*\)")
-        data = re.compile(r"^(?!extern)[A-Za-z_][^(\n]*\b" + re.escape(sym) + r"\b\s*(\[[^\]]*\])*\s*(=|;)", re.M)
-        units = self.pool[sym] if sym in self.pool else self.text
+        data = re.compile(r"^(?!extern)[A-Za-z_][^(\n]*\b" + re.escape(sym) + r"\b\s*(\[[^\]]*\])*\s*(=|;)", re.MULTILINE)
+        units = self.pool.get(sym, self.text)
         return [u for u in units if sym in self.text[u] and (fn.search(self.text[u]) or asm.search(self.text[u]) or
                 (not functions_only and data.search(self.text[u])))]
 
@@ -77,8 +79,8 @@ class Facts:
         if "type:data" in self.addrs.get(sym, ("", ""))[1]:
             return True
         declaration = re.compile(r"^[ \t]*(?:extern\s+)?[A-Za-z_][^(\n;]*\b" + re.escape(sym)
-                                 + r"\b\s*(?:\[[^\]]*\]\s*)*(?:=|;)", re.M)
-        units = self.pool[sym] if sym in self.pool else self.text
+                                 + r"\b\s*(?:\[[^\]]*\]\s*)*(?:=|;)", re.MULTILINE)
+        units = self.pool.get(sym, self.text)
         return any(declaration.search(self.text[u]) for u in units)
 
     def function_at(self, address):
@@ -213,10 +215,10 @@ def host_runtime():
     """The compiler-runtime helpers (__udivdi3, __divdi3, ...) the host libgcc.a of the 32-bit link provides. The decomp
     names its libgcc2 functions by their real names, so they are not libultra to bind: the host archive links them."""
     if not _HOST_RUNTIME:
-        path = subprocess.run([hostabi.CC, "-m32", "-print-file-name=libgcc.a"], capture_output=True, text=True).stdout.strip()
+        path = subprocess.run([hostabi.CC, "-m32", "-print-file-name=libgcc.a"], capture_output=True, text=True, check=False).stdout.strip()
         names = set()
         if pathlib.Path(path).is_absolute() and pathlib.Path(path).exists():
-            out = subprocess.run([hostabi.NM, "-g", "--defined-only", path], capture_output=True, text=True).stdout
+            out = subprocess.run([hostabi.NM, "-g", "--defined-only", path], capture_output=True, text=True, check=False).stdout
             names = {hostabi.strip(row.split()[-1]) for row in out.splitlines()
                      if len(row.split()) == 3 and hostabi.strip(row.split()[-1]).startswith("__")}
         _HOST_RUNTIME.append(frozenset(names))
@@ -311,7 +313,7 @@ def undefined_symbols(log):
 
 def refuse(d, deny, log):
     """Record units whose compile failed and drop them from the sources."""
-    for unit in sorted(set(re.findall(r"^FAILED: decomp/(src/\S+?)\.i ", log, re.M))):
+    for unit in sorted(set(re.findall(r"^FAILED: decomp/(src/\S+?)\.i ", log, re.MULTILINE))):
         err = re.search(re.escape(unit) + r":(\d+):\d+: error: (.*)", log)
         deny[unit] = f"{unit}:{err.group(1)} {err.group(2)}" if err else unit + " does not compile"
         if unit in d["sources"]:
@@ -344,7 +346,7 @@ def main():
     for round_ in range(args.rounds):
         with log_path.open("w") as log_file:
             rc = subprocess.run(["cmake", "--build", str(args.build), "-j", str(args.jobs), "--target",
-                                 "ragewars", "--", "-k", "0"], stdout=log_file, stderr=subprocess.STDOUT).returncode
+                                 "ragewars", "--", "-k", "0"], stdout=log_file, stderr=subprocess.STDOUT, check=False).returncode
         log = log_path.read_text(errors="replace")
         d = json.loads(args.manifest.read_text())
         built_manifest = json.dumps(d, sort_keys=True)

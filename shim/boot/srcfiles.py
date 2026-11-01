@@ -22,7 +22,9 @@ def is_header(path):
 def layout(source):
     """The tree's layout: unbake's packaged [layout] (src/, include/, src/sdk/{library}) with the tree's config.toml
     [layout] keys over it."""
-    from unbake import api  # the boot tools run under the decomp venv; CMake's --cmake-patterns does not need it
+    from unbake import (
+        api,  # the boot tools run under the decomp venv; CMake's --cmake-patterns does not need it
+    )
 
     return api.layout(pathlib.Path(source))
 

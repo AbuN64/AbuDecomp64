@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Validate explicit project bindings and emit native link/load inputs."""
 import argparse
-import json
 import pathlib
 import re
 import struct
@@ -9,8 +8,8 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import hostabi  # noqa: E402
-import policy  # noqa: E402
+import hostabi
+import policy
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 # The source's address-named data (D_auto_80XXXXXX): the name states its address, the pinned facts may omit it.
@@ -199,7 +198,7 @@ def descriptor(item, label, unpacked=False):
         return kind, None, WIDTHS[kind]
     text = item.get("fields")
     if not isinstance(text, str):
-        raise ValueError("missing field widths: " + label)
+        raise ValueError("missing field widths: " + label)  # noqa: TRY004 -- missing descriptor fields are invalid values
     widths = [c for c in text if c != " "]
     if not widths or len(widths) > MAX_FIELDS or not all(FIELD_WIDTH.fullmatch(c) for c in widths) or \
             not re.fullmatch(r"[1-8]+( [1-8]+)*", text.strip()):

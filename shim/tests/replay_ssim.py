@@ -86,7 +86,7 @@ def box_resize(img, w, h):
         edges = np.linspace(0, m, n + 1)
         csum = np.concatenate([np.zeros_like(np.take(src, [0], axis)), np.cumsum(src, axis)], axis)
 
-        def at(pos):
+        def at(pos, m=m, csum=csum, axis=axis, src=src):
             i = np.minimum(np.floor(pos).astype(int), m - 1)
             frac = pos - i
             lo = np.take(csum, i, axis)

@@ -8,7 +8,7 @@ import sys
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import policy  # noqa: E402
+import policy
 
 IDENT = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 NS_PER_ENTRY = re.compile(r"[0-9]+(\.[0-9]+)?\Z")

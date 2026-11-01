@@ -5,7 +5,8 @@ from. The profile's configured port is a shared seat: it runs only when the buil
 shim pin) and that provenance equals the project's current main. Both facts come from section `tas.seat`:
   {"stamp": the JSON file beside the executable that states {"repo", "sha", "shim"} (written by whatever builds it),
    "repo": the repo the seat must be built from, "tree": a clone of it, "ref": the ref that is current main,
-   "shim_file": a file of the tree that pins the shim, "shim_pattern": a regex whose group 1 is that pin}.
+   "shim_file": a file of the tree that pins the shim (or the directory holding it, pinned by its tree line),
+   "shim_pattern": a regex whose group 1 is that pin}.
 Everything but `stamp` is the requirement; a profile that names a shared port without it refuses every seat play.
 """
 
@@ -44,7 +45,11 @@ def current(seat: dict[str, Any]) -> dict[str, str]:
             raise DecompError("tas.seat", f"git {' '.join(args)} failed in {tree}: {done.stderr.strip()}")
         return done.stdout
 
-    found = re.search(seat["shim_pattern"], git("show", f"{ref}:{seat['shim_file']}"))
+    where = f"{ref}:{seat['shim_file']}"
+    # a pin file is read; a pinned directory (a shim kept inside the repo) is its tree line `040000 tree <id>\t<path>`
+    is_dir = git("cat-file", "-t", where).strip() == "tree"
+    text = git("ls-tree", ref, "--", seat["shim_file"]) if is_dir else git("show", where)
+    found = re.search(seat["shim_pattern"], text)
     if not found:
         raise DecompError("tas.seat", f"no shim pin matching {seat['shim_pattern']!r} in {ref}:{seat['shim_file']}")
     return {"repo": str(seat["repo"]), "sha": git("rev-parse", ref).strip(), "shim": found.group(1)}

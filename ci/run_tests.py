@@ -42,10 +42,10 @@ class TimedResult(unittest.TextTestResult):
 
 def stand_in_seat(test):
     """What tests/conftest.py's `_stand_in_seat` does for pytest: a play with a stand-in port skips the shared-seat
-    provenance check, and test_tas_seat.py is the one module that runs it. Started here, stopped by the caller."""
+    provenance check; a test module that sets OWNS_SEAT = True runs it. Started here, stopped by the caller."""
     from abu_decomp import tas_seat
 
-    real = type(test).__module__ == "test_tas_seat"
+    real = getattr(sys.modules.get(type(test).__module__), "OWNS_SEAT", False)
     patch = mock.patch.object(tas_seat, "check", tas_seat.check if real else lambda cfg: None)
     patch.start()
     return patch

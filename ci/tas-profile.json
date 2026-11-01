@@ -2,6 +2,7 @@
   "schema_version": 1,
   "name": "tas",
   "tas": {
+    "port": "${home}/rig-state/tas/live/port/ragewars",
     "movies": "${home}/rig-state/tas/movies",
     "runs": "${home}/rig-state/tas/runs",
     "rom": "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",
@@ -97,7 +98,12 @@
       "since": 1793025034
     },
     "seat": {
-      "stamp": "port-provenance.json"
+      "stamp": "port-provenance.json",
+      "repo": "Projects/AbuN64/RageWarsEnhanced",
+      "tree": "${home}/rig-state/tas/live/port-tree",
+      "ref": "main",
+      "shim_file": "shim",
+      "shim_pattern": "tree ([0-9a-f]{40})\\t"
     }
   },
   "tools": {

@@ -9,7 +9,7 @@ const KEYS = [["ArrowUp", "stick up"], ["ArrowDown", "stick down"], ["ArrowLeft"
   ["KeyI", "CUP"], ["KeyK", "CDOWN"], ["KeyJ", "CLEFT"], ["KeyL", "CRIGHT"], ["KeyT", "UP"], ["KeyG", "DOWN"], ["KeyF", "LEFT"], ["KeyH", "RIGHT"]];
 const PAD = [[0, "A"], [1, "B"], [2, "B"], [3, "CUP"], [4, "L"], [5, "R"], [6, "Z"], [7, "Z"], [9, "START"], [12, "UP"], [13, "DOWN"], [14, "LEFT"], [15, "RIGHT"]];
 const STICK = 80, DEADZONE = 0.15, HEARTBEAT_MS = 500;
-const RUN_KINDS = ["run.progress:tas", "run.progress:tas-target", "run.queued", "run.ended"];
+const RUN_KINDS = ["run.progress:tas", "run.progress:tas-target", "run.queued", "run.refused", "run.ended"];
 
 const node = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -89,6 +89,7 @@ export function mount(el, ctx) {
   start.addEventListener("click", async () => {
     const got = await post(ctx, "/api/play", { label: "owner", fps_unlock: true });
     if (!got.id) return void (tag.textContent = got.error || "refused");
+    if (got.refused) return void (tag.textContent = `${got.id} · refused: ${got.refused}`);
     watch(got.id);
   });
   stop.addEventListener("click", () => S.run && post(ctx, "/api/stop", { id: S.run }));
@@ -109,7 +110,7 @@ export function mount(el, ctx) {
   addEventListener("keydown", down); addEventListener("keyup", up); loop();
 
   // live state: run events move the poll and status, feedback.filed adds the row
-  const onRun = ev => { if (live() && ev.fields.run === S.run) { S.status = ev.kind === "run.ended" ? "done" : ev.kind === "run.queued" ? "queued" : "running"; S.poll = ev.fields.poll; refresh(); } };
+  const onRun = ev => { if (live() && ev.fields.run === S.run) { if (ev.kind === "run.refused") return void (tag.textContent = `${S.run} · refused: ${ev.fields.reason}`); S.status = ev.kind === "run.ended" ? "done" : ev.kind === "run.queued" ? "queued" : "running"; S.poll = ev.fields.poll; refresh(); } };
   for (const kind of RUN_KINDS) ctx.on(kind, onRun);
   ctx.on("feedback.filed", async ev => { if (!live()) return; const rec = await ctx.api(`/api/feedback/${ev.fields.feedback}`); if (rec.id) { S.flags.set(rec.id, rec); renderFlags(); } });
   (async () => {

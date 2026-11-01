@@ -5,6 +5,7 @@ import runpy
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -60,12 +61,13 @@ class SeatStandIn(unittest.TestCase):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
         real = tas_seat.check
         other = type("T", (), {"__module__": "test_tas"})()
-        own = type("T", (), {"__module__": "test_tas_seat"})()
-        patch = runner["stand_in_seat"](other)
-        self.assertIsNone(tas_seat.check({}))
-        patch.stop()
-        self.assertIs(tas_seat.check, real)
-        patch = runner["stand_in_seat"](own)
-        self.assertIs(tas_seat.check, real)
-        patch.stop()
-        self.assertIs(tas_seat.check, real)
+        own = type("T", (), {"__module__": "owns_the_seat"})()
+        with mock.patch.dict(sys.modules, {"owns_the_seat": types.SimpleNamespace(OWNS_SEAT=True)}):
+            patch = runner["stand_in_seat"](other)
+            self.assertIsNone(tas_seat.check({}))
+            patch.stop()
+            self.assertIs(tas_seat.check, real)
+            patch = runner["stand_in_seat"](own)
+            self.assertIs(tas_seat.check, real)
+            patch.stop()
+            self.assertIs(tas_seat.check, real)

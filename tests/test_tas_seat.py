@@ -7,6 +7,8 @@ from unittest import mock
 
 from abu_decomp import DecompError, tas, tas_seat
 
+OWNS_SEAT = True  # the runners leave tas_seat.check real for this module
+
 SHA_OLD, SHA_NEW = "a" * 40, "b" * 40
 SHIM_OLD, SHIM_NEW = "1" * 40, "2" * 40
 REQUIRE = {
@@ -20,7 +22,12 @@ REQUIRE = {
 
 
 def git(args, **_):
-    out = {"rev-parse": f"{SHA_NEW}\n", "show": f"dep(shim https://example.test/Shim.git {SHIM_NEW}\n    SUBDIR x)"}
+    out = {
+        "rev-parse": f"{SHA_NEW}\n",
+        "show": f"dep(shim https://example.test/Shim.git {SHIM_NEW}\n    SUBDIR x)",
+        "cat-file": "blob\n",
+        "ls-tree": f"040000 tree {SHIM_NEW}\tshim\n",
+    }
     return subprocess.CompletedProcess(args, 0, out[args[3]], "")
 
 
@@ -64,6 +71,20 @@ class SeatTests(unittest.TestCase):
     def test_a_seat_without_a_stamp_is_refused_as_provenance_less(self):
         with self.assertRaisesRegex(DecompError, f"{self.port} states no provenance .*lacks repo, sha, shim"):
             tas_seat.check(self.cfg)
+
+    def test_a_shim_kept_in_the_repo_is_pinned_by_its_tree_id(self):
+        self.cfg["seat"] = {**REQUIRE, "shim_file": "shim", "shim_pattern": r"tree ([0-9a-f]{40})\t"}
+
+        def tree_git(args, **kw):
+            done = git(args)
+            return subprocess.CompletedProcess(args, 0, "tree\n", "") if args[3] == "cat-file" else done
+
+        with mock.patch("abu_decomp.tas_seat.subprocess.run", side_effect=tree_git):
+            self.stamp(sha=SHA_NEW, shim=SHIM_NEW)
+            tas_seat.check(self.cfg)
+            self.stamp(sha=SHA_NEW, shim=SHIM_OLD)
+            with self.assertRaisesRegex(DecompError, "is stale"):
+                tas_seat.check(self.cfg)
 
     def test_a_partial_stamp_names_what_is_missing(self):
         self.stamp(sha=SHA_NEW)

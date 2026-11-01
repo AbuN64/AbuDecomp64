@@ -71,6 +71,7 @@ from abu_decomp import (
     tas_oracle,
     tas_phasemap,
     tas_points,
+    tas_seat,
     tas_triage,
 )
 from abu_decomp.config import Profile
@@ -260,6 +261,7 @@ class Server:
         self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
+        self.refused: dict[str, dict[str, Any]] = {}  # id -> the row of a play refused at once (newest RECENT_SHOWN)
         self.cache: dict[Any, tuple[float, Any]] = {}
         self.gating = False
         self.gz: dict[str, bytes] = {}
@@ -385,7 +387,12 @@ class Server:
 
     def gatekeeper(self) -> None:
         """Gate the corpus whenever the port binary is a build it was not gated on (page-port.py rebuilds it after each
-        train round, a repin, a hand build): only with no run live and the build not older than its pins."""
+        train round, a repin, a hand build): only with no run live and the build not older than its pins. A profile
+        naming no port has nothing to gate: that is one explicit state, printed once (the profile install restarts
+        the server when it names one), not a failure every check."""
+        if not self.cfg.get("port"):
+            print("tas page: corpus gate not configured: the profile names no tas.port (no shared seat)", flush=True)
+            return
         while True:
             time.sleep(GATE_CHECK_SECONDS)
             try:
@@ -503,7 +510,7 @@ class Server:
         with self.lock:
             for run_id in [k for k in self.queued if k in on_disk]:
                 del self.queued[run_id]
-            queued = list(self.queued.values())
+            queued = list(self.queued.values()) + list(self.refused.values())
         live = [(run, row) for run, row in rows if row.get("status") == "running"]
         done = [(run, row) for run, row in rows if row.get("status") != "running"][-RECENT_SHOWN:]
         runs = [
@@ -613,16 +620,56 @@ class Server:
             cpak = "none"
         elif cpak == "on":
             cpak = "fresh"
+        row = self._row(run_id, movie, speed, port, label, pak, cpak, fps_unlock, polls)
+        with self.lock:
+            self.queued[run_id] = row
+        self.reach.expect(self.cfg["runs"] / "plays" / run_id, lambda: run_id in self.queued)
+        self.live.touch()
+
+    def _row(
+        self,
+        run_id: str,
+        movie: str,
+        speed: int,
+        port: Path | None,
+        label: str | None,
+        pak: str | None,
+        cpak: str | None,
+        fps_unlock: bool,
+        polls: int,
+    ) -> dict[str, Any]:
         row = {"id": run_id, "movie": movie, "status": "queued", "speed": speed, "poll": 0, "polls": polls}
         row.update(cpak=cpak or "none", outcome=None, subject=None, started=time.time(), ended=None)
         row.update(
             label=label or None, port=str(port), input="movie", took_at=None, stopped=False, saved=None, pinned=False
         )
         row.update(pak=pak or "on", oracle=None, fps_unlock=fps_unlock, shown=None, **{"from": None, "at": None})
+        return row
+
+    def seat_refusal(self, port: str | None, movie: str, label: str | None) -> dict[str, Any] | None:
+        """A play on the shared seat that cannot start ends at once: it is never queued, its refused row (error = the
+        reason, shown by the feed as run.refused) is kept instead, and the answer carries the id and the reason. None
+        when the play can start."""
+        if port:
+            return None
+        try:
+            tas_seat.check(self.cfg)
+        except DecompError as error:
+            reason = error.detail
+        else:
+            return None
         with self.lock:
-            self.queued[run_id] = row
-        self.reach.expect(self.cfg["runs"] / "plays" / run_id, lambda: run_id in self.queued)
+            run_id = tas.new_run_id(self.cfg, movie)
+            while run_id in self.queued or run_id in self.refused:
+                run_id += "-q"
+            now = time.time()
+            row = self._row(run_id, movie, 0, None, label, None, None, False, 0)
+            row.update(status="done", outcome="refused", error=reason, started=now, ended=now)
+            self.refused[run_id] = row
+            for old in list(self.refused)[:-RECENT_SHOWN]:
+                del self.refused[old]
         self.live.touch()
+        return {"id": run_id, "refused": reason}
 
     def _forget(self, run_id: str) -> None:
         with self.lock:
@@ -651,8 +698,10 @@ class Server:
         tas.check_label(label)
         tas.check_pak(pak)
         tas.check_cpak(cpak)
-        exe = tas.with_port(self.cfg, port)["port"]
         movie = tas.human_movie_name()
+        if refused := self.seat_refusal(port, movie, label):
+            return refused
+        exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
         self._placeholder(run_id, movie, 1, exe, label or tas.HUMAN_LABEL, pak or "on", cpak or "on", fps_unlock)
@@ -772,6 +821,8 @@ class Server:
         tas.check_label(label)
         tas.check_pak(pak)
         tas.check_cpak(cpak)
+        if refused := self.seat_refusal(port, movie, label):
+            return refused
         exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
@@ -807,8 +858,10 @@ class Server:
             raise DecompError("tas.live", f"live input already drives {busy}; stop it first")
         tas.check_label(label)
         point = tas_points.load(self.cfg, start)  # refuse a missing point here, not in the thread
-        exe = tas.with_port(self.cfg, port)["port"]
         movie = tas.human_movie_name()
+        if refused := self.seat_refusal(port, movie, label):
+            return refused
+        exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, movie)
         cpak, pak = point["header"].get("cpak", "none"), point["header"].get("pak", "on")
@@ -851,6 +904,8 @@ class Server:
             raise DecompError("tas.live", f"live input already drives {busy}; stop it first")
         tas.check_label(label)
         found = tas.retry_source(self.cfg, source, take_at)  # refuse a bad run or poll here, not in the thread
+        if refused := self.seat_refusal(port, found["movie"], label):
+            return refused
         exe = tas.with_port(self.cfg, port)["port"]
         with self.lock:
             run_id = tas.new_run_id(self.cfg, found["movie"])

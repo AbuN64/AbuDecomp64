@@ -175,7 +175,8 @@ class PageTest(unittest.TestCase):
         page = (ROOT / "runner.html").read_text()
         for path in ("/api/contract", "/api/feed", "/api/feed/stream", "/static/site/", "/static/icons.svg", "#/map"):
             self.assertIn(path, page)
-        shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")}
+        # viewer.js is the display viewer's own page script, not a region module: it has no mount()
+        shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - {"viewer"}
         self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
         self.assertIn('map: "map"', page)  # the map is a whole-page route
         for name in shipped:

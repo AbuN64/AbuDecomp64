@@ -48,10 +48,11 @@ class ChargedTable(unittest.TestCase):
         # One tick per entry of an original function, never of the SDK range (osLib), of a bound function (shimmed)
         # or of one the shim defines under its original name (native_api); data symbols are not functions.
         table = self.generate()
-        self.assertIn('n64c_charged_names[] = {\n    "alpha",\n    "beta",\n};', table)
+        self.assertIn("n64c_charged_functions[] = {\n    (const void *)&alpha,\n    (const void *)&beta,\n};", table)
+        self.assertIn("extern void alpha(void) __attribute__((weak));", table)
         self.assertIn("n64c_charged_count = 2;", table)
         for name in ("shimmed", "native_api", "osLib", "D_data"):
-            self.assertNotIn(f'"{name}"', table)
+            self.assertNotIn(f"&{name},", table)
 
     def test_the_declared_scale_is_compiled_in_verbatim(self):
         self.assertIn('n64c_guest_ns_per_entry[] = "4702.010109321735";', self.generate())
@@ -112,8 +113,8 @@ class PortDirArgument(unittest.TestCase):
         result = self.run_cli("--port-dir", str(facts))
         self.assertEqual(result.returncode, 0, result.stderr)
         table = (self.path / "out/charged_table.c").read_text()
-        self.assertIn('"alpha"', table)
-        self.assertNotIn('"glue_only"', table)  # defined natively by the port's glue: not charged
+        self.assertIn("&alpha,", table)
+        self.assertNotIn("&glue_only,", table)  # defined natively by the port's glue: not charged
 
     def test_a_missing_sched_glue_names_the_full_path(self):
         facts = self.path / "facts"

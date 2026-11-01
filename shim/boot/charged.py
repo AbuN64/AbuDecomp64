@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Compile the project's guest work declaration into the table the entry charge reads (n64c_charge.c)."""
+"""Compile the project's guest work declaration into the table the entry charge reads (n64c_charge.c): the work scale and
+the addresses of the charged functions, taken by the linker, so the table is the same for every target."""
 
 import argparse
 import json
@@ -67,11 +68,13 @@ def generate(manifest, source, ns_per_entry, output, port_dir):
     if not names:
         raise ValueError("no charged function: the version's symbols hold no original code outside the SDK")
     lines = [
-        "/* Generated guest work declaration (charged.py): the work scale and the charged names. */",
+        "/* Generated guest work declaration (charged.py): the work scale and the charged functions' addresses. A name the",
+        " * link does not define is a null entry (weak reference). */",
         f'const char n64c_guest_ns_per_entry[] = "{ns_per_entry}";',
-        "const char *const n64c_charged_names[] = {",
     ]
-    lines += [f'    "{name}",' for name in names]
+    lines += [f"extern void {name}(void) __attribute__((weak));" for name in names]
+    lines.append("const void *const n64c_charged_functions[] = {")
+    lines += [f"    (const void *)&{name}," for name in names]
     lines += ["};", f"const unsigned n64c_charged_count = {len(names)};", ""]
     output.mkdir(parents=True, exist_ok=True)
     temporary = output / "charged_table.c.tmp"

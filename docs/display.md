@@ -32,6 +32,7 @@ validated (known key, text with a keysym, x,y inside the display) before anythin
 | `{"text": "hi"}` | each character as a key press and release |
 | `{"pointer": {"x": 10, "y": 20, "buttons": 0}}` | one absolute move holding the button mask (1 left, 2 middle, 4 right) |
 | `{"click": {"x": 10, "y": 20, "button": "left"}}` | move, press, release (`left` default, `middle`, `right`) |
+| `{"keydown": "Left"}` / `{"keyup": "Left"}` | one key (or chord) held down, or released: a game polling its keyboard state sees the hold between the two events |
 
 Every wait is bounded by a declared value and fails by name: `create` gives labwc's socket, `wlr-randr` and wayvnc's
 socket `START_SECONDS` each (a tool that exits wakes it through its pidfd), and each RFB read gets `RFB_SECONDS`
@@ -42,6 +43,13 @@ socket `START_SECONDS` each (a tool that exits wakes it through its pidfd), and 
 
 Host packages the rig's install names: `labwc`, `wayvnc`, `wlr-randr`. `create` refuses by name when one is missing; the
 adapter never installs packages.
+
+## Runner page
+
+`/viewer/<id>` sends the canvas's keys down and up over RFB by physical key (a release always matches its press, and a
+blur releases what is held). Its first browser gamepad is polled each frame and mapped onto the same keys, so the game
+sees a keyboard: d-pad and left stick the arrows, A x, B c, X s, Y d, LB q, RB e, LT z, RT r, Back Tab, Start Return.
+Events also go to `POST /api/display/<id>/input` (`{"events": [...]}`): the same `Input` action the CLI uses.
 
 ## Windows
 

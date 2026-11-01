@@ -129,7 +129,8 @@ def plan(events: object, width: int, height: int) -> list[Stroke]:
 
     An event holds exactly one member: {"key": "Control_L+c"}, {"text": "hi"},
     {"pointer": {"x": 1, "y": 2, "buttons": 0}}
-    (an absolute move holding the buttons mask) or {"click": {"x": 1, "y": 2, "button": "left"}} (move, press, release).
+    (an absolute move holding the buttons mask), {"click": {"x": 1, "y": 2, "button": "left"}} (move, press, release)
+    or {"keydown": "a"} / {"keyup": "a"} (a held key: the release is its own event).
     """
     if not isinstance(events, list) or not events:
         raise DecompError(
@@ -138,7 +139,9 @@ def plan(events: object, width: int, height: int) -> list[Stroke]:
     strokes: list[Stroke] = []
     for at, event in enumerate(events):
         if not isinstance(event, dict) or len(event) != 1:
-            raise DecompError("display.input", f"event {at} must hold exactly one of key, text, pointer, click")
+            raise DecompError(
+                "display.input", f"event {at} must hold exactly one of key, keydown, keyup, text, pointer, click"
+            )
         ((kind, value),) = event.items()
         if kind == "key" and isinstance(value, str) and (keysyms := chord(value)):
             strokes += press(keysyms)
@@ -146,6 +149,10 @@ def plan(events: object, width: int, height: int) -> list[Stroke]:
             raise DecompError(
                 "display.input", f"event {at}: key {value!r} is not a known key name", "e.g. Return, F10, a"
             )
+        elif kind in ("keydown", "keyup") and isinstance(value, str) and (keysyms := chord(value)):
+            strokes += [("key", k, int(kind == "keydown"), 0) for k in keysyms]
+        elif kind in ("keydown", "keyup"):
+            raise DecompError("display.input", f"event {at}: key {value!r} is not a known key name", "e.g. Return, a")
         elif kind == "text" and isinstance(value, str):
             for char in value:
                 if (keysym := keysym_of(char)) is None:

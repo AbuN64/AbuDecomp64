@@ -1785,6 +1785,10 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.json(server.keep(str(body.get("id", "")), bool(body.get("pinned", True))))
                 elif self.path == "/api/take":
                     self.json(server.take(str(body.get("id", ""))))
+                elif self.path.startswith("/api/display/") and self.path.endswith("/input"):
+                    # the runner page's keyboard and gamepad: the same display Input the CLI and the live proof use
+                    shown = self.path[len("/api/display/") : -len("/input")]
+                    self.json(display.backend(server.displays).input(shown, body.get("events")))
                 elif self.path == "/api/input" and body.get("gate"):
                     self.json(
                         server.gate(

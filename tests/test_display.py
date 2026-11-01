@@ -420,3 +420,10 @@ def test_create_names_the_tool_that_never_became_ready(
     with pytest.raises(DecompError, match="labwc never became ready: wayland-0 did not appear"):
         linux.create("1280x720")
     assert list((tmp_path / "root").iterdir()) == []
+
+
+def test_held_keys_are_planned_with_their_own_release() -> None:
+    held = display.plan([{"keydown": "Left"}, {"keyup": "Left"}], W, H)
+    assert held == [("key", 0xFF51, 1, 0), ("key", 0xFF51, 0, 0)]
+    with pytest.raises(DecompError, match="not a known key"):
+        display.plan([{"keydown": "Hyper"}], W, H)

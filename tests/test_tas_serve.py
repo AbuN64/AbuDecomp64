@@ -700,6 +700,27 @@ class HttpTests(Base):
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_a_missing_display_or_run_is_a_404_naming_it(self):
+        for url, named in (
+            ("/viewer/d-none", "d-none"),
+            ("/viewer/d-none/ws", "d-none"),
+            ("/frame/nope", "nope"),
+            ("/video/nope", "nope"),
+            ("/log/nope", "nope"),
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(self.base + url, timeout=5)
+                self.assertEqual(caught.exception.code, 404)
+                self.assertIn(named, json.load(caught.exception)["error"])
+
+    def test_a_post_without_an_id_says_so(self):
+        for path in ("/api/stop", "/api/pin", "/api/take", "/api/input"):
+            with self.subTest(path=path):
+                status, body = self.post(path, {})
+                self.assertEqual(status, 400)
+                self.assertIn("names no run", body["error"])
+
     def test_every_frame_source_uses_the_same_decoder(self):
         run = self.make_run("r6", movie="boot-idle", status="running", speed=1, started=1.0, pid=os.getpid())
         bmp, rgb = capture_bmp(320, 240)

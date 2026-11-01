@@ -1,6 +1,6 @@
 # Display
 
-`decomp display` is the site's own headless display adapter: one interface, a Linux backend now. Nothing in it calls
+`decomp display` is the site's own headless display adapter: one interface, a Linux and a Windows backend. Nothing in it calls
 another toolkit; a rig job and the runner run the same code.
 
 ```sh
@@ -53,7 +53,22 @@ Events also go to `POST /api/display/<id>/input` (`{"events": [...]}`): the same
 
 ## Windows
 
-Every verb, `input` included, refuses with `display.unsupported` ("Unsupported: ...") until RUNNER-LIVE-DISPLAY fills the backend.
+`--backend windows` (the default where `sys.platform` is `win32`) reaches a guest desktop over VNC. The guest's own VNC
+server (tvnserver) is not ours to start or stop, so the site's config names its endpoint and `create` only proves it
+answers.
+
+```sh
+decomp display --backend windows create --endpoint HOST:PORT   # redials a bounded number of times on an EOF right after ServerInit
+decomp display --backend windows capture d-1a2b3c4d --path /abs/frame.png
+decomp display --backend windows delete d-1a2b3c4d             # forgets the record, stops nothing on the guest
+```
+
+`create` refuses `display.endpoint` without `--endpoint HOST:PORT` (a Linux `create` refuses it with one: it starts its
+own VNC server). `describe` and `capture` speak RFB to the endpoint like the Linux backend; the record carries the size
+the guest reports, and `--size` is the guest's own. `input` and `invoke` refuse `display.unsupported` ("Unsupported: ...")
+because a Windows guest takes input from its own viewer session and runs its own programs. A display id the directory
+does not hold refuses `display.notfound` naming it (`no display 'd-none'`); the site answers `GET /viewer/<id>` for it
+with a 404 of the same text.
 
 ## Proof
 

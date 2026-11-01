@@ -97,6 +97,8 @@ _SERVE_KEYS = frozenset(
 )
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
+# /<route>/<run>: a run that is not there is a 404 naming it
+RUN_ROUTES = frozenset({"video", "frame", "oracle", "shot", "diff", "log", "audio"})
 CACHE_SECONDS = 30.0
 GZIP_MIN = 1024  # smaller bodies go out as they are
 GZIP_KEPT = 16  # compressed bodies kept by tag, so a repeat fetch of an unchanged body costs no compression
@@ -1378,8 +1380,15 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
         def json(self, value: Any, status: int = HTTPStatus.OK) -> None:
             self.reply(json.dumps(value).encode(), "application/json", status)
 
-        def missing(self) -> None:
-            self.json({"error": "not found"}, HTTPStatus.NOT_FOUND)
+        def missing(self, what: str = "not found") -> None:
+            self.json({"error": what}, HTTPStatus.NOT_FOUND)
+
+        def need_id(self, body: dict[str, Any], noun: str = "run") -> str:
+            """The `id` a POST names; a body without one is refused saying so (an empty id names nothing)."""
+            found = str(body.get("id") or "")
+            if not found:
+                raise DecompError("tas.request", f'the body names no {noun}: send {{"id": ...}}')
+            return found
 
         def viewer_socket(self, subject: str) -> None:
             """Upgrade to a WebSocket and carry the display's RFB until either side closes."""
@@ -1407,6 +1416,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif head == "viewer" and run_id:
                     page = viewer.viewer_page(display.load(server.displays, run_id))
                     self.reply(page.encode(), "text/html; charset=utf-8")
+                elif head in RUN_ROUTES and run_id and server.run_dir(run_id.partition("/")[0]) is None:
+                    self.missing(f"no run {run_id.partition('/')[0]}")
                 elif path == "/api/coverage":
                     self.json(server.coverage())
                 elif path == "/api/pool":
@@ -1450,6 +1461,9 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
                 return
+            except DecompError as error:  # a refusal answers (a missing display is a 404 naming it), never a hang
+                status = HTTPStatus.NOT_FOUND if error.key.endswith("notfound") else HTTPStatus.BAD_REQUEST
+                self.json({"error": str(error)}, status)
 
         def feed_stream(self) -> None:
             """Server-Sent Events: a `hello` with the feed's version and a `feed` event for every event it holds (a page
@@ -1780,11 +1794,11 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                         )
                     )
                 elif self.path == "/api/stop":
-                    self.json(server.stop(str(body.get("id", ""))))
+                    self.json(server.stop(self.need_id(body)))
                 elif self.path == "/api/pin":
-                    self.json(server.keep(str(body.get("id", "")), bool(body.get("pinned", True))))
+                    self.json(server.keep(self.need_id(body), bool(body.get("pinned", True))))
                 elif self.path == "/api/take":
-                    self.json(server.take(str(body.get("id", ""))))
+                    self.json(server.take(self.need_id(body)))
                 elif self.path.startswith("/api/display/") and self.path.endswith("/input"):
                     # the runner page's keyboard and gamepad: the same display Input the CLI and the live proof use
                     shown = self.path[len("/api/display/") : -len("/input")]
@@ -1792,17 +1806,17 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif self.path == "/api/input" and body.get("gate"):
                     self.json(
                         server.gate(
-                            str(body.get("id", "")),
+                            self.need_id(body),
                             str(body["gate"]),
                             int(body["count"]) if body.get("count") is not None else None,
                         )
                     )
                 elif self.path == "/api/input" and body.get("release"):
-                    self.json(server.release(str(body.get("id", ""))))
+                    self.json(server.release(self.need_id(body)))
                 elif self.path == "/api/input":
                     self.json(
                         server.input(
-                            str(body.get("id", "")),
+                            self.need_id(body),
                             int(body.get("seq", 0)),
                             int(body.get("buttons", 0)),
                             int(body.get("x", 0)),

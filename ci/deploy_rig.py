@@ -9,17 +9,20 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
              deploys its own toolkit, never this one), so the name digests all of them;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64
-             --sha SHA` installs the landed commit into a fresh venv beside every other package of the live toolkit
-             carried over as installed (`--carry-from` the live link; the private `<toolkit>-stage` link the
-             engine swaps is scratch, never read), BUILD is linked to that venv, and the full test suite (pytest
-             over tests/) runs in the tree with BUILD's python and the tree's src first on the import path. After
+             --sha SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of
+             the live toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine
+             swaps, starts as scratch and is never read), BUILD ends linked to that venv, and the full test suite
+             (pytest over tests/) runs in the tree with BUILD's python and the tree's src first on the import path. After
              the gate passes the built tree is
              made read-only (`chmod -R a-w`): the live toolkit is never written in place. The imported abu_decomp path
-             must lie inside the tree. A failing suite exits non-zero and the live and previous links stay; on exit 0
-             the close switches the live link to BUILD and keeps the replaced venv as <toolkit>.previous;
+             must lie inside the tree. A failing suite exits non-zero, the live and previous links stay and the failed
+             build's folder and link are removed at once; on exit 0 the close switches the live link to BUILD and keeps
+             the replaced venv as <toolkit>.previous;
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
-             refuses (fix forward, no rollback);
+             refuses (fix forward, no rollback). After it holds, the deploy prunes: only the live and the previous
+             build stay (their links and folders); every other `<toolkit>.*` link or folder and every
+             `<toolkit>-stage*` leftover of the builds before this one is removed;
   profile    the live tas profile (~/rig-state/tas/profile.json) is written from the landed tree's ci/tas-profile.json,
              never edited anywhere else: its `${home}` is the deploy user's home and every other `${name}` comes from
              the host's site file (~/.config/abu-decomp/site.json, a flat object of strings, one key per name the
@@ -40,6 +43,8 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
 import json
 import os
 import re
+import shutil
+import stat
 import subprocess
 import sys
 from collections.abc import Callable
@@ -65,26 +70,25 @@ work=$(pwd -P)
   --sha "$sha" --carry-from "$toolkit") || { echo "name-error: decomp tools name exit $?" >&2; exit 1; }
 """
 
-# BUILD runs inside the activation job with BUILD (<toolkit>.<name>) set by the close: `decomp tools deploy` builds
-# `<toolkit>-stage.<name>` (or -N when that name is taken) and swaps only the private stage link; BUILD becomes a
-# link to that venv, so a failed gate leaves the live and previous links unchanged and the close's switch is the only
-# way a venv goes live. The job runs with the caller's own environment as Dos admits it. Arguments: SHA TOOLKIT NAME.
+# BUILD runs inside the activation job with BUILD (<toolkit>.<SHA>) set by the close. It starts as a link to the live
+# toolkit and `decomp tools deploy` builds `$BUILD.<name>` (or -N when that name is taken) and swaps only that link, so
+# BUILD ends linked to the new venv, a failed gate leaves the live and previous links unchanged and the close's switch
+# is the only way a venv goes live. The job runs with the caller's own environment as Dos admits it.
+# Arguments: SHA TOOLKIT NAME.
 BUILD = r"""set -u
 sha=$1 toolkit=$2 name=$3
 : "${BUILD:?the close sets BUILD for an activation}"
 work=$(pwd -P)
-stage=$toolkit-stage
-# the stage link is scratch the deploy recreates and never reads: the packages carried over are the live toolkit's
-ln -sfn "$(readlink -f "$toolkit")" "$stage" || exit 1
+# the link the deploy swaps is scratch it never reads: the packages carried over are the live toolkit's
+ln -sfn "$(readlink -f "$toolkit")" "$BUILD" || exit 1
 (cd "$HOME" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
-  --sha "$sha" --venv "$stage" --carry-from "$toolkit" --name "$name") \
+  --sha "$sha" --venv "$BUILD" --carry-from "$toolkit" --name "$name") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
-built=$(readlink -f "$stage")
+built=$(readlink -f "$BUILD")
 case $built in
-  "$stage.$name" | "$stage.$name"-[0-9]*) ;;
-  *) echo "deploy-error: $stage reads $built, not the build $name of $sha" >&2; exit 1 ;;
+  "$BUILD.$name" | "$BUILD.$name"-[0-9]*) ;;
+  *) echo "deploy-error: $BUILD reads $built, not the build $name of $sha" >&2; exit 1 ;;
 esac
-ln -sfn "$built" "$BUILD" || exit 1
 echo "deploy-build: $built"
 """
 
@@ -262,6 +266,39 @@ def bash(script: str, *args: str, capture: bool = False) -> tuple[int, str]:
     return done.returncode, done.stdout or ""
 
 
+def force_remove(path: str) -> None:
+    """Remove a link (never followed) or a folder; a built tree is sealed read-only, so owner write returns first."""
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.unlink(path)
+        return
+    for here, _dirs, _ in os.walk(path):
+        os.chmod(here, os.stat(here).st_mode | stat.S_IWUSR)
+    shutil.rmtree(path)
+
+
+def prune(toolkit: str) -> list[str]:
+    """Keep only the live and the previous build of TOOLKIT and remove the rest of its own litter: every
+    `<toolkit>.<x>` link or folder and every `<toolkit>-stage` / `<toolkit>-stage.<x>` (the scratch of builds before
+    the build linked itself). Kept are the live link, `<toolkit>.previous`, each link of their chains and the folder
+    they end at; a sibling toolkit that merely shares the prefix (`<toolkit>-w3`) is never touched. Returns the
+    removed names."""
+    home, base = os.path.split(toolkit)
+    keep = set()
+    for link in (toolkit, toolkit + ".previous"):
+        path = link
+        while os.path.islink(path):
+            keep.add(path)
+            path = os.path.normpath(os.path.join(os.path.dirname(path), os.readlink(path)))
+        keep.add(path)
+    removed = []
+    for entry in sorted(os.listdir(home)):
+        own = entry.startswith((base + ".", base + "-stage.")) or entry == base + "-stage"
+        if own and os.path.join(home, entry) not in keep:
+            force_remove(os.path.join(home, entry))
+            removed.append(entry)
+    return removed
+
+
 def last_line(text: str, default: object) -> str:
     return text.strip().splitlines()[-1] if text.strip() else str(default)
 
@@ -349,6 +386,7 @@ def step_build(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> No
     revision = name(sha, toolkit, run)
     code, _ = run(BUILD + SUITE.replace("__RUNNER__", RUNNER), sha, toolkit, revision)
     if code:
+        prune(toolkit)  # live and previous are still the old ones: the failed build and its link go at once
         raise Refused(f"build exit {code}, links unchanged")
 
 
@@ -356,6 +394,8 @@ def step_readback(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) ->
     code, _ = run(READBACK, sha, toolkit, f"{toolkit}.{sha}")
     if code:
         raise Refused(f"readback exit {code}")
+    removed = prune(toolkit)  # the swap held: only the live and the previous build stay
+    sys.stdout.write(f"prune: removed {len(removed)}, kept the live and the previous build\n")
 
 
 def step_profile(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:

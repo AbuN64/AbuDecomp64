@@ -1,7 +1,9 @@
+import atexit
 import importlib.util
 import io
 import json
 import os
+import shutil
 import site
 import stat
 import subprocess
@@ -17,7 +19,10 @@ deploy_rig = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(deploy_rig)
 
 SHA = "a" * 12 + "b" * 28
-TOOLKIT = "/home/abu/venv-decomp"
+RIG_TOOLKIT = "/home/abu/venv-decomp"  # the .deploy line; no step ever runs on it
+HOME = tempfile.mkdtemp(prefix="deploy-rig-home-")  # a step prunes its toolkit's home: always a mocked one
+atexit.register(shutil.rmtree, HOME, ignore_errors=True)
+TOOLKIT = f"{HOME}/venv-decomp"
 NAME = "0123456789ab"  # the engine's digest of the whole content; never the SHA
 ENVIRON = {deploy_rig.ENV: SHA, "TOOLKIT": TOOLKIT}
 ENVELOPE = json.dumps({"result": {"name": NAME}}) + "\n"
@@ -55,6 +60,9 @@ ARGS = ["--Subject.Board", "board1", "--Subject.Card", "card1"]  # the close app
 
 
 class StepTests(unittest.TestCase):
+    def setUp(self):
+        os.makedirs(HOME, exist_ok=True)
+
     def test_name_prints_the_engines_name(self):
         bash = Bash((0, "noise\n" + ENVELOPE))
         code, out, _ = main("name", bash)
@@ -132,12 +140,12 @@ class StepTests(unittest.TestCase):
 
     def test_the_deploy_file_is_the_step_grammar(self):
         lines = (Path(__file__).parent.parent / ".deploy").read_text().splitlines()
-        self.assertEqual(lines[0], f"deploy-env TOOLKIT={TOOLKIT}")
+        self.assertEqual(lines[0], f"deploy-env TOOLKIT={RIG_TOOLKIT}")
         self.assertEqual(
             [line.split()[:4] for line in lines[1:]],
             [
                 ["rig", "run", "ci/deploy_rig.py", "name"],
-                ["rig", "activate", "ci/deploy_rig.py", TOOLKIT],
+                ["rig", "activate", "ci/deploy_rig.py", RIG_TOOLKIT],
                 ["rig", "run", "ci/deploy_rig.py", "readback"],
                 ["rig", "run", "ci/deploy_rig.py", "profile"],
                 ["rig", "run", "ci/deploy_rig.py", "serve"],
@@ -145,6 +153,130 @@ class StepTests(unittest.TestCase):
         )
         self.assertEqual(lines[2].split()[4:], ["build"])
         self.assertTrue(os.access(Path(__file__).parent.parent / "ci" / "deploy_rig.py", os.X_OK))
+
+
+class PruneTests(unittest.TestCase):
+    """Two deploys on a mocked home: the build, the close's switch, the readback; only live and previous remain."""
+
+    NAMES: ClassVar[dict[str, str]] = {"1" * 40: "111111111111", "2" * 40: "222222222222"}
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp(prefix="deploy-rig-prune-"))
+        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
+        self.toolkit = str(self.home / "venv-decomp")
+        # the rig as found: stale stage folders (some sealed read-only), old links, the live and previous builds
+        for name in ("aaa", "bbb", "live0", "prev0"):
+            self.folder(f"venv-decomp-stage.{name}")
+            os.symlink(self.home / f"venv-decomp-stage.{name}", self.home / f"venv-decomp.{name}")
+        self.folder("venv-decomp.ccc-2")
+        os.symlink(self.home / "venv-decomp-stage.live0", self.home / "venv-decomp-stage")
+        os.symlink(self.home / "venv-decomp.live0", self.toolkit)
+        os.symlink(self.home / "venv-decomp.prev0", self.toolkit + ".previous")
+        self.folder("venv-decomp-w3.361f")  # a sibling toolkit sharing the prefix
+        os.symlink(self.home / "venv-decomp-w3.361f", self.home / "venv-decomp-w3")
+        self.folder("venv-unbake.dafd")
+        self.sibling = self.listing()
+
+    def folder(self, name, sealed=True):
+        path = self.home / name
+        (path / "lib").mkdir(parents=True)
+        (path / "lib" / "mod.py").write_text("x = 1\n")
+        if sealed:
+            os.chmod(path / "lib" / "mod.py", 0o444)
+            os.chmod(path / "lib", 0o555)
+            os.chmod(path, 0o555)
+
+    def listing(self):
+        return sorted(os.listdir(self.home))
+
+    def fake(self, fail=False):
+        def bash(script, *args, capture=False):
+            if script == deploy_rig.NAME:
+                return 0, json.dumps({"result": {"name": self.NAMES[args[0]]}}) + "\n"
+            if script.startswith(deploy_rig.BUILD):
+                sha, toolkit, name = args
+                self.folder(f"venv-decomp.{sha}.{name}")  # what `decomp tools deploy --venv BUILD` leaves
+                os.symlink(f"{toolkit}.{sha}.{name}", f"{toolkit}.{sha}")
+                return (1 if fail else 0), ""
+            return 0, ""
+
+        return bash
+
+    def deploy(self, sha, fail=False):
+        environ = {deploy_rig.ENV: sha, "TOOLKIT": self.toolkit}
+        bash = self.fake(fail)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = deploy_rig.main(["build"], environ, bash)
+            if code:
+                return code
+            previous = os.readlink(self.toolkit)  # the close's switch: live becomes BUILD, the replaced one previous
+            for link, target in ((self.toolkit + ".previous", previous), (self.toolkit, f"{self.toolkit}.{sha}")):
+                os.symlink(target, link + ".new")
+                os.replace(link + ".new", link)
+            return deploy_rig.main(["readback"], environ, bash)
+
+    def test_after_two_deploys_only_live_and_previous_remain(self):
+        one, two = "1" * 40, "2" * 40
+        self.assertEqual(self.deploy(one), 0)
+        self.assertEqual(
+            self.listing(),
+            sorted(
+                [
+                    *self.sibling_names(),
+                    "venv-decomp",
+                    "venv-decomp.previous",
+                    "venv-decomp.live0",
+                    "venv-decomp-stage.live0",  # the replaced build, now previous
+                    f"venv-decomp.{one}",
+                    f"venv-decomp.{one}.{self.NAMES[one]}",
+                ]
+            ),
+        )
+        self.assertEqual(self.deploy(two), 0)
+        self.assertEqual(
+            self.listing(),
+            sorted(
+                [
+                    *self.sibling_names(),
+                    "venv-decomp",
+                    "venv-decomp.previous",
+                    f"venv-decomp.{one}",
+                    f"venv-decomp.{one}.{self.NAMES[one]}",
+                    f"venv-decomp.{two}",
+                    f"venv-decomp.{two}.{self.NAMES[two]}",
+                ]
+            ),
+        )
+        self.assertEqual(os.path.realpath(self.toolkit), str(self.home / f"venv-decomp.{two}.{self.NAMES[two]}"))
+        self.assertEqual(
+            os.path.realpath(self.toolkit + ".previous"), str(self.home / f"venv-decomp.{one}.{self.NAMES[one]}")
+        )
+
+    def sibling_names(self):
+        return ["venv-decomp-w3", "venv-decomp-w3.361f", "venv-unbake.dafd"]
+
+    def test_a_failed_build_removes_its_folder_and_link_at_once(self):
+        bad = "1" * 40
+        self.assertEqual(self.deploy(bad, fail=True), 1)
+        left = self.listing()
+        self.assertFalse([n for n in left if bad in n], left)
+        self.assertEqual(os.path.realpath(self.toolkit), str(self.home / "venv-decomp-stage.live0"))
+        self.assertEqual(os.path.realpath(self.toolkit + ".previous"), str(self.home / "venv-decomp-stage.prev0"))
+        self.assertTrue(set(self.sibling_names()) <= set(left))
+
+    def test_the_prune_touches_only_its_own_toolkit_and_is_a_noop_when_clean(self):
+        self.assertEqual(
+            sorted(deploy_rig.prune(self.toolkit))[:3],
+            ["venv-decomp-stage", "venv-decomp-stage.aaa", "venv-decomp-stage.bbb"],
+        )
+        self.assertEqual(deploy_rig.prune(self.toolkit), [])
+        self.assertTrue(set(self.sibling_names()) <= set(self.listing()))
+
+    def test_a_missing_previous_link_is_fine(self):
+        os.unlink(self.toolkit + ".previous")
+        deploy_rig.prune(self.toolkit)
+        self.assertIn("venv-decomp-stage.live0", self.listing())
+        self.assertNotIn("venv-decomp-stage.prev0", self.listing())
 
 
 def wrapper(path, body):
@@ -262,14 +394,13 @@ class SuiteScriptTests(ScriptCase):
 class BuildScriptTests(ScriptCase):
     """The BUILD script with a stand-in toolkit python running `-m abu_decomp tools deploy`.
 
-    The stand-in builds `<stage>.<name>` and swaps the stage link.
+    The stand-in builds `<venv>.<name>` and swaps the link it is given: BUILD itself.
     """
 
     def setUp(self):
         super().setUp()
         self.toolkit = self.root / "venv-decomp"
         self.build = self.root / f"venv-decomp.{NAME}"
-        self.stage = self.root / "venv-decomp-stage"
 
     def decomp(self, body):
         wrapper(self.toolkit / "bin/python", body)
@@ -278,7 +409,7 @@ class BuildScriptTests(ScriptCase):
         env = sh_env(BUILD=str(self.build), HOME=str(self.root))  # the caller's own environment, as Dos admits it
         return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, env=env)
 
-    def test_the_build_links_build_to_the_stage_venv_and_never_touches_the_live_link(self):
+    def test_the_build_links_build_to_its_own_venv_and_never_touches_the_live_link(self):
         live = self.root / "live-target"
         wrapper(
             live / "bin/python",
@@ -292,9 +423,9 @@ class BuildScriptTests(ScriptCase):
         self.toolkit.symlink_to(live)
         done = self.run_build()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        built = self.root / f"venv-decomp-stage.{NAME}"
+        built = self.root / f"venv-decomp.{NAME}.{NAME}"
         self.assertEqual(self.build.resolve(), built.resolve())
-        self.assertEqual(self.stage.resolve(), built.resolve())
+        self.assertEqual([p.name for p in self.root.iterdir() if "stage" in p.name], [])
         self.assertEqual(self.toolkit.resolve(), live.resolve())
         self.assertIn(f"deploy-build: {built}", done.stdout)
 
@@ -305,9 +436,9 @@ class BuildScriptTests(ScriptCase):
         done = self.run_build()
         self.assertEqual(done.returncode, 1)
         self.assertIn("deploy-error: decomp tools deploy exit 3", done.stderr)
-        self.assertFalse(self.build.is_symlink())
+        self.assertEqual(self.build.resolve(), live.resolve())  # BUILD never left the live toolkit (the step prunes it)
 
-    def test_a_stage_link_that_reads_another_build_exits_1(self):
+    def test_a_build_link_that_reads_another_build_exits_1(self):
         live = self.root / "live-target"
         wrapper(live / "bin/python", f'mkdir -p "{self.root}/other" && shift 9 && ln -sfn "{self.root}/other" "$1"')
         self.toolkit.symlink_to(live)

@@ -6,7 +6,7 @@
     "movies": "${home}/rig-state/tas/movies",
     "runs": "${home}/rig-state/tas/runs",
     "rom": "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",
-    "ledger": "${home}/rig-state/tas/live/port-tree/code/sys/n64/lockstep-ignore.tsv",
+    "ledger": "${home}/rig-state/tas/live/port/lockstep-ignore.tsv",
     "args": [
       "--rom",
       "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",

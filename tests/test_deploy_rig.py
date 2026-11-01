@@ -682,6 +682,16 @@ class TemplateTests(unittest.TestCase):
         tas.settings(profile)
         self.assertNotIn("${", text)
 
+    def test_the_template_names_the_reviewed_ledger_beside_the_seat_executable_so_a_play_passes_tas_ledger(self):
+        from abu_decomp import config, tas
+
+        text = deploy_rig.render_profile(TEMPLATE_FILE.read_text(), "/home/example", {"w": "192.0.2.7"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            path.write_text(text)
+            cfg = tas.settings(config.load_profile(path))
+        self.assertEqual(cfg["ledger"], Path(cfg["port"]).parent / "lockstep-ignore.tsv")
+
     def test_the_template_names_no_site_fact(self):
         text = TEMPLATE_FILE.read_text()
         self.assertNotRegex(text, r"\d+\.\d+\.\d+\.\d+:\d+/")

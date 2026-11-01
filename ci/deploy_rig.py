@@ -20,6 +20,12 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
              refuses (fix forward, no rollback);
+  profile    the live tas profile (~/rig-state/tas/profile.json) is written from the landed tree's ci/tas-profile.json,
+             never edited anywhere else: its `${home}` is the deploy user's home and every other `${name}` comes from
+             the host's site file (~/.config/abu-decomp/site.json, a flat object of strings, one key per name the
+             template uses). The previous live profile is not read, so a key the tree does not know cannot survive a
+             deploy; a name without a value, a site key the template does not use or a template that is not a JSON
+             object refuses before the live file is touched, and the file is replaced whole (never half written);
   serve      the site unit ci/abu-decomp-tas.service (ExecStart in the live toolkit link, Type=notify) is installed,
              enabled and restarted; it returns when the page listens, so the unit's own result is the signal. The page
              on :8099 is read back: its `deployed-sha` meta tag must equal the landed SHA.
@@ -28,6 +34,7 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
   rig run ci/deploy_rig.py name
   rig activate ci/deploy_rig.py /home/abu/venv-decomp build
   rig run ci/deploy_rig.py readback
+  rig run ci/deploy_rig.py profile
   rig run ci/deploy_rig.py serve"""
 
 import json
@@ -36,10 +43,15 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 
 ENV = "LANDED_Projects_AbuN64_AbuDecomp64"
 SHA = re.compile(r"[0-9a-f]{40}")
 NAME_RE = re.compile(r"[0-9a-f]{12}")
+TEMPLATE = Path("ci/tas-profile.json")  # in the tree: the one source of the live profile
+SITE_FILE = Path(".config/abu-decomp/site.json")  # under the deploy user's home: the host's values for the template
+LIVE_PROFILE = Path("rig-state/tas/profile.json")  # under the deploy user's home: what abu-decomp-tas.service reads
+HOLE = re.compile(r"\$\{([a-z_]+)\}")
 
 # bash(script, args) runs one of the scripts below and returns its exit code and, when captured, its stdout.
 Bash = Callable[..., "tuple[int, str]"]
@@ -285,31 +297,88 @@ def name(sha: str, toolkit: str, run: Bash) -> str:
     return build_name(out)
 
 
-def step_name(sha: str, toolkit: str, run: Bash) -> None:
+def render_profile(template: str, home: str, site: dict[str, object]) -> str:
+    """The template with every `${name}` filled: home from the deploy user, the rest from the host's site file."""
+    if "home" in site:
+        raise Refused(f"{SITE_FILE} sets home, which is the deploy user's home")
+    holes = set(HOLE.findall(template))
+    values = {"home": home, **{key: value for key, value in site.items() if isinstance(value, str)}}
+    unset = sorted(holes - values.keys())
+    if unset:
+        raise Refused(f"{SITE_FILE} has no value for: {', '.join(unset)}")
+    unused = sorted(site.keys() - holes)
+    if unused:
+        raise Refused(f"{SITE_FILE} has keys {TEMPLATE} does not use: {', '.join(unused)}")
+    text = HOLE.sub(lambda hole: values[hole[1]], template)
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise Refused(f"{TEMPLATE} renders to invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise Refused(f"{TEMPLATE} renders to {type(parsed).__name__}, not an object")
+    return text
+
+
+def install_profile(template: Path, home: Path) -> Path:
+    """Write the live profile whole from the tree's template; the previous live file is replaced, never read."""
+    try:
+        site = json.loads((home / SITE_FILE).read_text())
+        text = template.read_text()
+    except (OSError, ValueError) as exc:
+        raise Refused(f"profile input: {exc}") from exc
+    if not isinstance(site, dict) or not all(isinstance(value, str) for value in site.values()):
+        raise Refused(f"{SITE_FILE} is not an object of strings")
+    rendered = render_profile(text, str(home), site)
+    live = home / LIVE_PROFILE
+    staged = live.with_name(f"{live.name}.{os.getpid()}.new")
+    try:
+        staged.write_text(rendered)
+        os.replace(staged, live)
+    except OSError as exc:
+        staged.unlink(missing_ok=True)
+        raise Refused(f"profile write: {exc}") from exc
+    return live
+
+
+def step_name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     sys.stdout.write(f"name: {name(sha, toolkit, run)}\n")
     sys.stdout.flush()
 
 
-def step_build(sha: str, toolkit: str, run: Bash) -> None:
+def step_build(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     revision = name(sha, toolkit, run)
     code, _ = run(BUILD + SUITE.replace("__RUNNER__", RUNNER), sha, toolkit, revision)
     if code:
         raise Refused(f"build exit {code}, links unchanged")
 
 
-def step_readback(sha: str, toolkit: str, run: Bash) -> None:
+def step_readback(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     code, _ = run(READBACK, sha, toolkit, f"{toolkit}.{sha}")
     if code:
         raise Refused(f"readback exit {code}")
 
 
-def step_serve(sha: str, toolkit: str, run: Bash) -> None:
+def step_profile(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
+    home = environ.get("HOME", "")
+    if not home.startswith("/"):
+        raise Refused(f"HOME is not an absolute path: {home!r}")
+    sys.stdout.write(f"profile: {install_profile(TEMPLATE, Path(home))} from {TEMPLATE} at {sha}\n")
+    sys.stdout.flush()
+
+
+def step_serve(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     code, _ = run(SERVE, sha)
     if code:
         raise Refused(f"serve exit {code}")
 
 
-STEPS = {"name": step_name, "build": step_build, "readback": step_readback, "serve": step_serve}
+STEPS = {
+    "name": step_name,
+    "build": step_build,
+    "readback": step_readback,
+    "profile": step_profile,
+    "serve": step_serve,
+}
 
 
 def main(argv: list[str] | None = None, environ: dict[str, str] | None = None, run: Bash = bash) -> int:
@@ -318,7 +387,8 @@ def main(argv: list[str] | None = None, environ: dict[str, str] | None = None, r
         step = STEPS.get(argv[0] if argv else "")
         if step is None:
             raise Refused(f"the step is one of {', '.join(STEPS)}, not {argv[0] if argv else 'nothing'!r}")
-        step(*landed(dict(os.environ) if environ is None else environ), run)
+        environ = dict(os.environ) if environ is None else environ
+        step(*landed(environ), run, environ)
     except Refused as refusal:
         sys.stderr.write(f"deploy refused: {refusal}\n")
         return 1

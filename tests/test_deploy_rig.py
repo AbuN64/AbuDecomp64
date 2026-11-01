@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
 
@@ -138,6 +139,7 @@ class StepTests(unittest.TestCase):
                 ["rig", "run", "ci/deploy_rig.py", "name"],
                 ["rig", "activate", "ci/deploy_rig.py", TOOLKIT],
                 ["rig", "run", "ci/deploy_rig.py", "readback"],
+                ["rig", "run", "ci/deploy_rig.py", "profile"],
                 ["rig", "run", "ci/deploy_rig.py", "serve"],
             ],
         )
@@ -470,3 +472,100 @@ class ServeScriptTests(ScriptCase):
         done, _ = self.run_serve('<meta name="deployed-sha" content="x">')
         self.assertEqual(done.returncode, 1)
         self.assertIn("serves x", done.stderr)
+
+
+TEMPLATE_FILE = Path(__file__).parent.parent / "ci" / "tas-profile.json"
+
+
+class ProfileTests(unittest.TestCase):
+    """The deploy writes the live tas profile from the landed tree's template; nothing else edits it."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name) / "home"
+        (self.home / ".config/abu-decomp").mkdir(parents=True)
+        (self.home / "rig-state/tas").mkdir(parents=True)
+        self.template = Path(tmp.name) / "tas-profile.json"
+        self.live = self.home / "rig-state/tas/profile.json"
+
+    def site(self, **values):
+        (self.home / ".config/abu-decomp/site.json").write_text(json.dumps(values))
+
+    def install(self, template):
+        self.template.write_text(json.dumps(template))
+        return deploy_rig.install_profile(self.template, self.home)
+
+    def test_a_profile_key_unknown_to_the_tree_cannot_reach_the_live_profile(self):
+        # the live file was rewritten by a run before its code landed: it holds a key this tree's template lacks
+        self.live.write_text(json.dumps({"name": "tas", "tas": {"serve": {"kan": "x", "future_key": 1}}}))
+        self.site(w="192.0.2.7")
+        self.install({"name": "tas", "tas": {"serve": {"kan": "http://${w}:1", "root": "${home}/tas"}}})
+        live = json.loads(self.live.read_text())
+        want = {"name": "tas", "tas": {"serve": {"kan": "http://192.0.2.7:1", "root": f"{self.home}/tas"}}}
+        self.assertEqual(live, want)
+        self.assertNotIn("future_key", self.live.read_text())
+
+    def test_a_site_key_the_template_does_not_use_refuses_and_leaves_the_live_file(self):
+        self.live.write_text("old")
+        self.site(w="192.0.2.7", future_key="1")
+        with self.assertRaisesRegex(deploy_rig.Refused, "does not use: future_key"):
+            self.install({"a": "${w}"})
+        self.assertEqual(self.live.read_text(), "old")
+
+    def test_a_name_without_a_site_value_refuses_and_leaves_the_live_file(self):
+        self.live.write_text("old")
+        self.site()
+        with self.assertRaisesRegex(deploy_rig.Refused, "no value for: w"):
+            self.install({"a": "${w}"})
+        self.assertEqual(self.live.read_text(), "old")
+
+    def test_a_site_file_that_sets_home_refuses(self):
+        self.site(home="/elsewhere")
+        with self.assertRaisesRegex(deploy_rig.Refused, "sets home"):
+            self.install({"a": "${home}"})
+
+    def test_a_missing_site_file_refuses(self):
+        with self.assertRaisesRegex(deploy_rig.Refused, "profile input"):
+            self.install({"a": "${home}"})
+
+    def test_a_template_that_is_not_an_object_refuses(self):
+        self.site()
+        with self.assertRaisesRegex(deploy_rig.Refused, "not an object"):
+            self.install(["${home}"])
+
+    def test_the_profile_step_installs_from_the_home_in_the_environment(self):
+        self.site(w="192.0.2.7")
+        self.template.write_text(json.dumps({"a": "${w}"}))
+        with mock.patch.object(deploy_rig, "TEMPLATE", self.template):
+            code, out, _ = main("profile", Bash(), {**ENVIRON, "HOME": str(self.home)})
+        self.assertEqual((code, json.loads(self.live.read_text())), (0, {"a": "192.0.2.7"}))
+        self.assertIn(f"profile: {self.live}", out)
+
+    def test_the_profile_step_refuses_a_relative_home(self):
+        code, _, err = main("profile", Bash(), {**ENVIRON, "HOME": "home"})
+        self.assertEqual(code, 1)
+        self.assertIn("HOME is not an absolute path", err)
+
+
+class TemplateTests(unittest.TestCase):
+    """The tracked template is valid for the tree that carries it."""
+
+    def test_the_template_renders_and_this_tree_accepts_every_serve_key(self):
+        from abu_decomp import config, site_enhanced, tas, tas_serve  # noqa: PLC0415
+
+        text = deploy_rig.render_profile(TEMPLATE_FILE.read_text(), "/home/example", {"w": "192.0.2.7"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            path.write_text(text)
+            profile = config.load_profile(path)
+        serve = profile.section("tas")["serve"]
+        self.assertEqual(serve.keys() - tas_serve._SERVE_KEYS, set())
+        self.assertIsNotNone(site_enhanced.settings(serve["enhanced"]))
+        tas.settings(profile)
+        self.assertNotIn("${", text)
+
+    def test_the_template_names_no_site_fact(self):
+        text = TEMPLATE_FILE.read_text()
+        self.assertNotRegex(text, r"\d+\.\d+\.\d+\.\d+:\d+/")
+        self.assertNotIn("/home/", text)

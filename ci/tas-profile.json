@@ -1,0 +1,637 @@
+{
+  "schema_version": 1,
+  "name": "tas",
+  "tas": {
+    "movies": "${home}/rig-state/tas/movies",
+    "runs": "${home}/rig-state/tas/runs",
+    "rom": "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",
+    "args": [
+      "--rom",
+      "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",
+      "--no-dialog",
+      "--cpak",
+      "off",
+      "--user-dir",
+      "{user_dir}",
+      "--fb",
+      "284x222",
+      "--window",
+      "640x480"
+    ],
+    "env": {
+      "SDL_VIDEODRIVER": "offscreen",
+      "SDL_AUDIODRIVER": "dummy"
+    },
+    "exit_after": 300,
+    "timeout_seconds": 180,
+    "serve": {
+      "listen": "0.0.0.0:8099",
+      "keep_days": 3,
+      "jobs": 4,
+      "inbox": "${home}/rig-state/tas/inbox.md",
+      "states": "${home}/rig-state/progress/progress-states.json",
+      "pin": "${home}/rig-state/tas/fetch/rage_decomp_source-src",
+      "lanes": "${home}/rig-state/tas/lanes",
+      "invocations": [
+        "${home}/rig-state/seat/invocations",
+        "${home}/rig-state/lanes/*/invocations"
+      ],
+      "claims": "${home}/rig-state/tas/claims.md",
+      "port_source": "${home}/code/rage-ports",
+      "enhanced": {
+        "butlermaster": "http://${w}:18581",
+        "board": "7-aCUtlvrWcq",
+        "kan": "http://${w}:18572",
+        "plan": "${home}/rig-state/tas/enhanced-plan"
+      }
+    },
+    "build": {
+      "units": "${home}/rig-state/tas/build/decomp/src",
+      "graph": [
+        "{port_dir}/build.ninja"
+      ]
+    },
+    "rank": {
+      "order": [
+        "build",
+        "stale",
+        "blocks",
+        "owes"
+      ],
+      "owes_rows": 3,
+      "layers": [
+        {
+          "match": "__STDARG_GCC or __STDARG_IDO",
+          "layer": "compile flags (port config): add -D__STDARG_GCC to decomp_preprocess, then rebuild the port; the game source is correct",
+          "next": "grep -n decomp_preprocess ${home}/code/rage-ports/cmake/decomp.cmake"
+        }
+      ]
+    },
+    "oracle": {
+      "host": "${home}/rig-state/tas/live/oracle/n64host",
+      "env": {
+        "N64R_ROM": "${home}/code/ragewars-decomp/roms/baserom.us-rev1.z64",
+        "N64R_CONFIG": "${home}/rig-state/tas/oracle/cfg",
+        "VK_DRIVER_FILES": "/usr/share/vulkan/icd.d/lvp_icd.json"
+      },
+      "shot_every": 25,
+      "timeout_seconds": 300,
+      "pins": "${home}/rig-state/tas/live/oracle/oracle-pins.json",
+      "pins_repo": "http://${w}:18556/Projects/CakeTaste64.git",
+      "rebuild": "the CakeTaste64 .deploy (ci/deploy_rig.py) rebuilds the live oracle from main"
+    },
+    "coverage": {
+      "elf": "${home}/code/ragewars-decomp/build/{version}/RageWars.elf",
+      "version": "us-rev1",
+      "versions": [
+        "us-rev1",
+        "us",
+        "eu",
+        "eu-x",
+        "de"
+      ],
+      "symbols": [
+        "versions/us-rev1/symbol_addrs.txt",
+        "versions/us-rev1/aliases.txt"
+      ],
+      "since": 1793025034
+    },
+    "seat": {
+      "stamp": "port-provenance.json"
+    }
+  },
+  "tools": {
+    "project": "${home}/code/ragewars-decomp",
+    "host": "${home}/rig-state/behave/host.toml",
+    "timeout_seconds": 900,
+    "taste_profile": "${home}/rig-state/behave/taste-profile.json"
+  },
+  "land": {
+    "check": [
+      "make",
+      "check"
+    ],
+    "jobs": [
+      "sh",
+      "-c",
+      "echo 16"
+    ],
+    "author": "mo <itsmoalawi@gmail.com>",
+    "lock_weight": 1000,
+    "remote": "github",
+    "branch": "main",
+    "evidence": {
+      "suffixes": [
+        ".c",
+        ".cpp"
+      ],
+      "headers": [
+        "include"
+      ],
+      "roms": [
+        "roms/baserom.us-rev1.z64"
+      ],
+      "names": {
+        "rules": [
+          {
+            "id": "m2c-local",
+            "pattern": "\\b(?:sp[0-9A-F]{2,}|temp_[a-z]\\w*|var_[a-z]\\w*|phi_[a-z]\\w*)\\b",
+            "hint": "name locals from what they hold (recipe try with the m2c names cleaned)"
+          },
+          {
+            "id": "offset-macro",
+            "pattern": "\\b(?:M2C_\\w+|FIELD)\\s*\\(",
+            "hint": "use the struct field, not an offset macro"
+          },
+          {
+            "id": "offset-cast",
+            "pattern": "\\*\\s*\\(\\s*(?:const\\s+)?[\\w\\s]+\\*+\\s*\\)\\s*\\(\\s*\\(\\s*(?:const\\s+)?[\\w\\s]+\\*+\\s*\\)\\s*\\w+\\s*\\+\\s*(?:0x[0-9A-Fa-f]+|\\d+)\\s*\\)",
+            "hint": "declare the field in the struct"
+          },
+          {
+            "id": "raw-address",
+            "pattern": "\\(\\s*[\\w\\s]+\\*+\\s*\\)\\s*0x80[0-9A-Fa-f]{6}\\b",
+            "hint": "use the named global"
+          },
+          {
+            "id": "void-field",
+            "pattern": "\\(\\s*void\\s*\\*\\s*\\)\\s*\\w+\\s*\\)\\s*(?:->|\\[)|\\(\\(\\s*void\\s*\\*\\s*\\)[^)]*\\)\\s*(?:->|\\[)",
+            "hint": "give the pointer its struct type"
+          }
+        ]
+      }
+    },
+    "claims": {
+      "words": {
+        "fixed": "pass",
+        "fixes": "pass",
+        "behaves": "behaves",
+        "ok": "pass",
+        "matches": "pass",
+        "works": "pass",
+        "passes": "pass",
+        "verified": "pass",
+        "artifact": "benign",
+        "benign": "benign",
+        "correct": "behaves",
+        "correctness": "behaves",
+        "semantic": "behaves",
+        "equivalent": "behaves",
+        "proven": "pass",
+        "expected": "benign",
+        "harmless": "benign",
+        "cosmetic": "benign",
+        "noise": "benign"
+      },
+      "commands": [
+        "behave",
+        "land",
+        "ship",
+        "make"
+      ]
+    },
+    "arity": {},
+    "trees": {
+      "${home}/code/rage-ports": {
+        "mode": "plain",
+        "remote": "origin",
+        "branch": "main",
+        "jobs": [
+          "sh",
+          "-c",
+          "echo 16"
+        ],
+        "steps": [
+          {
+            "name": "port build",
+            "argv": [
+              "cmake",
+              "--build",
+              "build/linux-gcc-game-release",
+              "--target",
+              "ragewars",
+              "-j8"
+            ]
+          },
+          {
+            "name": "tas play --all",
+            "argv": [
+              "{decomp}",
+              "tas",
+              "play",
+              "--all"
+            ]
+          }
+        ],
+        "pin": {
+          "source": "${home}/code/ragewars-decomp",
+          "ref": "HEAD",
+          "fetched": "${home}/rig-state/tas/fetch/rage_decomp_source-src",
+          "files": [
+            {
+              "path": "cmake/decomp.cmake",
+              "pattern": "rage_dep\\(rage_decomp_source \\S+ ([0-9a-f]{40})"
+            },
+            {
+              "path": "platform/port/BOOT.md",
+              "pattern": "at commit ([0-9a-f]{40})"
+            },
+            {
+              "path": "platform/port/manifest.json",
+              "pattern": "\"source_pin\": \"([0-9a-f]{40})\""
+            }
+          ]
+        }
+      }
+    },
+    "slots": {
+      "floor_gib": 6,
+      "stamp_gib": 4.5,
+      "stamp_jobs": 4,
+      "reserve_cores": 2
+    },
+    "reap": {
+      "worktree_idle_hours": 6,
+      "chromium_sample_seconds": 10,
+      "chromium_min_age_minutes": 30,
+      "interval_minutes": 30,
+      "chromium_idle_cpu_percent": 15
+    }
+  },
+  "behave": {
+    "work": "${home}/rig-state/behave/work"
+  },
+  "phase": {
+    "games": {
+      "RageWars": {
+        "tree": "${home}/code/ragewars-decomp",
+        "ref": "github/main",
+        "versions": [
+          "us-rev1",
+          "us",
+          "de",
+          "eu",
+          "eu-x"
+        ],
+        "map": "docs/map-{version}.json",
+        "readme": "README.md",
+        "foundations": "${home}/rig-state/phase/foundations-{version}.tsv",
+        "port": {
+          "movie": "boot-idle",
+          "profile": "${home}/rig-state/tas/profile.json"
+        }
+      }
+    },
+    "focus": {
+      "game": "RageWars",
+      "version": "us-rev1"
+    },
+    "ladder": [
+      {
+        "stage": "R1",
+        "byte_reach": 50,
+        "line": 40,
+        "branch": 30,
+        "crash": 0
+      },
+      {
+        "stage": "R2",
+        "byte_reach": 70,
+        "line": 60,
+        "branch": 45,
+        "oracle_only": 20
+      },
+      {
+        "stage": "R3",
+        "byte_reach": 90,
+        "line": 80,
+        "branch": 65,
+        "oracle_only": 0
+      },
+      {
+        "stage": "R4",
+        "fn_reachable": 100,
+        "oracle_only": 0,
+        "differs_missing": 0
+      }
+    ],
+    "named_rule": "\\b(func_|D_)[0-9A-F]{8}|\\bunk[0-9A-Fa-f_x]",
+    "out": "${home}/rig-state/phase/phase.json",
+    "history": "${home}/rig-state/phase/history.jsonl",
+    "platforms": {
+      "linux": "${home}/rig-state/alpha/linux/evidence.json",
+      "windows": "${home}/rig-state/alpha/windows/evidence.json",
+      "android": "${home}/rig-state/alpha/android/evidence.json"
+    }
+  },
+  "cleanup": {
+    "scratch": "${home}/rig-state/tmp",
+    "workers": 8,
+    "gates": [
+      {
+        "id": "p0-tools",
+        "phase": "P0",
+        "name": "T1-T6 tools deployed (commands failing their --help)",
+        "measure": {
+          "kind": "probe",
+          "argv": [
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "count",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "ledger",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "owners",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "preflight",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "slices",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "cleanup",
+              "dead-decls",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/recipe",
+              "name",
+              "--help"
+            ]
+          ]
+        }
+      },
+      {
+        "id": "p0-dry",
+        "phase": "P0",
+        "name": "ledger batches landed (dry run through the ledger)",
+        "measure": {
+          "kind": "lines",
+          "file": "${home}/rig-state/names/events.jsonl",
+          "where": {
+            "event": "landed"
+          }
+        }
+      },
+      {
+        "id": "p0-proof",
+        "phase": "P0",
+        "name": "renameproof/canary tools installed (commands failing)",
+        "measure": {
+          "kind": "probe",
+          "argv": [
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "ship",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/decomp",
+              "data",
+              "--help"
+            ],
+            [
+              "${home}/venv-decomp/bin/recipe",
+              "style",
+              "--help"
+            ]
+          ]
+        }
+      },
+      {
+        "id": "p1-dead",
+        "phase": "P1",
+        "name": "dead-decls in include/COMMON",
+        "measure": {
+          "kind": "dead-decls",
+          "dir": "include/COMMON"
+        }
+      },
+      {
+        "id": "p1-records",
+        "phase": "P1",
+        "name": "record tags defined more than once",
+        "measure": {
+          "kind": "tags",
+          "paths": "^(src|include)/"
+        }
+      },
+      {
+        "id": "p1-externs",
+        "phase": "P1",
+        "name": "unit-local externs of header-declared names",
+        "measure": {
+          "kind": "externs",
+          "of": "header-declared"
+        }
+      },
+      {
+        "id": "p1-sdk",
+        "phase": "P1",
+        "name": "SDK func_ names",
+        "measure": {
+          "kind": "placeholders",
+          "paths": "^src/(sdk|SDK|libgcc)/",
+          "classes": [
+            "func"
+          ]
+        }
+      },
+      {
+        "id": "p1-baseline",
+        "phase": "P1",
+        "name": "distinct placeholder names (baseline)",
+        "measure": {
+          "kind": "placeholders",
+          "paths": "^(src|include)/",
+          "distinct": true
+        }
+      },
+      {
+        "id": "p2-unmapped",
+        "phase": "P2",
+        "name": "units without a MODULES.tsv row",
+        "measure": {
+          "kind": "unmapped",
+          "map": "docs/MODULES.tsv"
+        }
+      },
+      {
+        "id": "p2-misfiled",
+        "phase": "P2",
+        "name": "units outside their module folder",
+        "measure": {
+          "kind": "misfiled",
+          "map": "docs/MODULES.tsv"
+        }
+      },
+      {
+        "id": "p2-addr",
+        "phase": "P2",
+        "name": "address-named units outside DATA",
+        "measure": {
+          "kind": "files",
+          "paths": "^src/.*[0-9A-F]{6,8}\\.(c|C|cpp)$",
+          "exclude": "^src/DATA/"
+        }
+      },
+      {
+        "id": "p2-common",
+        "phase": "P2",
+        "name": "files in include/COMMON",
+        "measure": {
+          "kind": "files",
+          "paths": "^include/COMMON/"
+        }
+      },
+      {
+        "id": "p2-style",
+        "phase": "P2",
+        "name": "recipe style dir/file name findings",
+        "measure": {
+          "kind": "style",
+          "rules": [
+            "file-name",
+            "dir-name",
+            "collision-suffix"
+          ]
+        }
+      },
+      {
+        "id": "p2-roms",
+        "phase": "P2",
+        "name": "ROMs not byte-exact",
+        "measure": {
+          "kind": "roms",
+          "pool": "${home}/code/ragewars-decomp",
+          "wait": 600
+        }
+      },
+      {
+        "id": "p3-func-d",
+        "phase": "P3",
+        "name": "func_ and D_ names",
+        "measure": {
+          "kind": "placeholders",
+          "paths": "^(src|include)/",
+          "classes": [
+            "func",
+            "data"
+          ]
+        }
+      },
+      {
+        "id": "p3-unk",
+        "phase": "P3",
+        "name": "unk names",
+        "measure": {
+          "kind": "placeholders",
+          "paths": "^(src|include)/",
+          "classes": [
+            "unk"
+          ]
+        }
+      },
+      {
+        "id": "p3-slots",
+        "phase": "P3",
+        "name": "sp/var/temp/arg slots",
+        "measure": {
+          "kind": "placeholders",
+          "paths": "^(src|include)/",
+          "classes": [
+            "sp",
+            "var",
+            "arg"
+          ]
+        }
+      },
+      {
+        "id": "p3-roms",
+        "phase": "P3",
+        "name": "ROMs not byte-exact",
+        "measure": {
+          "kind": "roms",
+          "pool": "${home}/code/ragewars-decomp",
+          "wait": 600
+        }
+      },
+      {
+        "id": "p3-refusal",
+        "phase": "P3",
+        "name": "name-book rows refused (percent)",
+        "measure": {
+          "kind": "refused",
+          "file": "${home}/rig-state/names/submits.jsonl"
+        }
+      },
+      {
+        "id": "p4-fake",
+        "phase": "P4",
+        "name": "FAKEMATCH",
+        "measure": {
+          "kind": "regex",
+          "pattern": "FAKEMATCH",
+          "paths": "^(src|include)/"
+        }
+      },
+      {
+        "id": "p4-honest",
+        "phase": "P4",
+        "name": "HONEST-FORM-OPEN functions",
+        "measure": {
+          "kind": "marked",
+          "file": "${home}/rig-state/tas/claims.md",
+          "open": "HONEST-FORM-OPEN",
+          "closed": "HONEST-FORM-CLOSED|proven original form"
+        }
+      },
+      {
+        "id": "p4-field",
+        "phase": "P4",
+        "name": "FIELD() and cast-offset address math",
+        "measure": {
+          "kind": "regex",
+          "pattern": "\\bFIELD\\(|\\*\\(\\w+\\s*\\*\\)\\s*\\(\\(?(?:u8|s8|char)\\s*\\*\\)",
+          "paths": "^src/.*\\.(c|C|h|H)$"
+        }
+      },
+      {
+        "id": "p4-style",
+        "phase": "P4",
+        "name": "recipe style findings on the whole tree",
+        "measure": {
+          "kind": "style"
+        }
+      },
+      {
+        "id": "p4-roms",
+        "phase": "P4",
+        "name": "ROMs not byte-exact",
+        "measure": {
+          "kind": "roms",
+          "pool": "${home}/code/ragewars-decomp",
+          "wait": 600
+        }
+      }
+    ]
+  }
+}

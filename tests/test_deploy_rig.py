@@ -227,7 +227,6 @@ class UnsealTests(unittest.TestCase):
         self.assertNotIn("rmtree", Path(deploy_rig.__file__).read_text())
 
 
-
 def wrapper(path, body):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"#!/bin/sh\n{body}\n")

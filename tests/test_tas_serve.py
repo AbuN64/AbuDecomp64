@@ -818,7 +818,7 @@ class LiveTests(Base):
         self.wait(lambda: self.runs()["b"]["poll"] == 5)
         self.server._placeholder("q1", "boot-idle", 0, self.server.cfg["port"], None)
         self.wait(lambda: self.runs().get("q1", {}).get("status") == "queued")
-        self.server._forget("q1")
+        self.server._ended("q1")
         self.wait(lambda: "q1" not in self.runs())
 
     def test_live_json_is_small_and_holds_running_queued_and_the_newest_finished(self):
@@ -956,7 +956,7 @@ class ReachTests(Base):
         self.assertEqual(relay.snapshot()[0], reach_record(1, 5, bitset([2], 8)))
         self.until(lambda: relay.idle >= 3)  # it asked whether the run is alive, and a queued run keeps its socket
         self.assertFalse(relay.done)
-        self.server._forget("q1")
+        self.server._ended("q1")
         self.until(lambda: relay.done)
         self.assertFalse((run / "reach.bin").exists())  # no folder was made for it
 

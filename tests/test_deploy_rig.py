@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path, PurePosixPath
+from typing import ClassVar
 from unittest import mock
 
 spec = importlib.util.spec_from_file_location("deploy_rig", Path(__file__).parent.parent / "ci" / "deploy_rig.py")

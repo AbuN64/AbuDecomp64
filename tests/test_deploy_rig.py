@@ -552,7 +552,7 @@ class TemplateTests(unittest.TestCase):
     """The tracked template is valid for the tree that carries it."""
 
     def test_the_template_renders_and_this_tree_accepts_every_serve_key(self):
-        from abu_decomp import config, site_enhanced, tas, tas_serve  # noqa: PLC0415
+        from abu_decomp import config, site_enhanced, tas, tas_serve
 
         text = deploy_rig.render_profile(TEMPLATE_FILE.read_text(), "/home/example", {"w": "192.0.2.7"})
         with tempfile.TemporaryDirectory() as tmp:

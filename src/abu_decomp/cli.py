@@ -208,6 +208,14 @@ def _display_arguments(parser: argparse.ArgumentParser) -> None:
     capture = actions.add_parser("capture", help="write one PNG frame of a display read over RFB")
     capture.add_argument("subject", help="the display identity")
     capture.add_argument("--path", type=Path, required=True, help="absolute PNG path to write")
+    keys = actions.add_parser("input", help="send keys and pointer events to a display over RFB")
+    keys.add_argument("subject", help="the display identity")
+    keys.add_argument(
+        "--events",
+        required=True,
+        help='JSON list of {"key": "Control_L+c"}, {"text": "hi"}, {"pointer": {"x", "y", "buttons"}}, '
+        '{"click": {"x", "y", "button"}}',
+    )
     actions.add_parser("delete", help="stop a display's compositor and VNC server and remove its folder").add_argument(
         "subject", help="the display identity"
     )
@@ -223,6 +231,12 @@ def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         return asdict(shown.create(args.size)), 0, []
     if args.action == "capture":
         return shown.capture(args.subject, args.path), 0, []
+    if args.action == "input":
+        try:
+            events = json.loads(args.events)
+        except ValueError as exc:
+            raise DecompError("cli.arguments", f"--events is not JSON: {exc}") from exc
+        return shown.input(args.subject, events), 0, []
     record = shown.describe(args.subject) if args.action == "describe" else shown.delete(args.subject)
     return asdict(record), 0, []
 
@@ -1650,7 +1664,7 @@ COMMANDS: dict[str, Command] = {
     ),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
     "display": Command(
-        "create, describe, capture and delete a headless display (Linux: labwc + wayvnc)",
+        "create, describe, capture, input and delete a headless display (Linux: labwc + wayvnc)",
         _display_arguments,
         _run_display,
     ),

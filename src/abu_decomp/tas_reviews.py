@@ -8,11 +8,14 @@ from pathlib import Path
 
 def read(path: Path) -> tuple[dict[str, str], list[tuple[int, int, str]]]:
     """Read exact symbols or half-open guest address ranges, each with a measured cause."""
+    return parse(path.read_text(), path)
+
+
+def parse(text: str, path: Path) -> tuple[dict[str, str], list[tuple[int, int, str]]]:
+    """The ledger rows of `text` (read from `path`, which names a malformed row)."""
     symbols: dict[str, str] = {}
     ranges: list[tuple[int, int, str]] = []
-    if not path.exists():
-        return symbols, ranges
-    for number, line in enumerate(path.read_text().splitlines(), 1):
+    for number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         name, separator, cause = line.partition("\t")

@@ -118,6 +118,7 @@ _KEYS = frozenset(
         "port",
         "args",
         "rom",
+        "ledger",
         "env",
         "exit_after",
         "timeout_seconds",
@@ -213,6 +214,7 @@ def settings(profile: Profile) -> dict[str, Any]:
         "seat": _seat(profile, table.get("seat")),
         "args": [str(arg) for arg in table["args"]],
         "rom": profile.path("tas.rom", table["rom"]),
+        "ledger": profile.path("tas.ledger", table["ledger"]) if "ledger" in table else None,
         "env": {str(k): str(v) for k, v in table.get("env", {}).items()},
         "exit_after": int(table.get("exit_after", 120)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
@@ -1501,6 +1503,11 @@ def play(
         raise DecompError(
             "tas.oracle", "--oracle-pictures pictures the port every tas.oracle.shot_every polls (shots/port)"
         )
+    diffing = state_diff and not sanitize and not human and not retry and hold_at is None
+    if diffing and tas_statediff.available(profile) is None:
+        tas_statediff.load_ledger(
+            cfg
+        )  # refused here, before any process starts, not written into state-diff.json after
     original = tas_oracle.required(profile) if oracle else None
     if original and oracle_pictures:
         original["pictures"] = True
@@ -1619,7 +1626,7 @@ def play(
         record.update({"from": source, "at": take_at})
     with _run_record(run, record) as (children, reapers):
         state = None
-        if state_diff and not sanitize and not human and not retry and hold_at is None:
+        if diffing:
             try:
                 with _starting_play_process():
                     state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads, attach=bool(original))

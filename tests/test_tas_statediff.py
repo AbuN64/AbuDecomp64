@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
-from abu_decomp import statetypes
+from abu_decomp import DecompError, statetypes
 from abu_decomp import tas_statediff as sd
 
 HARNESS = Path(__file__).parent / "fixtures" / "tas_state_harness.c"
@@ -375,7 +375,7 @@ class FinishTests(unittest.TestCase):
 
     def ledger(self, text):
         (self.tmp / "lockstep-ignore.tsv").write_text(text)
-        self.session.cfg["env"] = {"N64C_PORT_DIR": str(self.tmp)}
+        self.session.cfg["ledger"] = self.tmp / "lockstep-ignore.tsv"
 
     def test_reviewed_symbol_is_excluded_with_its_cause(self):
         self.ledger("gPos\tNative render phase; measured first poll 1.\n")
@@ -402,30 +402,38 @@ class FinishTests(unittest.TestCase):
         self.assertEqual(summary["divergent"], 1)
         self.assertEqual(self.findings()[0]["symbol"], "gItems")
 
-    def test_a_relative_ledger_folder_is_the_profiles_not_the_working_directory(self):
-        (self.tmp / "profile" / "facts").mkdir(parents=True)
-        (self.tmp / "profile" / "facts" / "lockstep-ignore.tsv").write_text("gPos\tReviewed.\n")
-        self.session.cfg.update(root=self.tmp / "profile", env={"N64C_PORT_DIR": "facts"})
+    def test_a_ledger_is_read_from_tas_ledger_not_from_the_environment(self):
         self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
-        with mock.patch.object(sd, "_dump_pass") as dump:
-            summary = sd.finish(self.session, None, "movie-a", {})
-        dump.assert_not_called()
-        self.assertEqual((summary["raw_symbols"], summary["reviewed_symbols"]), (1, 1))
+        (self.tmp / "lockstep-ignore.tsv").write_text("gPos\tReviewed.\n")
+        self.session.cfg.update(env={"N64C_PORT_DIR": str(self.tmp)}, ledger=None)
+        with (
+            mock.patch.dict("os.environ", {"N64C_PORT_DIR": str(self.tmp)}),
+            self.assertRaisesRegex(DecompError, "tas.ledger names no"),
+        ):
+            sd.finish(self.session, None, "movie-a", {})
 
-    def test_a_missing_or_unnamed_ledger_refuses_instead_of_comparing_with_none(self):
+    def test_a_present_ledger_gives_the_raw_reviewed_unreviewed_census(self):
+        self.ledger("gPos\tReviewed.\n")
         self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
-        for env in ({}, {"N64C_PORT_DIR": str(self.tmp / "nowhere")}):
-            self.session.cfg["env"] = env
-            with mock.patch.dict("os.environ", {}, clear=False) as environ:
-                environ.pop("N64C_PORT_DIR", None)
-                summary = sd.finish(self.session, None, "movie-a", {})
-            self.assertIn("no reviewed-difference ledger at", summary["error"])
-            self.assertIn("no reviewed-difference ledger", json.loads((self.run / sd.DIFF).read_text())["error"])
+        with mock.patch.object(sd, "_dump_pass"):
+            sd.finish(self.session, None, "movie-a", {})
+        report = json.loads((self.run / sd.DIFF).read_text())
+        self.assertEqual(report["ledger"], str(self.tmp / "lockstep-ignore.tsv"))
+        self.assertEqual((report["raw_symbols"], report["reviewed_symbols"], report["unreviewed_symbols"]), (1, 1, 0))
+
+    def test_an_unset_or_missing_ledger_is_a_refusal_naming_the_field_and_path(self):
+        with self.assertRaisesRegex(DecompError, "tas.ledger names no"):
+            sd.load_ledger({})
+        gone = self.tmp / "nowhere" / "lockstep-ignore.tsv"
+        with self.assertRaises(DecompError) as caught:
+            sd.load_ledger({"ledger": gone})
+        self.assertEqual(caught.exception.key, "tas.ledger")
+        self.assertIn(f"tas.ledger: no readable reviewed-difference ledger at {gone}", str(caught.exception))
 
     def test_malformed_ledger_cannot_accept_a_difference(self):
         self.ledger("gPos\t\n")
         self.traces("1 0:1 1:2 2:3\n", "1 0:1 1:2 2:4\n")
-        with self.assertRaisesRegex(ValueError, "lockstep-ignore.tsv:1"):
+        with self.assertRaisesRegex(DecompError, "lockstep-ignore.tsv:1"):
             sd.finish(self.session, None, "movie-a", {})
 
     def test_the_record_names_the_checkpoint_events_and_both_coverages(self):

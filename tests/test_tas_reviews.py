@@ -33,8 +33,8 @@ class ReviewTests(unittest.TestCase):
                         tas_reviews.read(path)
 
     def test_missing_ledger_reviews_nothing(self):
-        with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(tas_reviews.read(Path(directory) / "absent"), ({}, []))
+        with tempfile.TemporaryDirectory() as directory, self.assertRaises(FileNotFoundError):
+            tas_reviews.read(Path(directory) / "absent")
 
     def test_oracle_verdict_requires_a_real_zero_unreviewed_comparison(self):
         record = {

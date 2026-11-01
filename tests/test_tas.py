@@ -772,6 +772,29 @@ class MovieTests(unittest.TestCase):
                 self.assertEqual(tas.read_record(run)["status"], "done")
                 self.assertIn("RuntimeError", row["subject"])
 
+    def test_a_state_diff_play_without_its_ledger_is_refused_before_anything_starts(self):
+        self.movie()
+        with (
+            self.port("1 aa\n", []),
+            mock.patch("abu_decomp.tas.tas_statediff.available", return_value=None),
+            mock.patch.object(tas.subprocess, "Popen") as spawn,
+        ):
+            with self.assertRaisesRegex(DecompError, "tas.ledger names no"):
+                tas.play(self.profile, "m", now=T0)
+            self.assertIsNone(tas.settings(self.profile)["ledger"])
+            seat = self.root / "seat.json"
+            data = json.loads(seat.read_text())
+            data["tas"]["ledger"] = "facts/lockstep-ignore.tsv"
+            seat.write_text(json.dumps(data))
+            profile = load_profile(seat)
+            self.assertEqual(tas.settings(profile)["ledger"], self.root / "facts" / "lockstep-ignore.tsv")
+            with self.assertRaisesRegex(
+                DecompError, f"tas.ledger: no readable reviewed-difference ledger at {self.root / 'facts'}"
+            ):
+                tas.play(profile, "m", now=T0)
+        spawn.assert_not_called()
+        self.assertEqual(tas.run_rows(tas.settings(self.profile)), [])
+
     def test_next_play_persists_stale_records_and_preserves_a_live_lease(self):
         self.movie()
         cfg = tas.settings(self.profile)

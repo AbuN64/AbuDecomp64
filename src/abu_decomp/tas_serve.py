@@ -63,6 +63,7 @@ from abu_decomp import (
     site_core,
     site_enhanced,
     site_frame,
+    site_live,
     site_map,
     site_stream,
     tas,
@@ -83,6 +84,7 @@ _SERVE_KEYS = frozenset(
     {
         "listen",
         "displays",
+        "live",
         "jobs",
         "inbox",
         "states",
@@ -258,6 +260,10 @@ class Server:
             profile.path("tas.serve.displays", serve["displays"])
             if "displays" in serve
             else Path.home() / ".local" / "state" / "abu-decomp" / "displays"
+        )
+        # The site's own live game (module site_live): `tas.serve.live` names its display size.
+        self.keeper = site_live.Keeper(
+            lambda: display.backend(self.displays), serve.get("live"), lambda folder: tas.live(profile, folder)
         )
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
@@ -1410,6 +1416,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.feed_stream()
                 elif (site := site_core.answer(server, "GET", path, query, b"")) is not None:
                     self.json(site[1], site[0])
+                elif path == "/watch":
+                    self.reply(b"", "text/plain", HTTPStatus.FOUND, extra={"Location": server.keeper.watch()})
                 elif path == "/live":
                     self.reply(viewer.live_page(display.records(server.displays)).encode(), "text/html; charset=utf-8")
                 elif head == "viewer" and run_id.endswith("/ws"):
@@ -1842,6 +1850,7 @@ def serve(profile: Profile) -> dict[str, Any]:
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
     server.live.start()
+    server.keeper.start()
     server.snapshots.start()
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()

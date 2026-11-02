@@ -106,6 +106,7 @@ Every HTML page the site answers (`/`, `/live`, `/viewer/<display>`, `/coverage/
 |---|---|---|
 | `GET /`, `/live`, `/coverage/...`, `/static/...` | `text/html`, `text/css`, `text/javascript` | 404 `{"error"}` for a file that is not there |
 | `GET /viewer/<display>` | `text/html`, the display's canvas page | 404 `no display '<display>'` |
+| `GET /watch` | 302 to `/viewer/<display>` of the site's own live game: tas serve keeps one display (`tas.serve.live` = its size, e.g. `"1280x720"`) running `tas.live`, starts the next game after a clean exit and stops on a crash (module `site_live`) | 404 `site.live.notfound` naming why: no `tas.serve.live`, the game is starting, or how the last one exited |
 | `GET /viewer/<display>/ws` | WebSocket carrying the display's RFB | 404 `no display '<display>'`; 400 `viewer.upgrade` without an upgrade |
 | `GET /video`, `/frame`, `/oracle`, `/shot`, `/diff`, `/log`, `/audio` `/<run>` | the run's stream, PNG, text or WAV | 404 `no run <run>`; 404 `not found` when the run lacks that file |
 | `GET /stream/<run>/<side>/<poll>.jpg` | `image/jpeg` | the typed refusal `{"kind": "error", "code", "run", "side", "poll"}`, 404 (`stream.run`, `stream.side`, `stream.poll`) |

@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from abu_decomp import DecompError, cli, display
+from abu_decomp import DecompError, cli, display, site_live, tas
+from abu_decomp.config import load_profile
 
 W, H = 4, 2
 
@@ -494,3 +495,47 @@ def test_invoke_with_a_command_runs_it_and_needs_no_profile(tmp_path: Path, monk
     monkeypatch.setattr(cli, "_profile", lambda path: pytest.fail("a command needs no profile"))
     assert cli.main(["display", "invoke", "--", "foot", "-e", "true"]) == 0
     assert ran == [["foot", "-e", "true"]] and shown.deleted == ["d-live"]
+
+
+def test_keeper_starts_the_game_again_after_a_clean_exit_and_stops_on_a_crash(tmp_path: Path) -> None:
+    """The site's own live display (module site_live): a menu quit (exit 0) starts the next game, a crash stops the
+    keeper and /watch names it; each display is deleted when its game exits."""
+    shown, codes, seen = Shown(tmp_path), [0, 139], []
+    keeper: site_live.Keeper
+
+    def run(argv: list[str], env: dict[str, str], check: bool) -> subprocess.CompletedProcess:
+        seen.append(keeper.watch())  # the viewer path while the game runs
+        shutil.rmtree(tmp_path / "d-live")  # Shown.create makes the folder again for the next game
+        return subprocess.CompletedProcess(argv, codes.pop(0))
+
+    profile = load_profile(live_profile(tmp_path))
+    keeper = site_live.Keeper(lambda: shown, "1280x720", lambda folder: tas.live(profile, folder), run)
+    keeper.run()
+    assert seen == ["/viewer/d-live", "/viewer/d-live"] and shown.deleted == ["d-live", "d-live"]
+    with pytest.raises(DecompError, match="d-live exited 139") as refused:
+        keeper.watch()
+    assert refused.value.key == "site.live.notfound"  # the site answers it as a 404 naming the crash
+
+
+def test_keeper_without_a_live_size_starts_nothing_and_watch_names_the_missing_key() -> None:
+    keeper = site_live.Keeper(lambda: pytest.fail("no display without tas.serve.live"), None, lambda folder: ([], {}))
+    keeper.start()
+    keeper.run()
+    with pytest.raises(DecompError, match=r"tas\.serve\.live"):
+        keeper.watch()
+
+
+def test_keeper_stops_when_the_display_cannot_start(tmp_path: Path) -> None:
+    class Broken(Shown):
+        def create(self, size: str, endpoint: str | None = None) -> display.Record:
+            raise DecompError("display.package", "labwc is not installed")
+
+    keeper = site_live.Keeper(lambda: Broken(tmp_path), "1280x720", lambda folder: pytest.fail("no game"))
+    keeper.run()
+    with pytest.raises(DecompError, match="could not start: labwc is not installed"):
+        keeper.watch()
+
+
+def test_home_page_reaches_the_live_game_in_one_click() -> None:
+    page = (Path(site_live.__file__).with_name("runner.html")).read_text()
+    assert '<a class="btn" href="/watch"' in page

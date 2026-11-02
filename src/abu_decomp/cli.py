@@ -241,25 +241,6 @@ def _display_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _invoke_display(
-    shown: Any, size: str, argv: list[str], game: Callable[[Path], tuple[list[str], dict[str, str]]]
-) -> dict[str, Any]:
-    """Run argv, or without one the profile's game (`game(folder)` names its argv and env), inside a fresh display and
-    delete the display when it exits. Nothing is recorded; the viewer shows it live."""
-    import os
-    import subprocess
-
-    record = shown.create(size)
-    try:
-        command, env = (argv, dict(os.environ)) if argv else game(Path(record.directory) / "game")
-        announce = {"display": record.identity, "viewer": f"/viewer/{record.identity}", "argv": command}
-        print(json.dumps(announce), file=sys.stderr, flush=True)
-        code = subprocess.run(command, env=env | shown.environment(record.identity), check=False).returncode
-    finally:
-        shown.delete(record.identity)
-    return {"display": record.identity, "exit": code}
-
-
 def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from dataclasses import asdict
 
@@ -269,11 +250,17 @@ def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
     if args.action == "create":
         return asdict(shown.create(args.size, args.endpoint)), 0, []
     if args.action == "invoke":
-        from abu_decomp import tas
+        from abu_decomp import site_live, tas
 
         argv = [a for a in args.argv if a != "--"]
         profile = None if argv else _profile(args.profile)  # refused before any display starts
-        return _invoke_display(shown, args.size, argv, lambda folder: tas.live(profile, folder)), 0, []
+
+        def announce(identity: str, command: list[str]) -> None:
+            line = {"display": identity, "viewer": f"/viewer/{identity}", "argv": command}
+            print(json.dumps(line), file=sys.stderr, flush=True)
+
+        game = (lambda _folder: (argv, dict(os.environ))) if argv else (lambda folder: tas.live(profile, folder))
+        return site_live.invoke(shown, args.size, game, announce), 0, []
     if args.action == "capture":
         return shown.capture(args.subject, args.path), 0, []
     if args.action == "input":

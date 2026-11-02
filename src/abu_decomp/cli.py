@@ -821,8 +821,8 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         metavar="LANE=PATH[:MESSAGE]",
-        help="an input to land, commit and push; repeat it for every ready input, landed in order in one round with "
-        "one commit each and one push (MESSAGE as for land)",
+        help="an input to land and commit on the checked-out branch; repeat it for every ready input, landed in order "
+        "in one round with one commit each, never a push (MESSAGE as for land)",
     )
     parser.add_argument(
         "--worktree",
@@ -830,8 +830,8 @@ def _ship_arguments(parser: argparse.ArgumentParser) -> None:
         const="worktree",
         metavar="NAME[:MESSAGE]",
         help="the tree's own tracked changes are the input (the default when no --patch is given): captured as a "
-        "patch, gated like one, committed alone and pushed; the tree ends clean at the new commit, and a refusal puts "
-        "it back exactly as it was",
+        "patch, gated like one, committed alone on the checked-out branch, never pushed; the tree ends clean at the "
+        "new commit, and a refusal puts it back exactly as it was",
     )
     parser.add_argument(
         "--no-proof",
@@ -1647,7 +1647,8 @@ COMMANDS: dict[str, Command] = {
         _run_standalone,
     ),
     "ship": Command(
-        "land every ready input on the warm tree in one round, commit each and push fast-forward to the branch",
+        "land every ready input on the warm tree in one round, commit each on the checked-out card branch "
+        "(never a push: Land is the only pusher)",
         _ship_arguments,
         _run_ship,
     ),

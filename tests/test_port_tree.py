@@ -256,7 +256,7 @@ class PortTreeTests(unittest.TestCase):
         self.assertEqual((code, result["to"]), (0, tip))
         self.assertIn(tip, (self.tree / "decomp.cmake").read_text())
 
-    def test_a_port_ship_pushes_the_trees_change_to_its_own_remote(self) -> None:
+    def test_a_port_ship_commits_on_the_trees_branch_and_never_pushes(self) -> None:
         (self.tree / "decomp.cmake").write_text(f"GIT_TAG {self.pin1}\nset(x -DZ)\n")
 
         def landing(*a: Any, **k: Any) -> Any:
@@ -276,7 +276,9 @@ class PortTreeTests(unittest.TestCase):
             landing=landing, append=lambda p, r: {"ok": True},
         )  # fmt: skip
         self.assertEqual(code, 0, findings)
-        self.assertEqual(git(self.remote, "rev-parse", "main").strip(), result["pushed"])
+        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), result["landed"])
+        # the port's remote is untouched
+        self.assertNotEqual(git(self.remote, "rev-parse", "main").strip(), result["landed"])
         self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no"), "")
 
 

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from abu_decomp import DecompError
 from abu_decomp.config import load_profile
@@ -79,15 +80,16 @@ class ShipTests(unittest.TestCase):
         )
 
     def remote_tip(self) -> str:
-        return git(self.remote, "rev-parse", "main").strip()
+        """The tip of the card branch the ship commits on (the remote's main never moves)."""
+        return git(self.tree, "rev-parse", "main").strip()
 
-    def test_a_landed_input_is_committed_as_the_author_and_pushed_fast_forward(self) -> None:
+    def test_a_landed_input_is_committed_on_the_branch_as_the_author(self) -> None:
         base = self.remote_tip()
         result, code, _ = self.ship()
         self.assertEqual(code, 0)
-        self.assertEqual(result["pushed"], self.remote_tip())
-        self.assertEqual(git(self.remote, "rev-parse", "main~1").strip(), base)
-        log = git(self.remote, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", "main")
+        self.assertEqual(result["landed"], self.remote_tip())
+        self.assertEqual(git(self.tree, "rev-parse", "main~1").strip(), base)
+        log = git(self.tree, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%B", "main")
         self.assertEqual(log.strip(), "mo <mo@example.org>|mo <mo@example.org>|Match f_matched")
         self.assertEqual(git(self.tree, "status", "--porcelain"), "")
         self.assertTrue((self.tree / "build.o").exists())
@@ -99,7 +101,7 @@ class ShipTests(unittest.TestCase):
     def test_a_refused_input_pushes_nothing_and_leaves_the_tree_at_the_branch(self) -> None:
         base = self.remote_tip()
         result, code, _ = self.ship(refuse="land.check")
-        self.assertEqual((code, result["pushed"], result["refused"]["key"]), (1, None, "land.check"))
+        self.assertEqual((code, result["landed"], result["refused"]["key"]), (1, None, "land.check"))
         self.assertEqual(self.remote_tip(), base)
         self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), base)
         self.assertEqual(git(self.tree, "status", "--porcelain"), "")
@@ -111,20 +113,23 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(git(self.tree, "status", "--porcelain"), "")
         self.assertTrue((self.tree / "build.o").exists())
 
-    def test_a_branch_that_moved_lands_the_input_again_on_the_new_tip(self) -> None:
-        def someone_pushes() -> None:
-            self.before_push = lambda: None
-            (self.other / "b.c").write_text("int b;\n")
-            git(self.other, "add", ".")
-            git(self.other, "commit", "-q", "-m", "other")
-            git(self.other, "push", "-q", "origin", "HEAD:main")
+    def test_a_ship_issues_no_git_push_and_leaves_the_remote_untouched(self) -> None:
+        from abu_decomp.ship import Ship
 
-        self.before_push = someone_pushes
-        _, code, _ = self.ship()
+        calls: list[tuple[str, ...]] = []
+        real = Ship.git
+
+        def spy(self_: Any, *args: str, **kw: Any) -> Any:
+            calls.append(args)
+            return real(self_, *args, **kw)
+
+        remote_before = git(self.remote, "for-each-ref")
+        with mock.patch.object(Ship, "git", spy):
+            _, code, _ = self.ship()
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.lands), 2)
-        self.assertEqual(self.lands[1], git(self.remote, "rev-parse", "main~1").strip())
-        self.assertEqual(git(self.remote, "log", "-1", "--format=%s", "main").strip(), "Match f_matched")
+        self.assertEqual([c for c in calls if c and c[0] in ("push", "fetch", "ls-remote", "pull")], [])
+        self.assertEqual(git(self.remote, "for-each-ref"), remote_before)
+        self.assertNotEqual(self.remote_tip(), git(self.remote, "rev-parse", "main").strip())
 
     def test_an_input_main_already_holds_pushes_nothing(self) -> None:
         def fake(profile: Any, tree: Path, base: str, patches: Any, **_: Any) -> Any:
@@ -143,8 +148,8 @@ class ShipTests(unittest.TestCase):
         git(self.tree, "pull", "-q")
         (self.tree / "c.c").write_text("int c; /* a lane's fuzzy save */\n")
         result, code, findings = self.ship()
-        self.assertEqual((code, result["pushed"]), (0, self.remote_tip()))
-        self.assertNotIn("fuzzy", git(self.remote, "show", "main:c.c"))  # never shipped with the input
+        self.assertEqual((code, result["landed"]), (0, self.remote_tip()))
+        self.assertNotIn("fuzzy", git(self.tree, "show", "main:c.c"))  # never shipped with the input
         self.assertEqual((self.tree / "c.c").read_text(), "int c; /* a lane's fuzzy save */\n")
         self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no").split(), ["M", "c.c"])
         self.assertEqual([f for f in findings if f["key"] == "ship.parked"], [])
@@ -206,14 +211,14 @@ class ShipTests(unittest.TestCase):
         patches = [(lane, self.root / f"{lane}.patch") for lane in lanes]
         return ship(self.profile, self.tree, patches, landing=self.batch(**fake), append=append)
 
-    def test_every_ready_input_lands_in_one_round_and_one_push_with_a_commit_each(self) -> None:
+    def test_every_ready_input_lands_in_one_round_with_a_commit_each_and_no_push(self) -> None:
         base = self.remote_tip()
         result, code, _ = self.ship_all(["A", "B", "C"])
         self.assertEqual((code, self.calls), (0, [["A", "B", "C"]]))  # one land: one setup, one check
-        self.assertEqual(git(self.remote, "log", "--format=%s", f"{base}..main").split("\n")[:3], [
+        self.assertEqual(git(self.tree, "log", "--format=%s", f"{base}..main").split("\n")[:3], [
             "Match C_f", "Match B_f", "Match A_f"])  # fmt: skip
         self.assertEqual([r["status"] for r in result["inputs"]], ["shipped"] * 3)
-        self.assertEqual(len([s for s in result["steps"] if s["step"] == "push"]), 1)
+        self.assertEqual([s for s in result["steps"] if s["step"] == "push"], [])
         self.assertEqual(self.events[-1]["payload"]["inputs"][1], {"lane": "B", "status": "shipped", "key": None})
 
     def test_an_input_that_lands_only_in_part_is_refused_whole_and_the_rest_land_again(self) -> None:
@@ -236,7 +241,7 @@ class ShipTests(unittest.TestCase):
     def test_every_input_landing_only_in_part_pushes_nothing(self) -> None:
         base = self.remote_tip()
         result, code, _ = self.ship_all(["B"], split="B")
-        self.assertEqual((code, result["pushed"], self.remote_tip()), (1, None, base))
+        self.assertEqual((code, result["landed"], self.remote_tip()), (1, None, base))
         self.assertEqual(git(self.tree, "status", "--porcelain"), "")
 
     def test_two_inputs_with_one_lane_name_are_refused(self) -> None:
@@ -277,15 +282,15 @@ class ShipWorktreeTests(unittest.TestCase):
             git(self.tree, "symbolic-ref", "-q", "HEAD").strip(),
         )
 
-    def test_the_trees_own_change_is_gated_committed_and_pushed_and_the_tree_ends_clean(self) -> None:
+    def test_the_trees_own_change_is_gated_committed_and_the_tree_ends_clean(self) -> None:
         (self.tree / "a.c").write_text("int a2;\n")
         (self.tree / "scratch.txt").write_text("untracked stays\n")
         result, code, _ = self.work()
         self.assertEqual(code, 0)
-        self.assertEqual(result["pushed"], self.remote_tip())
-        self.assertEqual(git(self.remote, "show", "main:a.c"), "int a2;\n")
+        self.assertEqual(result["landed"], self.remote_tip())
+        self.assertEqual(git(self.tree, "show", "main:a.c"), "int a2;\n")
         self.assertEqual(git(self.tree, "status", "--porcelain", "--untracked-files=no"), "")
-        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), result["pushed"])
+        self.assertEqual(git(self.tree, "rev-parse", "HEAD").strip(), result["landed"])
         self.assertEqual(git(self.tree, "symbolic-ref", "-q", "HEAD").strip(), "refs/heads/main")
         self.assertTrue((self.tree / "scratch.txt").exists() and (self.tree / "build.o").exists())
 
@@ -293,21 +298,9 @@ class ShipWorktreeTests(unittest.TestCase):
         (self.tree / "a.c").write_text("int a2;\n")
         before = self.snapshot()
         result, code, _ = self.work(refuse="land.check")
-        self.assertEqual((code, result["pushed"]), (1, None))
+        self.assertEqual((code, result["landed"]), (1, None))
         self.assertEqual(self.snapshot(), before)
         self.assertEqual((self.tree / "a.c").read_text(), "int a2;\n")
-
-    def test_changes_that_do_not_apply_on_the_new_tip_are_refused_and_kept(self) -> None:
-        (self.other / "a.c").write_text("int other;\n")
-        git(self.other, "commit", "-q", "-am", "other")
-        git(self.other, "push", "-q", "origin", "HEAD:main")
-        (self.tree / "a.c").write_text("int mine;\n")
-        before = self.snapshot()
-        with self.assertRaises(DecompError) as raised:
-            self.work()
-        self.assertEqual(raised.exception.key, "ship.worktree_conflict")
-        self.assertEqual(self.snapshot(), before)
-        self.assertEqual(self.lands, [])
 
 
 class ShipBoostTests(unittest.TestCase):

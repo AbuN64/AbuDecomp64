@@ -54,7 +54,7 @@ def read(pin: dict[str, Any], tree: Path) -> dict[str, list[str]]:
 
 def refresh(run: Run, repo: Path) -> None:
     """Bring `repo`'s remote-tracking refs to the remote's tips (a repo with no remote is its own source of truth):
-    a pin that follows `origin/main` must read the tip a ship pushed a minute ago, never a checkout's old state."""
+    a pin that follows `origin/main` must read the tip a land pushed a minute ago, never a checkout's old state."""
     code, out, err = run(["git", "-C", str(repo), "remote"], repo, None, 60)
     if code or not out.split():
         return

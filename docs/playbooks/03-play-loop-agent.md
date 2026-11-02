@@ -71,7 +71,7 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
 4. **Make it a class.** Name the defect's class, find every other site across the whole ROM with a detector,
    fix the cheap ones, and make the detector a gate that refuses new sites.
 5. **Prove and land.** Rebuild the port, replay the movie past the old stop, replay the other movies (they
-   must stay ok), then land each repo with one line naming the defect and push. A decomp repo takes commits only
+   must stay ok), then commit each repo on the card branch with one line naming the defect. A decomp repo takes commits only
    through the evidence gate: leave the change in the tree (never restore or revert) and
    run `decomp ship --tree REPO --worktree LANE[:MESSAGE]` (the tree's own tracked changes are the input; a refusal leaves
    them untouched; or `--patch LANE=PATH.patch`, or `land`). For each function the patch touches the gate
@@ -79,17 +79,17 @@ its switcher pins another; `tas watch` also reports `play-start` / `play-end`. N
    --function SYM` with the C as candidate), matches. It refuses a step down, and a non-matching body that does not
    raise k unless its linked bytes are identical; a refusal prints the function, both rungs and the behave command.
    The port takes the same verb: `decomp ship --tree PORT --worktree LANE:MESSAGE` builds it and replays every movie
-   (`tas play --all`, worse must be empty) before it pushes to the port's own remote. When RW moved past the port's pin
+   (`tas play --all`, worse must be empty) and commits on the port's checked-out card branch; ship never pushes. When RW moved past the port's pin
    run `decomp repin --tree PORT` first (it sets every pin place; its `next` is the ship command); never edit pins by hand.
    The same gate also refuses a body that `recipe try` never produced (hand-written: `recipe work SYM`, edit the
    candidate file, `recipe try SYM`, then copy that body unchanged) and a body that adds m2c leftovers (`spNN`,
    `temp_*`, `var_*`, `M2C_FIELD`/offset casts, raw `0x80...` pointers, `void *` field access); it names each finding
    with its line and `recipe style FILE`. Leftovers the parent already held do not block.
    A PreToolUse hook (`~/.claude-local/hooks/guard-git.py`, repo list in `guard-git.json`) refuses raw `git commit` and
-   `git push` in those repos and names this command.
+   `git push` in those repos and names this command. End the card in Testing: Land is the only pusher.
 6. **Report in three lines**: what you saw, why it happened, what changed. Then play the next section.
 
-**Guardrails.** One cycle at a time. Main branch only; commits under the owner's identity, no attribution
+**Guardrails.** One cycle at a time. Work on the card branch; commits under the owner's identity, no attribution
 lines. Never revert, reset or stash work you did not write. Nothing runs longer than five minutes of CPU
 without a reason you can state. Every command you run goes through `decomp` (it records what you did on the
 activity feed). When stuck after two hypotheses, write what you know and ask the person.

@@ -609,7 +609,7 @@ def settings(profile: Profile, tree: Path | None = None) -> dict[str, Any]:
         if "recipe" in table
         else [],
         "recipe_suffixes": tuple(table.get("recipe_suffixes", proposals.SUFFIXES)),
-        "remote": str(table.get("remote", "origin")),  # where `decomp ship` pushes
+        "remote": str(table.get("remote", "origin")),  # fetched by the worktree seed and the deploy
         "branch": str(table.get("branch", "main")),
         "author": str(table["author"]) if table.get("author") else None,  # "Name <email>" of shipped commits
         "mode": mode,  # plain: only the tree's own steps build it (no unbake setup, sync or audit)
@@ -2112,7 +2112,7 @@ class Landing:
     def carried(self) -> bool:
         """The build gates of a round whose inputs carry their proofs: the lanes built and verified these exact files
         in their own work trees (shipproof), so setup, check, sync and audit are recorded as carried, not run. What
-        `unbake sync` would write (README, maps, progress) is regenerated in a batch after the push (ship --regen)."""
+        `unbake sync` would write (README, maps, progress) is regenerated in a batch after the ship (ship --regen)."""
         started = self.clock()
         for name in ("setup", "check", "sync_after", "audit"):
             self.gate(name, True, started, carried=True)

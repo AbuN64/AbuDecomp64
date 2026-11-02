@@ -321,11 +321,10 @@ class CarriedShipTests(unittest.TestCase):
         )  # fmt: skip
 
     def push_other(self, name: str) -> None:
-        other = self.shared.other
-        (other / name).write_text("int x;\n")
-        test_ship.git(other, "add", ".")
-        test_ship.git(other, "commit", "-q", "-m", name)
-        test_ship.git(other, "push", "-q", "origin", "HEAD:main")
+        """The branch tip moves under the ship: a commit lands on the tree's own checked-out branch."""
+        (self.tree / name).write_text("int x;\n")
+        test_ship.git(self.tree, "add", ".")
+        test_ship.git(self.tree, "commit", "-q", "-m", name)
 
     def test_a_proof_that_holds_lands_with_no_build_and_is_stored_with_the_commit(self) -> None:
         self.push_other("unrelated.c")  # the branch moved after the proof, in a file no unit of it reads
@@ -334,14 +333,14 @@ class CarriedShipTests(unittest.TestCase):
         self.assertEqual([row.get("carry") for row in self.lands], [True])
         self.assertTrue(result["carried"])
         self.assertLess(result["lock_seconds"], 10)
-        sha = result["pushed"]
-        self.assertEqual(sha, test_ship.git(self.remote, "rev-parse", "main").strip())
+        sha = result["landed"]
+        self.assertEqual(sha, test_ship.git(self.tree, "rev-parse", "main").strip())
         note = json.loads(test_ship.git(self.tree, "notes", f"--ref={shipproof.NOTES}", "show", sha))
         self.assertEqual((note["mode"], note["base"] == self.base, note["lane"]), ("carried", False, "L"))
         landed = json.loads((self.tree / ".git" / shipproof.LANDED / f"{sha}.json").read_text())
         self.assertIn("us:a.c", landed["proof"]["units"])
-        self.assertTrue(test_ship.git(self.remote, "rev-parse", f"refs/notes/{shipproof.NOTES}").strip())
-        self.assertEqual(self.spawned, 1)  # the batch regeneration starts after a carried push
+        self.assertTrue(test_ship.git(self.tree, "rev-parse", f"refs/notes/{shipproof.NOTES}").strip())
+        self.assertEqual(self.spawned, 1)  # the batch regeneration starts after a carried commit
         self.assertEqual(self.proved, 1)
 
     def test_a_commit_that_touched_a_file_the_proof_read_makes_the_round_build(self) -> None:
@@ -451,12 +450,10 @@ class RegenTests(unittest.TestCase):
         )  # fmt: skip
 
     def push_other(self, name: str) -> None:
-        other = self.shared.other
-        test_ship.git(other, "pull", "-q", "--rebase", "origin", "main")
-        (other / name).write_text("int x;\n")
-        test_ship.git(other, "add", ".")
-        test_ship.git(other, "commit", "-q", "-m", name)
-        test_ship.git(other, "push", "-q", "origin", "HEAD:main")
+        """The branch tip moves under the ship: a commit lands on the tree's own checked-out branch."""
+        (self.tree / name).write_text("int x;\n")
+        test_ship.git(self.tree, "add", ".")
+        test_ship.git(self.tree, "commit", "-q", "-m", name)
 
     def test_it_waits_until_enough_ships_landed_then_regenerates_in_one_commit(self) -> None:
         self.regen(regen_now=True)  # the first regeneration sets the mark
@@ -468,7 +465,7 @@ class RegenTests(unittest.TestCase):
         result, code, _ = self.regen(regen_min=2, regen_age=1e9)
         self.assertEqual((code, result["regen"]["due"], self.built), (0, True, 2))
         self.assertEqual(result["regen"]["files"], ["README.md"])
-        tip = test_ship.git(self.remote, "log", "-1", "--format=%an|%s", "main").strip()
+        tip = test_ship.git(self.tree, "log", "-1", "--format=%an|%s", "main").strip()
         self.assertEqual(tip, "mo|Regenerate maps and progress after 2 ships")
         _, code, _ = self.regen(regen_min=2, regen_age=1e9)  # nothing landed since: not due again
         self.assertEqual(self.built, 2)
@@ -476,10 +473,10 @@ class RegenTests(unittest.TestCase):
     def test_a_branch_that_does_not_build_is_a_finding_and_no_commit(self) -> None:
         self.push_other("one.c")
         self.verify = False
-        before = test_ship.git(self.remote, "rev-parse", "main").strip()
+        before = test_ship.git(self.tree, "rev-parse", "main").strip()
         result, code, findings = self.regen(regen_now=True)
-        self.assertEqual((code, findings[0]["key"], result["pushed"]), (1, "ship.main_red", None))
-        self.assertEqual(test_ship.git(self.remote, "rev-parse", "main").strip(), before)
+        self.assertEqual((code, findings[0]["key"], result["landed"]), (1, "ship.main_red", None))
+        self.assertEqual(test_ship.git(self.tree, "rev-parse", "main").strip(), before)
         self.assertTrue((self.tree / ".git" / "decomp-ship.red.json").exists())
 
 
@@ -553,7 +550,7 @@ class TypesTrainTests(CarriedShipTests):
         self.assertNotIn("objects", self.lands[0])  # the body never does
         self.assertEqual([row.get("carry") for row in self.lands], [True])
         self.assertTrue(result["carried"])
-        subjects = test_ship.git(self.remote, "log", "--format=%s", "-3").splitlines()
+        subjects = test_ship.git(self.tree, "log", "--format=%s", "-3").splitlines()
         self.assertEqual(subjects[0], "Match f")
         self.assertTrue(subjects[1].startswith("Types for Match func_8000_de"), subjects)
         self.assertIn("train", [step["step"] for step in result["steps"]])

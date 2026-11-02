@@ -35,7 +35,7 @@ This loop turns each one into named, behaving C in the decomp.
 6. **Give it a clean name, then land it.** Name the function, its locals,
    fields and file through Recipe (`recipe name` / `structure`). A function
    leaves this loop named and documented, never as `func_XXXXXXXX`. Land it
-   through `decomp land` / `decomp ship`, matched if the bytes match, else as
+   through `decomp land` / `decomp ship` (a commit on the card branch; Land pushes it), matched if the bytes match, else as
    the file's non-matching body, so the port and the decomp share one body.
 7. **Replay again.** The same movie must now pass or fail later. A movie that
    passes becomes a regression test: it stays in the TAS folder and runs after

@@ -27,7 +27,7 @@ class BatchTests(unittest.TestCase):
         self.__dict__.update({k: v for k, v in shared.__dict__.items() if k in {"root", "remote", "tree", "profile"}})
 
     def remote_tip(self) -> str:
-        return test_ship.git(self.remote, "rev-parse", "main").strip()
+        return test_ship.git(self.tree, "rev-parse", "main").strip()
 
     def multi(self, calls: list[list[str]], refuse: str = "") -> Any:
         def fake(profile: Any, tree: Path, base: str, patches: Any, **_: Any) -> Any:
@@ -77,9 +77,9 @@ class BatchTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual([row["lane"] for row in shipped["inputs"]], [lane])
             self.assertEqual(shipped["functions"], [lane])
-            self.assertEqual(shipped["pushed"], self.remote_tip())
+            self.assertEqual(shipped["landed"], self.remote_tip())
         self.assertEqual(
-            test_ship.git(self.remote, "log", "--format=%s", "-2", "main").split(), ["Match", "L2", "Match", "L1"]
+            test_ship.git(self.tree, "log", "--format=%s", "-2", "main").split(), ["Match", "L2", "Match", "L1"]
         )
         self.assertEqual(list((common / "decomp-ship.inputs").glob("*")), [])
 
@@ -94,7 +94,7 @@ class BatchTests(unittest.TestCase):
 
     def test_the_round_verdict_is_split_per_input(self) -> None:
         shipped = {
-            "pushed": "abc",
+            "landed": "abc",
             "inputs": [
                 {"lane": "A", "status": "refused", "key": "land.check", "message": "no"},
                 {"lane": "B", "status": "shipped", "functions": ["fb"]},
@@ -102,10 +102,10 @@ class BatchTests(unittest.TestCase):
         }
         mine, code, found = restrict((shipped, 0, [{"key": "x", "lane": "A"}, {"key": "y", "lane": "B"}]), {"A"})
         self.assertEqual(
-            (code, mine["pushed"], mine["refused"]["key"], [f["key"] for f in found]), (1, None, "land.check", ["x"])
+            (code, mine["landed"], mine["refused"]["key"], [f["key"] for f in found]), (1, None, "land.check", ["x"])
         )
         mine, code, _ = restrict((shipped, 0, []), {"B"})
-        self.assertEqual((code, mine["pushed"], mine["functions"]), (0, "abc", ["fb"]))
+        self.assertEqual((code, mine["landed"], mine["functions"]), (0, "abc", ["fb"]))
         json.dumps(mine)
 
 

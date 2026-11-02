@@ -152,9 +152,9 @@ def restrict(
         "functions": names,
         "batch": {"lanes": [row["lane"] for row in shipped.get("inputs", [])], "adopter": adopter},
     }
-    if shipped.get("pushed") and len(lost) == len(inputs) and inputs:  # the round pushed, this ship's inputs did not
-        mine["pushed"], mine["refused"] = None, {"key": lost[0].get("key"), "message": lost[0].get("message")}
+    if shipped.get("landed") and len(lost) == len(inputs) and inputs:  # the round committed, this ship's inputs did not
+        mine["landed"], mine["refused"] = None, {"key": lost[0].get("key"), "message": lost[0].get("message")}
         code = 1
-    elif shipped.get("pushed"):
+    elif shipped.get("landed"):
         code = 0
     return mine, code, own

@@ -702,10 +702,35 @@ class HttpTests(Base):
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)
 
+    def test_viewer_audio_streams_the_displays_capture_as_a_wav_and_ends_it(self):
+        import subprocess
+        import sys
+
+        from abu_decomp import display
+
+        pcm = struct.pack("<4h", 0, 0, 1200, -900) * 3
+        started = []
+
+        def audio(_self, subject):
+            started.append(subject)
+            argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({pcm!r})"]
+            return subprocess.Popen(argv, stdout=subprocess.PIPE)
+
+        with (
+            mock.patch.object(display.Linux, "audio", audio),
+            urllib.request.urlopen(self.base + "/viewer/d-aa/audio", timeout=10) as reply,
+        ):
+            kind, body = reply.headers["Content-Type"], reply.read()
+        self.assertEqual(started, ["d-aa"])
+        self.assertEqual(kind, "audio/wav")
+        self.assertEqual(body[:44], tas_serve.wav_header(display.AUDIO_RATE))
+        self.assertEqual(body[44:], pcm)
+
     def test_a_missing_display_or_run_is_a_404_naming_it(self):
         for url, named in (
             ("/viewer/d-none", "d-none"),
             ("/viewer/d-none/ws", "d-none"),
+            ("/viewer/d-none/audio", "d-none"),
             ("/frame/nope", "nope"),
             ("/video/nope", "nope"),
             ("/log/nope", "nope"),

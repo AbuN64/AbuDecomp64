@@ -96,6 +96,11 @@ def fake_spawn(argv, env, **_kw):
     run = Path(env["XDG_RUNTIME_DIR"])
     if argv[0] == "labwc":
         (run / "wayland-0").touch()
+    if argv[0] == "pipewire":
+        (run / "pipewire-0").touch()
+    if argv[0] == "pipewire-pulse":
+        assert (run / "pulse").is_dir()  # the adapter made the socket's folder to watch it
+        (run / "pulse" / "native").touch()
     if argv[0] == "wayvnc" or argv[-1].endswith(display.HOLD):
         Path(argv[-1]).touch()
     fake_spawn.argv.append(argv)
@@ -123,12 +128,21 @@ def test_create_starts_labwc_randr_wayvnc_and_checks_the_size(tmp_path: Path, to
     with pytest.raises(DecompError, match=f"is {W}x{H}, not 1280x720"):
         linux.create("1280x720")
     thread.join()
-    assert [a[0] for a in fake_spawn.argv] == ["labwc", "wlr-randr", "wayvnc"]
+    sound = ["pipewire", "wireplumber", "pipewire-pulse", "pactl", "pactl"]
+    assert [a[0] for a in fake_spawn.argv] == ["labwc", "wlr-randr", *sound, "wayvnc"]
+    assert fake_spawn.argv[5][-1] == "channels=2" and fake_spawn.argv[6][-2:] == ["set-default-sink", display.SINK]
     assert fake_spawn.argv[1][-2:] == ["--custom-mode", "1280x720"]
     near, thread = served([])
     ok = display.Linux(tmp_path / "root", spawn=fake_spawn, connect=lambda _path: near).create(f"{W}x{H}")
     thread.join()
-    assert ok.identity.startswith("d-") and set(ok.pids) == {"labwc", "wayvnc", "holder"}
+    assert ok.identity.startswith("d-") and set(ok.pids) == {
+        "labwc", "pipewire", "wireplumber", "pipewire-pulse", "wayvnc", "holder"
+    }  # fmt: skip
+    assert linux.environment(ok.identity)["XDG_RUNTIME_DIR"] == str(Path(ok.directory) / "run")
+    capture = linux.audio(ok.identity)
+    assert isinstance(capture, FakeTool)
+    assert fake_spawn.argv[-1][0] == "parec" and f"--device={display.SINK}.monitor" in fake_spawn.argv[-1]
+    assert f"--rate={display.AUDIO_RATE}" in fake_spawn.argv[-1] and "--format=s16le" in fake_spawn.argv[-1]
     assert linux.describe(ok.identity) == ok
 
 
@@ -539,3 +553,29 @@ def test_keeper_stops_when_the_display_cannot_start(tmp_path: Path) -> None:
 def test_home_page_reaches_the_live_game_in_one_click() -> None:
     page = (Path(site_live.__file__).with_name("runner.html")).read_text()
     assert '<a class="btn" href="/watch"' in page
+
+
+def test_audio_refuses_a_display_without_a_sound_server_and_on_windows(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "d-00000000").mkdir(parents=True)
+    record = display.Record("d-00000000", 8, 8, "rfb", {}, str(root / "d-00000000"))
+    (root / "d-00000000" / "display.json").write_text(json.dumps(record.__dict__))
+    with pytest.raises(DecompError, match="no sound server"):
+        display.Linux(root, spawn=fake_spawn).audio("d-00000000")
+    with pytest.raises(DecompError, match="Unsupported"):
+        display.Windows(root).audio("d-00000000")
+
+
+def test_create_names_a_sound_step_that_fails(tmp_path: Path, tools: None) -> None:
+    class Failed(FakeTool):
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    def spawn(argv, env, **kw):
+        tool = fake_spawn(argv, env, **kw)
+        return Failed() if argv[0] == "pactl" else tool
+
+    (tmp_path / "root").mkdir()
+    with pytest.raises(DecompError, match="pactl load-module failed"):
+        display.Linux(tmp_path / "root", spawn=spawn).create("1280x720")
+    assert not list((tmp_path / "root").iterdir())  # a failed create leaves no folder

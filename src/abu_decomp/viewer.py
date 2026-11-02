@@ -12,12 +12,15 @@ import hashlib
 import select
 import socket
 import struct
+import subprocess
 from collections.abc import Callable
 from html import escape
+from typing import BinaryIO
 
 from abu_decomp import site_frame
 from abu_decomp.display import Record
 
+AUDIO_CHUNK = 4096  # bytes of a display's sound sent at once: ~21 ms at 48 kHz s16 stereo
 GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 CHUNK = 65536
 
@@ -112,11 +115,27 @@ def serve_socket(client: socket.socket, key: str, record: Record, connect: Calla
         upstream.close()
 
 
+def stream_audio(out: BinaryIO, capture: subprocess.Popen, header: bytes) -> None:
+    """Send the WAV header, then the capture's bytes as they come, until either side ends; the capture ends with it."""
+    try:
+        out.write(header)
+        out.flush()
+        while chunk := capture.stdout.read1(AUDIO_CHUNK):  # type: ignore[union-attr]
+            out.write(chunk)
+            out.flush()
+    except OSError:  # the viewer left
+        pass
+    finally:
+        capture.kill()
+        capture.wait()
+
+
 def viewer_page(record: Record) -> str:
     """The full-window page of one display: the canvas and the client script, which dials /viewer/<id>/ws."""
     ident = escape(record.identity)
     canvas = (
-        f'<canvas id=screen tabindex=0 data-display="{ident}" data-ws="/viewer/{ident}/ws"></canvas>'
+        f'<canvas id=screen tabindex=0 data-display="{ident}" data-ws="/viewer/{ident}/ws"'
+        f' data-audio="/viewer/{ident}/audio"></canvas>'
         '<script type=module src="/static/site/viewer.js"></script>'
     )
     return site_frame.document("display " + ident, canvas, cls="viewer", chrome=False)
@@ -129,7 +148,8 @@ def live_page(records: list[Record]) -> str:
         return site_frame.document("live", empty, here="/live")
     cells = "".join(
         f"<figure><figcaption>{escape(r.identity)} {r.width}x{r.height}</figcaption>"
-        f'<iframe src="/viewer/{escape(r.identity)}" style="aspect-ratio:{r.width}/{r.height}"></iframe></figure>'
+        f'<iframe allow=autoplay src="/viewer/{escape(r.identity)}"'
+        f' style="aspect-ratio:{r.width}/{r.height}"></iframe></figure>'
         for r in records
     )
     return site_frame.document("live", cells, here="/live")

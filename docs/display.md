@@ -41,8 +41,20 @@ socket `START_SECONDS` each (a tool that exits wakes it through its pidfd), and 
 `delete` sends SIGTERM to each tool and the holder, waits on its pidfd (SIGKILL after
 `GRACE_SECONDS`) and removes the folder. No TCP port is opened.
 
-Host packages the rig's install names: `labwc`, `wayvnc`, `wlr-randr`. `create` refuses by name when one is missing; the
+Host packages the rig's install names: `labwc`, `wayvnc`, `wlr-randr`, `pipewire`, `wireplumber`, `pipewire-pulse`, `pactl` and `parec` (pulseaudio-utils). `create` refuses by name when one is missing; the
 adapter never installs packages.
+
+## Sound
+
+`create` also starts the display's own sound server in its run directory: `pipewire`, `wireplumber` and `pipewire-pulse`
+(config and state under the display's folder), then loads a null sink `display` (48000 Hz stereo) with `pactl` and makes
+it the default. A game started through `environment()` (as `invoke` does) finds that server through `XDG_RUNTIME_DIR`
+alone and plays into the sink; nothing reaches the host's own sound. `audio(id)` starts `parec` on the sink's monitor
+(raw s16le stereo, 20 ms latency, its log `parec.log` in the display's folder) for one listener; the site's `GET /viewer/<id>/audio` sends it as a growing WAV and
+kills it when the viewer leaves, so each listener hears the display from the moment it asked, in step with the picture.
+The viewer page opens that stream on its first click or key (the browser's autoplay rule) and plays it with WebAudio
+(`static/site/viewer_audio.js`), writing the bytes and the loudest sample so far to the canvas's `data-audio-bytes` and
+`data-audio-peak`. The Windows backend refuses `audio` as `display.unsupported` until its capture is built.
 
 ## Runner page
 

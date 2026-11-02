@@ -1,7 +1,10 @@
 // The site's own RFB viewer: a WebSocket to /viewer/<id>/ws carrying RFB 3.8 (security None), raw rectangles on a canvas,
 // pointer and key input back. Cursor (-239) and PointerPos (-232) are asked for so a server never draws the pointer
-// into the frames; both are read and dropped.
+// into the frames; both are read and dropped. The display's sound (viewer_audio.js) plays from /viewer/<id>/audio once the
+// page gets its first click or key (the browser's autoplay rule).
+import { onFirstGesture } from "./viewer_audio.js";
 const canvas = document.querySelector("#screen"), ctx = canvas.getContext("2d");
+onFirstGesture(document, canvas.dataset.audio, canvas);
 const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${canvas.dataset.ws}`);
 socket.binaryType = "arraybuffer";
 let buffer = new Uint8Array(0), waiter = null;

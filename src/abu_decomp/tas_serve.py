@@ -1406,6 +1406,23 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             self.close_connection = True
             viewer.serve_socket(self.connection, key, record, display.connect_address)
 
+        def viewer_audio(self, subject: str) -> None:
+            """The display's sound as one growing WAV (s16le stereo), from this viewer's request until it leaves."""
+            capture = display.backend(server.displays).audio(subject)
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "audio/wav")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.close_connection = True
+            except BaseException:
+                capture.kill()
+                capture.wait()
+                raise
+            viewer.stream_audio(self.wfile, capture, wav_header(display.AUDIO_RATE))
+
         def do_GET(self) -> None:
             path, _, query = self.path.partition("?")
             head, _, run_id = path[1:].partition("/")
@@ -1420,6 +1437,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.reply(b"", "text/plain", HTTPStatus.FOUND, extra={"Location": server.keeper.watch()})
                 elif path == "/live":
                     self.reply(viewer.live_page(display.records(server.displays)).encode(), "text/html; charset=utf-8")
+                elif head == "viewer" and run_id.endswith("/audio"):
+                    self.viewer_audio(run_id[:-6])
                 elif head == "viewer" and run_id.endswith("/ws"):
                     self.viewer_socket(run_id[:-3])
                 elif head == "viewer" and run_id:

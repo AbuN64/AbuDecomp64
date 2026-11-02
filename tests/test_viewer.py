@@ -47,5 +47,7 @@ def test_bridge_carries_bytes_both_ways_until_the_client_closes() -> None:
 def test_pages_name_the_display() -> None:
     record = display.Record("d-aa", 640, 480, "tcp:g:1", {}, "/x")
     assert 'data-ws="/viewer/d-aa/ws"' in viewer.viewer_page(record)
+    assert 'data-audio="/viewer/d-aa/audio"' in viewer.viewer_page(record)
+    assert "allow=autoplay" in viewer.live_page([record])
     assert 'src="/viewer/d-aa"' in viewer.live_page([record])
     assert "No live display" in viewer.live_page([])

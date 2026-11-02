@@ -32,7 +32,14 @@ from PIL import Image
 from abu_decomp import DecompError, inotify
 
 # Host packages the Linux backend runs; the rig's install names them (docs/display.md), nothing here installs them.
-PACKAGES = ("labwc", "wayvnc", "wlr-randr")
+PACKAGES = ("labwc", "wayvnc", "wlr-randr", "pipewire", "wireplumber", "pipewire-pulse", "pactl", "parec")
+# The display's sound: a private PipeWire (with its session manager and Pulse server) in the run directory, so a game
+# drawing on the display finds it through XDG_RUNTIME_DIR alone and plays into the null sink SINK; Audio reads that
+# sink's monitor
+# as raw s16le stereo at AUDIO_RATE.
+SINK = "display"
+AUDIO_RATE = 48000
+AUDIO_LATENCY_MS = 20
 # Seconds a stopped tool gets to leave on SIGTERM before SIGKILL: a bound the adapter declares, not a wait for effect.
 GRACE_SECONDS = 5.0
 # Seconds a tool gets to become ready (labwc's socket, wlr-randr's exit, wayvnc's socket) and the RFB server to answer
@@ -67,6 +74,7 @@ class Backend(Protocol):
     def capture(self, subject: str, path: Path) -> dict[str, object]: ...
     def input(self, subject: str, events: object) -> dict[str, object]: ...
     def environment(self, subject: str) -> dict[str, str]: ...
+    def audio(self, subject: str) -> subprocess.Popen: ...
     def delete(self, subject: str) -> Record: ...
 
 
@@ -403,6 +411,7 @@ class Linux:
                 ) from exc
             if failed:
                 raise DecompError("display.start", "wlr-randr failed: " + self._log(directory, "wlr-randr"))
+            self._sound(directory, run, base, pids)
             serve = ["wayvnc", "--config", str(config / "wayvnc"), "--unix-socket", "--max-fps=60", str(rfb)]
             wayvnc = self._start(directory, serve, client)
             pids["wayvnc"] = wayvnc.pid
@@ -422,6 +431,61 @@ class Linux:
             shutil.rmtree(directory, ignore_errors=True)
             raise
         return record
+
+    def _sound(self, directory: Path, run: Path, base: dict[str, str], pids: dict[str, int]) -> None:
+        """Start the display's own PipeWire, WirePlumber and Pulse server, then load the null sink as the default."""
+        state = directory / "state"
+        state.mkdir(mode=0o700)
+        env = base | {"XDG_CONFIG_HOME": str(directory / "config"), "XDG_STATE_HOME": str(state)}
+        pipewire = self._start(directory, ["pipewire"], env)
+        pids["pipewire"] = pipewire.pid
+        self._await(run / "pipewire-0", pipewire, directory, "pipewire")
+        pids["wireplumber"] = self._start(directory, ["wireplumber"], env).pid
+        (run / "pulse").mkdir(mode=0o700)  # the Pulse server's socket folder, watched for its socket
+        pulse = self._start(directory, ["pipewire-pulse"], env)
+        pids["pipewire-pulse"] = pulse.pid
+        self._await(run / "pulse" / "native", pulse, directory, "pipewire-pulse")
+        server = "--server=unix:" + str(run / "pulse" / "native")
+        for argv in (
+            [
+                "pactl",
+                server,
+                "load-module",
+                "module-null-sink",
+                f"sink_name={SINK}",
+                f"rate={AUDIO_RATE}",
+                "channels=2",
+            ],
+            ["pactl", server, "set-default-sink", SINK],
+        ):
+            step = self._start(directory, argv, env, "pactl")
+            try:
+                failed = step.wait(timeout=START_SECONDS) != 0
+            except subprocess.TimeoutExpired as exc:
+                step.kill()
+                raise DecompError("display.audio", f"{' '.join(argv[2:4])} never finished in {START_SECONDS}s") from exc
+            if failed:
+                raise DecompError("display.audio", f"pactl {argv[2]} failed: " + self._log(directory, "pactl"))
+
+    def audio(self, subject: str) -> subprocess.Popen:
+        """The display's sound from now on: parec on the null sink's monitor, raw s16le stereo AUDIO_RATE on stdout.
+
+        The caller owns the process (reads it, kills it when its viewer leaves); each viewer gets its own, so the sound
+        starts at the moment it connects and keeps pace with the picture.
+        """
+        record = self.describe(subject)
+        native = Path(record.directory) / "run" / "pulse" / "native"
+        if not native.exists():
+            raise DecompError("display.audio", f"display {subject} has no sound server (no {native})")
+        argv = [
+            "parec", "--server=unix:" + str(native), "--device=" + SINK + ".monitor", "--raw", "--format=s16le",
+            "--channels=2", f"--rate={AUDIO_RATE}", f"--latency-msec={AUDIO_LATENCY_MS}",
+        ]  # fmt: skip
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(Path.home()), "XDG_RUNTIME_DIR": str(native.parents[1])}
+        with (Path(record.directory) / "parec.log").open(
+            "ab"
+        ) as log:  # parec's own words, kept beside the other tools'
+            return self.spawn(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log)
 
     def _start(self, directory: Path, argv: list[str], env: dict[str, str], name: str = "") -> subprocess.Popen:
         with (directory / f"{name or argv[0]}.log").open("wb") as log:
@@ -586,6 +650,12 @@ class Windows:
 
     def environment(self, subject: str) -> dict[str, str]:
         raise DecompError("display.unsupported", "a Windows guest runs its own programs; invoke is for Linux displays")
+
+    def audio(self, subject: str) -> subprocess.Popen:
+        raise DecompError(
+            "display.unsupported",
+            "Unsupported: a Windows guest's sound has no capture yet; audio is for Linux displays",
+        )
 
     def delete(self, subject: str) -> Record:
         record = self.describe(subject)

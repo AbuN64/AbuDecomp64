@@ -138,15 +138,17 @@ class StepTests(unittest.TestCase):
             self.assertFalse(hasattr(deploy_rig, gone) or f"def {gone}" in text, gone)
 
     def test_the_deploy_file_is_the_step_grammar(self):
-        lines = (Path(__file__).parent.parent / ".deploy").read_text().splitlines()
-        rig_toolkit = lines[0].removeprefix("deploy-env TOOLKIT=")  # the activation needs the live link absolute
-        self.assertTrue(rig_toolkit.startswith("/") and rig_toolkit.endswith("/venv-decomp"))
+        deploy = (Path(__file__).parent.parent / ".deploy").read_text()
+        lines = deploy.splitlines()
+        self.assertEqual(lines[0], "deploy-input TOOLKIT")  # the value is the rig host's input, never a tracked path
+        self.assertNotIn("deploy-env", deploy)
+        self.assertNotIn("/home", deploy)
         self.assertNotIn("/home", (Path(__file__).parent.parent / "ci" / "deploy_rig.py").read_text())
         self.assertEqual(
             [line.split()[:4] for line in lines[1:]],
             [
                 ["rig", "run", "ci/deploy_rig.py", "name"],
-                ["rig", "activate", "ci/deploy_rig.py", rig_toolkit],
+                ["rig", "activate", "ci/deploy_rig.py", "$TOOLKIT"],
                 ["rig", "run", "ci/deploy_rig.py", "readback"],
                 ["rig", "run", "ci/deploy_rig.py", "profile"],
                 ["rig", "run", "ci/deploy_rig.py", "serve"],

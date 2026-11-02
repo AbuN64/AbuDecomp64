@@ -615,7 +615,6 @@ class TemplateTests(unittest.TestCase):
         tas.settings(profile)
         self.assertNotIn("${", text)
 
-
     def test_the_template_names_the_reviewed_ledger_beside_the_seat_executable_so_a_play_passes_tas_ledger(self):
         from abu_decomp import config, tas
 

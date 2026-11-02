@@ -147,6 +147,33 @@ port loaded, not one a later bake wrote.
 2 when match.json, calls.jsonl or the census is missing (never an empty join); its last stdout line is
 `census <sha256> rows=<n> reached=<r> equal=<e>`.
 
+`check RUN` reads every field above (`check_run`); each is present and well-formed, or a named problem:
+- `movie.raw` at least one poll, every line whole, each pad `BUTTONS STICK_X STICK_Y` (hex up to ffff, signed bytes);
+  `run.json` an object.
+- Both sides' `lockstep.jsonl` (meta, contiguous polls, pages, dumps as above).
+- `lockstep/port/calls.jsonl`: the port's calls meta (`mode` `calls`) first, then `call` lines with `fn`, `caller`,
+  `o`, `frame` and `a`, `ret` lines with `fn`, `caller`, `o` and `r`, and `unframed` lines (trace.c: a function's first
+  call outside its own frame) with an integer `order` and an 8-hex `pc`.
+- `match.json`: as above, each divergence row at an integer `poll`; a `calls` row with `fn`, `caller`, `o` and `field`
+  (`missing`, `poll`, `args`, `return`); a `memory` row `value` (8-hex) or `page` (16-hex). `first` is null exactly
+  when every class is empty.
+- `run.json` `oracle.lockstep`: `exit` 0, 1 or 2; for 0 and 1 its `matched_through_poll` and `first` are
+  match.json's, and `exit` 1 exactly when `first` is set.
+- The census and reach.bin (above): `fnrows` a bare file name, `sha256` 64 lowercase hex digits, `rows` a positive
+  integer. A census without reach.bin is refused like reach.bin without a census.
+- `coverage.tsv`, when present: proved from the run folder alone. Its function column, one name and a newline per
+  row, hashes to the census sha256 (a fnrows file is exactly that). Every row is the join recomputed from this run's
+  reach.bin, calls.jsonl and match.json.
+- `lockstep/replay/<poll>/`: folders named by a poll.
+- `stream/index.json`: `run` (the folder's name), `sides`, ascending `polls`, one `inputs` entry per poll and a
+  positive `every`, with a picture per side per poll.
+- `audio.pcm` and `audio-oracle.pcm`: whole 4-byte frames, and once one holds sound, its `.rate` an integer from 8000
+  to 192000.
+
+Retired paths, refused by name when present: `polls.raw` (the pads are the port's poll lines), `calls.jsonl` at the
+run's top (the port's calls are `lockstep/port/calls.jsonl`) and `lockstep/<side>/pages.bin` (the record is hashes
+only).
+
 Every `tas` play writes `lockstep/port/` (poll and call lines); `decomp tas play MOVIE --oracle --lockstep` also writes
 `lockstep/oracle/` and, once both ended, `lockstep/match.json` (output in `lockstep/lockstep.txt`; the run's `oracle.lockstep` keeps the exit, 0 matched,
 1 diverged, 2 refused, the matched-through poll and the first divergence). The site names the oracle's side `oracle`

@@ -610,7 +610,11 @@ class RunRecordTests(unittest.TestCase):
         shutil.rmtree(run, ignore_errors=True)
         (run / ls.RUN_LOCKSTEP).mkdir(parents=True)
         shutil.copytree(ORACLE_POLLS, run / ls.RUN_LOCKSTEP / "oracle")
-        port_from_oracle(run / ls.RUN_LOCKSTEP / "port")
+        port = port_from_oracle(run / ls.RUN_LOCKSTEP / "port")
+        calls = [json.dumps({"k": "meta", "side": "port", "mode": "calls", "first": 16})]
+        calls += [x for x in (port / "lockstep.jsonl").read_text().splitlines() if '"o":' in x]  # its whole-movie calls
+        (port / ls.RUN_CALLS).write_text("\n".join(calls) + "\n")
+        (run / ls.RUN_RECORD).write_text(json.dumps({"id": name, "status": "done"}))
         (run / "movie.raw").write_text("0 0 0\n")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(ls.main(["match", "--run", str(run)]), 0)

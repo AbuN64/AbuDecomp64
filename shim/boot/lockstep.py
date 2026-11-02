@@ -1389,32 +1389,124 @@ def check_side(side_dir, name):
 
 
 def check_match(path):
-    """The problems of RUN/lockstep/match.json, the `match` report."""
+    """(problems, report) of RUN/lockstep/match.json, the `match` report: every field well-formed, every divergence row
+    a dict at an integer poll (a calls row names fn, caller, ordinal and field; a memory row is a word or a page with
+    its two hex values), and `first` null exactly when no class holds a divergence. report is None when unreadable."""
+    name = f"lockstep/{RUN_MATCH}"
     try:
         report = json.loads(path.read_text())
     except (OSError, ValueError) as error:
-        return [f"lockstep/{RUN_MATCH}: {error}"]
+        return [f"{name}: {error}"], None
+    if not isinstance(report, dict):
+        return [f"{name}: {type(report).__name__}, expected an object"], None
     problems = []
-    if sorted(report.get("polls", {})) != ["common", "oracle", "port"]:
-        problems.append(f"lockstep/{RUN_MATCH} polls: {report.get('polls')!r}, expected oracle, port, common counts")
-    if not isinstance(report.get("matched_through_poll"), int):
-        problems.append(f"lockstep/{RUN_MATCH} matched_through_poll: expected an integer")
+    polls = report.get("polls")
+    if not isinstance(polls, dict) or sorted(polls) != ["common", "oracle", "port"]:
+        problems.append(f"{name} polls: {polls!r}, expected oracle, port, common counts")
+    elif not all(type(n) is int and n >= 0 for n in polls.values()):
+        problems.append(f"{name} polls: {polls!r}, expected counts (integers, 0 or more)")
+    if type(report.get("matched_through_poll")) is not int:
+        problems.append(f"{name} matched_through_poll: expected an integer")
     first = report.get("first")
-    if first is not None and (first.get("class") not in MATCH_CLASSES or not isinstance(first.get("poll"), int)):
-        problems.append(f"lockstep/{RUN_MATCH} first: {first!r}, expected null or {{class, poll, ...}}")
-    divergences = report.get("divergences", {})
-    if sorted(divergences) != sorted(MATCH_CLASSES) or not all(isinstance(v, list) for v in divergences.values()):
-        problems.append(f"lockstep/{RUN_MATCH} divergences: expected one list per class {', '.join(MATCH_CLASSES)}")
+    if first is not None and (
+        not isinstance(first, dict) or first.get("class") not in MATCH_CLASSES or type(first.get("poll")) is not int
+    ):
+        problems.append(f"{name} first: {first!r}, expected null or {{class, poll, ...}}")
+    divergences = report.get("divergences")
+    if (
+        not isinstance(divergences, dict)
+        or sorted(divergences) != sorted(MATCH_CLASSES)
+        or not all(isinstance(v, list) for v in divergences.values())
+    ):
+        problems.append(f"{name} divergences: expected one list per class {', '.join(MATCH_CLASSES)}")
+    else:
+        for cls in MATCH_CLASSES:
+            for index, row in enumerate(divergences[cls]):
+                if why := divergence_problem(cls, row):
+                    problems.append(f"{name} divergences.{cls}[{index}]: {row!r}, expected {why}")
+                    break
+        if (first is None) != (not any(divergences.values())):
+            problems.append(f"{name} first: {first!r}, but the divergences hold {sum(map(len, divergences.values()))}")
     dump = report.get("dump", "missing")
     if dump is not None and not (
-        isinstance(dump, dict) and isinstance(dump.get("poll"), int) and isinstance(dump.get("pages"), list)
-        and dump["pages"] and all(isinstance(pg, int) for pg in dump["pages"])
+        isinstance(dump, dict) and type(dump.get("poll")) is int and isinstance(dump.get("pages"), list)
+        and dump["pages"] and all(type(pg) is int for pg in dump["pages"])
     ):  # fmt: skip
-        problems.append(f"lockstep/{RUN_MATCH} dump: {dump!r}, expected null or {{poll, pages}}")
+        problems.append(f"{name} dump: {dump!r}, expected null or {{poll, pages}}")
+    return problems, report
+
+
+def divergence_problem(cls, row):
+    """What a match.json divergence row of class `cls` lacks (CONTRACTS.md Run record), or None when it is whole."""
+    if not isinstance(row, dict) or type(row.get("poll")) is not int:
+        return "a row with its integer poll"
+    if cls == "calls" and not (
+        isinstance(row.get("fn"), str) and isinstance(row.get("caller"), str) and type(row.get("o")) is int
+        and row.get("field") in CALL_FIELDS
+    ):  # fmt: skip
+        return f"fn, caller, ordinal o and field ({', '.join(CALL_FIELDS)})"
+    if cls == "memory":
+        digits = {"value": HEX8, "page": HEX16}.get(row.get("class"))
+        if digits is None or not all(isinstance(row.get(s), str) and digits.fullmatch(row[s]) for s in RUN_SIDES):
+            return "class value (8-hex oracle/port) or page (16-hex oracle/port)"
+    return None
+
+
+def check_calls(path):
+    """The problems of RUN/lockstep/port/calls.jsonl: the port's calls meta first, then `call` lines (fn, caller,
+    ordinal o, poll frame, argument words a), `ret` lines (fn, caller, o, return words r) and `unframed` lines (trace.c:
+    a function's first call outside its own frame, its trace order and 8-hex pc). A last line cut by a killed run is
+    dropped, as every reader drops it; any other unreadable line is a problem."""
+    name = f"{RUN_LOCKSTEP}/port/{RUN_CALLS}"
+    if not path.is_file():
+        return [f"{name}: missing (every play writes the port's calls)"]
+    lines = path.read_text(errors="replace").split("\n")
+    problems = []
+    for number, line in enumerate(lines, 1):
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            if number < len(lines):  # a line with a newline after it was written whole
+                problems.append(f"{name} line {number}: unreadable")
+            continue
+        kind = r.get("k") if isinstance(r, dict) else None
+        if number == 1:
+            if kind != "meta" or r.get("side") != "port" or r.get("mode") != "calls":
+                problems.append(f"{name} line 1: {line[:120]}, expected the port's calls meta")
+            continue
+        if kind == "unframed":
+            if type(r.get("order")) is not int or not (isinstance(r.get("pc"), str) and HEX8.fullmatch(r["pc"])):
+                problems.append(f"{name} line {number}: an unframed line without its integer order and 8-hex pc")
+        elif kind not in ("call", "ret"):
+            problems.append(f"{name} line {number}: k {kind!r}, expected call, ret or unframed")
+        elif not (isinstance(r.get("fn"), str) and isinstance(r.get("caller"), str) and type(r.get("o")) is int):
+            problems.append(f"{name} line {number}: expected fn, caller and ordinal o")
+        elif kind == "call" and (type(r.get("frame")) is not int or not isinstance(r.get("a"), list)):
+            problems.append(f"{name} line {number}: a call without its poll frame and argument words a")
+        elif kind == "ret" and not isinstance(r.get("r"), list):
+            problems.append(f"{name} line {number}: a ret without its return words r")
+        if len(problems) == RUN_PROBLEMS_SHOWN:
+            problems.append(f"{name}: later lines not checked")
+            break
     return problems
 
 
 RUN_REACH, RUN_RECORD, RUN_COVERAGE = "reach.bin", "run.json", "coverage.tsv"
+RUN_CALLS, RUN_REPLAY, RUN_STREAM, RUN_STREAM_INDEX = "calls.jsonl", "replay", "stream", "index.json"
+RUN_AUDIO = ("audio.pcm", "audio-oracle.pcm")  # each with <name>.rate once it holds sound
+RUN_AUDIO_RATES = range(8000, 192001)
+RUN_PROBLEMS_SHOWN = 8  # problems listed per file before the rest of it is left unread
+# Retired paths (CONTRACTS.md Run record): present means a writer from before the record they moved into still runs.
+RUN_RETIRED = {
+    "polls.raw": "the pads the guest read are lockstep/port/lockstep.jsonl poll lines",
+    RUN_CALLS: f"the port's calls are {RUN_LOCKSTEP}/port/{RUN_CALLS}",
+    f"{RUN_LOCKSTEP}/port/pages.bin": "the record is hashes only; page bytes come from a dump replay",
+    f"{RUN_LOCKSTEP}/oracle/pages.bin": "the record is hashes only; page bytes come from a dump replay",
+}
+CALL_FIELDS = ("missing", "poll", "args", "return")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 COVERAGE_HEADER = ("function", "reached", "calls", "diverged", "equal")
 
 
@@ -1423,23 +1515,59 @@ def run_site(run):
     return pathlib.Path(run).resolve().parent.parent / "site"
 
 
+def read_run_record(run):
+    """RUN/run.json as a dict, or ValueError naming why it is not one."""
+    path = pathlib.Path(run) / RUN_RECORD
+    if not path.is_file():
+        raise ValueError(f"{RUN_RECORD}: missing (every play writes its record)")
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError(f"{RUN_RECORD}: {error}") from error
+    if not isinstance(record, dict):
+        raise ValueError(f"{RUN_RECORD}: {type(record).__name__}, expected an object")
+    return record
+
+
+def census_of(record, beside):
+    """run.json's census {fnrows, sha256, rows}, each well-formed, or ValueError naming the field; `beside` is what the
+    run holds that needs it (reach.bin, coverage.tsv), named when the census is missing."""
+    census = record.get("census")
+    if census is None:
+        raise ValueError(f"{RUN_RECORD} census: missing" + (f" beside {beside}" if beside else ""))
+    if not isinstance(census, dict) or sorted(census) != ["fnrows", "rows", "sha256"]:
+        raise ValueError(f"{RUN_RECORD} census: {census!r}, expected {{fnrows, sha256, rows}}")
+    fnrows = census["fnrows"]
+    if not isinstance(fnrows, str) or not fnrows or fnrows in (".", "..") or "/" in fnrows or "\0" in fnrows:
+        raise ValueError(f"{RUN_RECORD} census fnrows: {fnrows!r}, expected a file name in the site")
+    if not isinstance(census["sha256"], str) or not SHA256.fullmatch(census["sha256"]):
+        raise ValueError(f"{RUN_RECORD} census sha256: {census['sha256']!r}, expected 64 lowercase hex digits")
+    if type(census["rows"]) is not int or census["rows"] <= 0:
+        raise ValueError(f"{RUN_RECORD} census rows: {census['rows']!r}, expected a positive row count")
+    return census
+
+
+def read_reach(run, rows):
+    """RUN/reach.bin, a bare bitset over `rows` census rows: ceil(rows/8) bytes, no bit set past the last row."""
+    try:
+        bits = (pathlib.Path(run) / RUN_REACH).read_bytes()
+    except OSError as error:
+        raise ValueError(f"{RUN_REACH}: {error.strerror or error} (the census names a reach)") from error
+    if len(bits) != (rows + 7) // 8:
+        raise ValueError(f"{RUN_REACH}: {len(bits)} bytes, expected ceil({rows}/8) = {(rows + 7) // 8}")
+    if rows % 8 and bits[-1] >> (rows % 8):
+        raise ValueError(f"{RUN_REACH}: pad bits set past row {rows}")
+    return bits
+
+
 def read_census(run):
     """(census, fnrows rows, reach bits) of a run, or ValueError naming what breaks it: run.json's census
     {fnrows, sha256, rows} over the site's fnrows file of that name with that sha256 and row count, and reach.bin a
     bare bitset of ceil(rows/8) bytes with no bit set past the last row. reach.bin without a census is a refusal."""
     run = pathlib.Path(run)
-    reach = run / RUN_REACH
+    census = census_of(read_run_record(run), RUN_REACH if (run / RUN_REACH).exists() else None)
     try:
-        census = json.loads((run / RUN_RECORD).read_text()).get("census")
-    except (OSError, ValueError, AttributeError) as error:
-        raise ValueError(f"{RUN_RECORD}: {error}") from error
-    if census is None:
-        raise ValueError(f"{RUN_RECORD} census: missing" + (f" beside {RUN_REACH}" if reach.exists() else ""))
-    if not isinstance(census, dict) or sorted(census) != ["fnrows", "rows", "sha256"]:
-        raise ValueError(f"{RUN_RECORD} census: {census!r}, expected {{fnrows, sha256, rows}}")
-    rows_path = run_site(run) / census["fnrows"]
-    try:
-        data = rows_path.read_bytes()
+        data = (run_site(run) / census["fnrows"]).read_bytes()
     except OSError as error:
         raise ValueError(f"census fnrows: {error}") from error
     if hashlib.sha256(data).hexdigest() != census["sha256"]:
@@ -1447,26 +1575,13 @@ def read_census(run):
     names = data.decode().splitlines()
     if len(names) != census["rows"]:
         raise ValueError(f"census rows {census['rows']}: the site's {census['fnrows']} has {len(names)}")
-    try:
-        bits = reach.read_bytes()
-    except OSError as error:
-        raise ValueError(f"{RUN_REACH}: {error}") from error
-    if len(bits) != (len(names) + 7) // 8:
-        raise ValueError(f"{RUN_REACH}: {len(bits)} bytes, expected ceil({len(names)}/8) = {(len(names) + 7) // 8}")
-    if len(names) % 8 and bits[-1] >> (len(names) % 8):
-        raise ValueError(f"{RUN_REACH}: pad bits set past row {len(names)}")
-    return census, names, bits
+    return census, names, read_reach(run, len(names))
 
 
-def check_census(run):
-    """The problems of RUN/reach.bin and its run.json census; a run that never wrote reach.bin has none to check."""
+def check_census(run, record):
+    """The problems of RUN/reach.bin and its run.json census; a run with neither has no reach to check."""
     run = pathlib.Path(run)
-    record = run / RUN_RECORD
-    try:
-        has_census = "census" in json.loads(record.read_text()) if record.exists() else False
-    except ValueError as error:
-        return [f"{RUN_RECORD}: {error}"]
-    if not (run / RUN_REACH).exists() and not has_census:
+    if not (run / RUN_REACH).exists() and "census" not in record:
         return []
     try:
         read_census(run)
@@ -1475,15 +1590,12 @@ def check_census(run):
     return []
 
 
-def coverage(run):
-    """The per-function parity join (CONTRACTS.md Run record, coverage.tsv): one row per census row in fnrows order,
-    reached from reach.bin, calls the lockstep/port/calls.jsonl `call` lines naming it, diverged the match.json
-    divergences.calls entries naming it, equal `yes` only when reached, calls > 0 and diverged = 0. Memory, vi and
-    input divergences are movie-level and named by no function. ValueError when an input is missing: no empty join."""
-    run = pathlib.Path(run)
-    census, names, bits = read_census(run)
-    lockstep = run / RUN_LOCKSTEP
-    calls_path, match_path = lockstep / "port" / "calls.jsonl", lockstep / RUN_MATCH
+def join(run, names, bits):
+    """The coverage.tsv rows of `names` (census rows in fnrows order) over reach `bits`: reached from reach.bin, calls
+    the lockstep/port/calls.jsonl `call` lines naming it, diverged the match.json divergences.calls entries naming it,
+    equal `yes` only when reached, calls > 0 and diverged = 0. ValueError when calls.jsonl or match.json is missing."""
+    lockstep = pathlib.Path(run) / RUN_LOCKSTEP
+    calls_path, match_path = lockstep / "port" / RUN_CALLS, lockstep / RUN_MATCH
     for path in (calls_path, match_path):
         if not path.is_file():
             raise ValueError(f"{path.relative_to(run)}: missing")
@@ -1503,7 +1615,15 @@ def coverage(run):
         hit = bool(bits[index >> 3] >> (index & 7) & 1)
         n, d = calls.get(name, 0), diverged.get(name, 0)
         rows.append((name, "yes" if hit else "no", n, d, "yes" if hit and n and not d else "no"))
-    return census, rows
+    return rows
+
+
+def coverage(run):
+    """The per-function parity join (CONTRACTS.md Run record, coverage.tsv): one row per census row in fnrows order
+    (`join`). Memory, vi and input divergences are movie-level and named by no function. ValueError when an input is
+    missing: no empty join."""
+    census, names, bits = read_census(run)
+    return census, join(pathlib.Path(run), names, bits)
 
 
 def write_coverage(run):
@@ -1517,16 +1637,173 @@ def write_coverage(run):
     return f"census {census['sha256']} rows={len(rows)} reached={reached} equal={equal}"
 
 
+def check_coverage(run, record):
+    """The problems of RUN/coverage.tsv, proved from the run folder alone: its function column is the census rows (one
+    name and a newline each hash to the census sha256), and every row is what `join` computes from this run's
+    reach.bin, calls.jsonl and match.json. A run with no coverage.tsv has no join to check."""
+    path = pathlib.Path(run) / RUN_COVERAGE
+    if not path.exists():
+        return []
+    try:
+        census = census_of(record, RUN_COVERAGE)
+    except ValueError as error:
+        return [f"{RUN_COVERAGE}: no census to prove it over ({error})"]
+    lines = path.read_text(errors="replace").split("\n")
+    if lines[-1]:
+        return [f"{RUN_COVERAGE}: its last row is cut (no newline)"]
+    rows = [line.split("\t") for line in lines[:-1]]
+    if not rows or tuple(rows[0]) != COVERAGE_HEADER:
+        return [f"{RUN_COVERAGE} header: {lines[0]!r}, expected {chr(9).join(COVERAGE_HEADER)!r}"]
+    rows = rows[1:]
+    if len(rows) != census["rows"]:
+        return [f"{RUN_COVERAGE}: {len(rows)} rows, the census has {census['rows']}"]
+    names = [row[0] for row in rows]
+    if hashlib.sha256("".join(name + "\n" for name in names).encode()).hexdigest() != census["sha256"]:
+        return [f"{RUN_COVERAGE} function column: not the census rows in fnrows order (sha256 {census['sha256']})"]
+    try:
+        want = join(run, names, read_reach(run, len(names)))
+    except (ValueError, KeyError, TypeError) as error:
+        return [f"{RUN_COVERAGE}: the join cannot be recomputed: {error}"]
+    for number, (got, row) in enumerate(zip(rows, want, strict=True), 2):
+        if got != [str(value) for value in row]:
+            have, expected = "\t".join(got), "\t".join(map(str, row))
+            return [f"{RUN_COVERAGE} line {number}: {have!r}, the join gives {expected!r}"]
+    return []
+
+
+def check_movie(run):
+    """The problems of RUN/movie.raw: one line per poll, each pad `BUTTONS STICK_X STICK_Y` (hex buttons up to ffff,
+    sticks signed bytes); a movie with no poll is no run."""
+    try:
+        text = (pathlib.Path(run) / "movie.raw").read_text()
+    except (OSError, UnicodeDecodeError) as error:
+        return [f"movie.raw: {error}"]
+    if not text.strip():
+        return ["movie.raw: no polls"]
+    if not text.endswith("\n"):
+        return ["movie.raw: its last poll is cut (no newline)"]
+    for number, line in enumerate(text.split("\n")[:-1], 1):
+        words = line.split()
+        try:
+            pads = [(int(words[i], 16), int(words[i + 1]), int(words[i + 2])) for i in range(0, len(words), 3)]
+        except (ValueError, IndexError):
+            pads = None
+        if not pads or not all(0 <= b <= 0xFFFF and -128 <= x <= 127 and -128 <= y <= 127 for b, x, y in pads):
+            return [f"movie.raw line {number}: {line!r}, expected BUTTONS STICK_X STICK_Y per pad"]
+    return []
+
+
+def check_oracle_lockstep(record, report):
+    """The problems of run.json `oracle.lockstep` (the play's copy of match's result): exit 0 matched, 1 diverged, 2
+    refused; for 0 and 1 its matched-through poll and first divergence are match.json's."""
+    oracle = record.get("oracle")
+    if not isinstance(oracle, dict) or "lockstep" not in oracle:
+        return []
+    found, name = oracle["lockstep"], f"{RUN_RECORD} oracle.lockstep"
+    if not isinstance(found, dict) or found.get("exit") not in (0, 1, 2) or type(found.get("exit")) is not int:
+        return [f"{name}: {found!r}, expected {{exit 0, 1 or 2, ...}}"]
+    if found["exit"] == 2 or report is None:  # refused: no report to agree with; an unreadable one is named already
+        return []
+    problems = []
+    for key in ("matched_through_poll", "first"):
+        if found.get(key) != report.get(key):
+            problems.append(f"{name} {key}: {found.get(key)!r}, match.json holds {report.get(key)!r}")
+    if (found["exit"] == 1) != (report.get("first") is not None):
+        problems.append(f"{name} exit: {found['exit']}, match.json first is {report.get('first')!r}")
+    return problems
+
+
+def check_replays(run):
+    """The problems of RUN/lockstep/replay: one folder per dump replay, named by the poll it replayed to."""
+    folder = pathlib.Path(run) / RUN_LOCKSTEP / RUN_REPLAY
+    entries = sorted(folder.iterdir()) if folder.is_dir() else []
+    return [f"{RUN_LOCKSTEP}/{RUN_REPLAY}/{e.name}: expected a folder named by the poll a dump replay ran to"
+            for e in entries if not (e.is_dir() and e.name.isdigit())]  # fmt: skip
+
+
+def check_stream(run):
+    """The problems of RUN/stream: index.json {run, sides, polls, inputs, every} and a picture per side per poll."""
+    run = pathlib.Path(run)
+    folder = run / RUN_STREAM
+    if not folder.exists():
+        return []
+    name = f"{RUN_STREAM}/{RUN_STREAM_INDEX}"
+    try:
+        index = json.loads((folder / RUN_STREAM_INDEX).read_text())
+    except (OSError, ValueError) as error:
+        return [f"{name}: {error}"]
+    if not isinstance(index, dict) or sorted(index) != ["every", "inputs", "polls", "run", "sides"]:
+        return [f"{name}: expected {{run, sides, polls, inputs, every}}"]
+    sides, polls, inputs = index["sides"], index["polls"], index["inputs"]
+    if index["run"] != run.name:
+        return [f"{name} run: {index['run']!r}, expected {run.name!r}"]
+    if not isinstance(sides, list) or not sides or not set(sides) <= set(RUN_SIDES) or len(set(sides)) < len(sides):
+        return [f"{name} sides: {sides!r}, expected port and/or oracle"]
+    if not isinstance(polls, list) or not polls or not all(type(p) is int and p >= 0 for p in polls) or (
+        polls != sorted(set(polls))
+    ):  # fmt: skip
+        return [f"{name} polls: expected ascending poll indices"]
+    if type(index["every"]) is not int or index["every"] <= 0:
+        return [f"{name} every: {index['every']!r}, expected a positive poll interval"]
+    if not isinstance(inputs, list) or len(inputs) != len(polls) or not all(
+        i is None or (isinstance(i, list) and len(i) == 3 and all(type(v) is int for v in i)) for i in inputs
+    ):  # fmt: skip
+        return [f"{name} inputs: expected [buttons, x, y] or null per poll"]
+    for poll in polls:
+        for side in sides:
+            if not (folder / side / f"{poll}.jpg").is_file():
+                return [f"{RUN_STREAM}/{side}/{poll}.jpg: missing (index.json lists the poll)"]
+    return []
+
+
+def check_audio(run):
+    """The problems of the run's sound: each pcm whole 16-bit stereo frames, and once it holds sound, its .rate one
+    integer sample rate."""
+    problems = []
+    for name in RUN_AUDIO:
+        pcm = pathlib.Path(run) / name
+        if not pcm.exists():
+            continue
+        size = pcm.stat().st_size
+        if size % 4:
+            problems.append(f"{name}: {size} bytes, expected whole 16-bit stereo frames (4 bytes each)")
+        if not size:
+            continue
+        try:
+            rate = int((pcm.parent / (name + ".rate")).read_text())
+        except (OSError, ValueError) as error:
+            problems.append(f"{name}.rate: {error}, expected the sample rate of {name}")
+            continue
+        if rate not in RUN_AUDIO_RATES:
+            problems.append(f"{name}.rate: {rate}, expected {RUN_AUDIO_RATES.start}..{RUN_AUDIO_RATES.stop - 1} Hz")
+    return problems
+
+
 def check_run(run):
-    """{run, problems}: the run record under RUN checked field by field; an empty list is a run that holds."""
+    """{run, problems}: the run record under RUN checked field by field (CONTRACTS.md Run record), each field present
+    and well-formed or named; an empty list is a run that holds."""
     run = pathlib.Path(run)
     if not (run / "movie.raw").is_file():
         return {"run": str(run), "problems": ["movie.raw: missing (the inputs the run played)"]}
-    problems = []
+    problems = check_movie(run)
+    problems += [f"{path}: retired ({why})" for path, why in RUN_RETIRED.items() if (run / path).exists()]
+    try:
+        record = read_run_record(run)
+    except ValueError as error:
+        problems.append(str(error))
+        record = None
     for name in RUN_SIDES:
         problems += check_side(run / RUN_LOCKSTEP / name, name)
-    problems += check_match(run / RUN_LOCKSTEP / RUN_MATCH)
-    problems += check_census(run)
+    problems += check_calls(run / RUN_LOCKSTEP / "port" / RUN_CALLS)
+    found, report = check_match(run / RUN_LOCKSTEP / RUN_MATCH)
+    problems += found
+    problems += check_replays(run)
+    if record is not None:
+        problems += check_oracle_lockstep(record, report)
+        problems += check_census(run, record)
+        problems += check_coverage(run, record)
+    problems += check_stream(run)
+    problems += check_audio(run)
     return {"run": str(run), "problems": problems}
 
 

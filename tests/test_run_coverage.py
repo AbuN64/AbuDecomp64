@@ -42,21 +42,26 @@ def bitset(rows, size):
 
 
 def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=True, names=NAMES):
-    """<root>/runs/{site/FNROWS, plays/r}: a finished lockstep run with reach.bin, its census, calls and match."""
+    """<root>/runs/{site/FNROWS, plays/r}: a finished lockstep run that holds field by field (CONTRACTS.md Run record):
+    movie.raw, both sides' lockstep.jsonl, the port's calls, match.json, reach.bin and its census."""
     site, run = root / "runs" / "site", root / "runs" / "plays" / "r"
-    (run / "lockstep" / "port").mkdir(parents=True)
     site.mkdir(parents=True)
+    for side, order in (("port", "native"), ("oracle", "canonical-be")):
+        (run / "lockstep" / side).mkdir(parents=True)
+        meta = {"k": "meta", "side": side, "ram": 16384, "page": 4096, "bytes": order, "hash": "fnv1a64-le64"}
+        polls = [{"k": "poll", "poll": n, "vi": n, "pad": ["80000000"], "pages": []} for n in range(9)]
+        (run / "lockstep" / side / "lockstep.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [meta, *polls]))
     data = "".join(n + "\n" for n in names).encode()
     (site / FNROWS).write_bytes(data)
     record = {"id": "r", "status": "done"}
     if census:
         record["census"] = {"fnrows": FNROWS, "sha256": hashlib.sha256(data).hexdigest(), "rows": len(names)}
     (run / "run.json").write_text(json.dumps(record))
-    (run / "movie.raw").write_bytes(b"")
+    (run / "movie.raw").write_text("8000 0 0\n" * 9)
     (run / "reach.bin").write_bytes(bitset(reached, (len(names) + 7) // 8))
     if calls is None:  # fn -> call count: two calls of row 0, one of row 1, one of row 2, one of a row not reached
         calls = {NAMES[0]: 2, NAMES[1]: 1, NAMES[2]: 1, NAMES[3]: 1}
-    lines = [json.dumps({"k": "meta", "side": "port"})]
+    lines = [json.dumps({"k": "meta", "side": "port", "mode": "calls", "first": 16})]
     for fn, n in calls.items():
         for o in range(n):
             lines.append(json.dumps({"k": "call", "fn": fn, "caller": "c", "o": o, "frame": o, "a": []}))
@@ -64,10 +69,14 @@ def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=Tr
     lines.append('{"k": "call", "fn": "cut')  # a last line cut by a killed run
     (run / "lockstep" / "port" / "calls.jsonl").write_text("\n".join(lines))
     if divergences is None:
-        divergences = {"input": [], "vi": [], "memory": [{"poll": 3, "address": "0x80001000"}], "calls": []}
+        word = {"poll": 3, "address": "80001000", "class": "value", "oracle": "00000001", "port": "00000002"}
+        divergences = {"input": [], "vi": [], "memory": [word], "calls": []}
         divergences["calls"] = [{"fn": NAMES[1], "caller": "c", "o": 0, "poll": 0, "field": "args"}]
-    report = {"polls": {"oracle": 9, "port": 9, "common": 9}, "matched_through_poll": 2, "first": None}
-    (run / "lockstep" / "match.json").write_text(json.dumps({**report, "divergences": divergences}))
+    rows = sorted((r for cls in divergences for r in divergences[cls]), key=lambda r: r["poll"])
+    first = next((dict(r, **{"class": c}) for r in rows for c in divergences if r in divergences[c]), None)
+    report = {"polls": {"oracle": 9, "port": 9, "common": 9}, "matched_through_poll": first["poll"] - 1 if first else 8}
+    report.update(first=first, divergences=divergences, dump=None)
+    (run / "lockstep" / "match.json").write_text(json.dumps(report))
     return run
 
 

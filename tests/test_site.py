@@ -176,8 +176,12 @@ class PageTest(unittest.TestCase):
             '<aside id="sitemap"',
         ):
             self.assertIn(path, page)
-        # viewer.js is the display viewer's own page script, not a region module: it has no mount()
-        shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - {"viewer"}
+        # viewer.js is the display viewer's own page script and its imports are its helpers (viewer_audio.js):
+        # none is a region module, none has mount()
+        viewer = (ROOT / "static" / "site" / "viewer.js").read_text()
+        helpers = {"viewer", *re.findall(r'from "\./(\w+)\.js"', viewer)}
+        self.assertIn("viewer_audio", helpers)
+        shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - helpers
         self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
         self.assertNotIn('map: "map"', page)  # the map is the sidebar on every route, not a page
         for name in shipped:

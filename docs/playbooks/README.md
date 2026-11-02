@@ -29,6 +29,8 @@ phase you are in before planning a lane or a fix.
 
 Rules every tool-side playbook shares:
 
+- **A Proof is `cd <repo> && bin/test <tests>`.** The entry brings the repo's own declared environment (`.venv`, from
+  `pyproject.toml`), so a Proof names no host python, interpreter variable or path to a shared venv.
 - Work by **class**, never by stop. A detector runs over every unit and every
   traced function at once; a single crash is one sample of a class.
 - **One body serves both goals.** A function lands as C that behaves the same

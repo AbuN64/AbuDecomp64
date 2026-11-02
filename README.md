@@ -52,14 +52,20 @@ Phase playbooks (what each of the four phases and the naming/real-C track is for
 ## Development
 
 ```sh
-pip install -e '.[dev]' && ci/check
+cd <repo> && bin/test
 ```
 
-`pip install -e '.[dev]'` installs the pinned tools the tests import (Cake Taste, unbake, Recipe Maker, gcovr) and the lint
-tools (ruff, pytest); `ci/check` runs with the first python that has them (`ABU_PYTHON`, else `python3`, else
-`$ABU_VENV/bin/python`, default `~/venv-decomp`) and stops with that instruction when none does. While working,
-`ci/check --changed` lints the changed files and runs only the tests that import the changed modules (under a second to
-seconds); run the full `ci/check` before a push that touches `shim/` or `ci/`.
+`bin/test` is the one entry point and brings its own environment: it makes (or reuses) the repo-local `.venv` (git-ignored)
+from `pyproject.toml`'s dependencies and dev extra (Cake Taste, unbake, Recipe Maker, gcovr, ruff, pytest and the rest), keyed
+on a hash of `pyproject.toml`, so an unchanged tree reuses it at once and a changed one installs again. It needs only a
+`python3` of the version `pyproject.toml` asks for and reads no environment variable to find an interpreter.
+
+- `bin/test` runs the full check (lint, format, every test, the shim build and its tests).
+- `bin/test tests/test_x.py tests/test_y.py` runs just those test files (or modules, `test_x`).
+- `bin/test --changed` lints the changed files and runs only the tests that import the changed modules (under a second to
+  seconds); run the full `bin/test` before a push that touches `shim/` or `ci/`.
+
+A Proof for a card on this repo is `cd <repo> && bin/test <tests>`.
 
 ## License
 

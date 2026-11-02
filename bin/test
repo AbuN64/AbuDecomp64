@@ -1,0 +1,61 @@
+#!/bin/sh
+# The one entry point: brings the repo's own environment (.venv, made from pyproject.toml and reused while it is unchanged),
+# then runs the tests. Run it from the repo dir:
+#   bin/test                      everything (lint, format, all tests, pytest modules, the shim build and its tests)
+#   bin/test --changed            lint and format of the changed files and only the tests that cover them (seconds)
+#   bin/test tests/test_x.py ...  just those test files (or modules: test_x)
+set -eu
+cd "$(dirname "$0")/.."
+py="$(python3 ci/ensure_venv.py)"
+export PYTHONPATH="src${PYTHONPATH:+:$PYTHONPATH}"
+if [ $# -gt 0 ] && [ "$1" != "--changed" ]; then
+  units=""
+  pytests=""
+  for arg in "$@"; do
+    module="$(basename "$arg" .py)"
+    [ -f "tests/$module.py" ] || { echo "bin/test: no test $arg" >&2; exit 2; }
+    if grep -q '^import pytest' "tests/$module.py"; then pytests="$pytests tests/$module.py"; else units="$units $module"; fi
+  done
+  # shellcheck disable=SC2086
+  [ -z "$units" ] || "$py" ci/run_tests.py tests $units
+  # shellcheck disable=SC2086
+  [ -z "$pytests" ] || "$py" -m pytest -q -p no:cacheprovider $pytests
+  exit 0
+fi
+ci/abucache-audit
+if [ "${1:-}" = "--changed" ]; then
+  files="$("$py" ci/changed_tests.py --files)"
+  # shellcheck disable=SC2086
+  [ -z "$files" ] || { "$py" -m ruff check $files; "$py" -m ruff format --check $files; }
+  modules="$("$py" ci/changed_tests.py)"
+  # shellcheck disable=SC2086
+  [ -z "$modules" ] || "$py" ci/run_tests.py tests $modules
+  exit 0
+fi
+"$py" -m ruff check src tests ci
+"$py" -m ruff format --check src tests ci
+# Every test has a timeout (ci/run_tests.py, ABU_TEST_TIMEOUT seconds), so a hang fails with a stack dump.
+"$py" ci/run_tests.py tests
+# Test modules written as pytest functions (unittest discovery imports but never runs them) run under pytest.
+pytest_files="$(grep -l '^import pytest' tests/*.py || true)"
+# shellcheck disable=SC2086
+[ -z "$pytest_files" ] || "$py" -m pytest -q -p no:cacheprovider $pytest_files
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+# The n64 shim (shim/): its standalone 32-bit build with unit tests, and the boot tools' tests that need no port facts
+# (test_link.py and test_closure.py read a port's real files and run in the port's own ctest). Skipped without -m32.
+if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/dev/null; then
+  cmake -S shim -B "$scratch/shim" -G Ninja -DBUILD_TESTING=ON >/dev/null
+  cmake --build "$scratch/shim" -j4
+  ctest --test-dir "$scratch/shim" --output-on-failure -j4
+  for t in charged digests fl0 prepare_failclosed prepare trace lockstep replay image tile_parity hangcore gates sweep; do
+    case $t in
+      prepare|trace|lockstep|replay|image) set -- --compiler cc --m32 --work "$scratch/boot-$t" ;;
+      fl0|prepare_failclosed) set -- --work "$scratch/boot-$t" ;;
+      *) set -- ;;
+    esac
+    "$py" -I "shim/boot/test_$t.py" "$@"
+  done
+else
+  echo "bin/test: no 32-bit toolchain, skipping the shim build and tests"
+fi

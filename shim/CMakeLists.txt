@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Standalone build of the shim and its unit tests (what abu-decomp-64's ci/check runs). A port includes the
+# Standalone build of the shim and its unit tests (what abu-decomp-64's bin/test runs). A port includes the
 # modules in cmake/ instead of this file.
 cmake_minimum_required(VERSION 3.28)
 project(n64shim LANGUAGES C)

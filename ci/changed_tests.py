@@ -1,9 +1,9 @@
-"""Prints the test modules that cover what changed, one per line: `ci/check --changed` runs only these (seconds, not
+"""Prints the test modules that cover what changed, one per line: `bin/test --changed` runs only these (seconds, not
 the whole suite). Changed = uncommitted, untracked and committed-but-unpushed files (against the upstream, else HEAD).
 
 A changed tests/test_X.py maps to itself; a changed src/abu_decomp/.../M.py maps to tests/test_M.py and every test that
 imports the module M. Notes on stderr name what the fast path cannot judge (a changed file no test imports, shim/, ci/,
-the build files): run the full `ci/check` for those before pushing."""
+the build files): run the full `bin/test` for those before pushing."""
 
 import re
 import subprocess
@@ -37,7 +37,7 @@ def imports(text: str, module: str) -> bool:
 
 
 def main() -> int:
-    if sys.argv[1:] == ["--files"]:  # the changed Python files that exist, for the lint step of `ci/check --changed`
+    if sys.argv[1:] == ["--files"]:  # the changed Python files that exist, for the lint step of `bin/test --changed`
         paths = sorted(n for n in changed() if n.endswith(".py") and (ROOT / n).is_file())
         print("\n".join(paths))
         return 0
@@ -62,9 +62,9 @@ def main() -> int:
         elif path.parts[:1] in {("tests",), ("docs",)} or path.suffix == ".md":
             continue
         else:
-            unjudged.append(f"{name}: not judged by module (run the full ci/check)")
+            unjudged.append(f"{name}: not judged by module (run the full bin/test)")
     for note in unjudged:
-        print(f"ci/check --changed: {note}", file=sys.stderr)
+        print(f"bin/test --changed: {note}", file=sys.stderr)
     print("\n".join(sorted(picked)))
     return 0
 

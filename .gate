@@ -1,2 +1,2 @@
-sh ci/check
+sh bin/test
 host=rig

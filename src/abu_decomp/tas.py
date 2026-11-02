@@ -1757,8 +1757,8 @@ def play(
         argv = _argv(cfg, user_dir, pak, card, fps_unlock)
         argv = supervised(cfg, run, argv) if supervise else argv
         collector = None  # the play owns the run's reach socket and reach.bin (module tas_reach)
-        if "N64C_REACH_ROWS" in env:
-            collector = tas_reach.Collector(run, reach_address(run), reach_live_address(run))
+        if reach_census:  # the port was named N64C_REACH_ROWS: its reach.bin is a bitset over that census
+            collector = tas_reach.Collector(run, reach_address(run), reach_live_address(run), reach_census["rows"])
         try:
             with (run / "output.txt").open("w") as output:
                 with _starting_play_process():

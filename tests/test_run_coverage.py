@@ -108,3 +108,16 @@ def test_a_missing_input_is_exit_2_and_no_join(tmp_path, missing):
     code, _, err = run_tool("coverage", "--run", str(run))
     assert code == 2 and err
     assert not (run / "coverage.tsv").exists()
+
+
+def test_the_plays_reach_bin_is_zero_filled_to_the_census_rows_never_cut(tmp_path):
+    from abu_decomp import tas_reach
+
+    tag = hashlib.sha256(str(tmp_path).encode()).hexdigest()[:12]
+    for rows, sent, want in ((70, bytes([0b1000]), bytes([0b1000]) + bytes(8)), (2, bytes([1, 2]), bytes([1, 2]))):
+        run = tmp_path / str(rows)
+        run.mkdir()
+        collector = tas_reach.Collector(run, f"@abu-cov-{tag}-{rows}", f"@abu-cov-live-{tag}-{rows}", rows)
+        collector.feed(tas_reach.full(1, sent))  # the port's bitset ends at the highest row it entered
+        collector.finish()
+        assert (run / "reach.bin").read_bytes() == want  # ceil(70/8) = 9 bytes; a longer one stays for check to refuse

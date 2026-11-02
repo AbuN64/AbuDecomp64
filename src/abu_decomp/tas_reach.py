@@ -88,8 +88,9 @@ def abstract(address: str) -> str:
 class Collector:
     """The play's reach reader for one run: binds the reach socket, folds datagrams, forwards them to `live`."""
 
-    def __init__(self, run: Path, address: str, live: str) -> None:
+    def __init__(self, run: Path, address: str, live: str, rows: int) -> None:
         self.run = run
+        self.rows = rows  # the run.json census rows: reach.bin is ceil(rows/8) bytes
         self.address = abstract(address)
         self.live = abstract(live)
         self.bits = bytearray()
@@ -143,7 +144,9 @@ class Collector:
 
     def finish(self) -> None:
         """Stop the reader after the datagrams queued so far and write RUN/reach.bin if the port sent a record.
-        Atomic, like run.json; the run folder archived under the play is not an error."""
+        Atomic, like run.json; the run folder archived under the play is not an error. The port extends the bitset
+        only up to the highest row it entered, so it is zero-filled to the census's ceil(rows/8) bytes, never cut: a
+        longer one stays as sent and `lockstep.py check` refuses it (CONTRACTS.md Run record)."""
         with contextlib.suppress(OSError):
             self.out.sendto(b"", self.address)
         self.thread.join()
@@ -151,5 +154,5 @@ class Collector:
         if self.count:
             with contextlib.suppress(OSError):
                 tmp = self.run / (FILE + ".tmp")
-                tmp.write_bytes(bytes(self.bits))
+                tmp.write_bytes(bytes(self.bits) + bytes(max(0, (self.rows + 7) // 8 - len(self.bits))))
                 tmp.replace(self.run / FILE)

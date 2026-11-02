@@ -378,7 +378,7 @@ class MovieTests(unittest.TestCase):
         run = self.root / "r"
         run.mkdir()
         address, live = "@abu-test-reach-" + self.id()[-12:], "@abu-test-reach-live-" + self.id()[-12:]
-        collector = tas_reach.Collector(run, address, live)
+        collector = tas_reach.Collector(run, address, live, 16)
         sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.addCleanup(sender.close)
         first = struct.pack("<BI", 2, 1) + bytes([1, 3]) + bytes([0])  # row 3, nobody listens yet

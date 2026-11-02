@@ -413,6 +413,118 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(lockstep["match"], str(run / "lockstep" / "match.json"))
         self.assertIn("poll 9", (run / "lockstep" / "lockstep.txt").read_text())
 
+    def lockstep_run(self) -> Path:
+        """A finished --oracle --lockstep run record: its movie, starting card, both sides' records, run.json."""
+        (self.root / "port").chmod(0o755)
+        run = self.root / "runs" / "plays" / "r1"
+        for side in ("port", "oracle"):
+            (run / "lockstep" / side).mkdir(parents=True)
+            (run / "lockstep" / side / "lockstep.jsonl").write_text(f'{{"k":"meta","side":"{side}"}}\n')
+        (run / "movie.raw").write_text("8000 0 0\n" * 50)
+        (run / tas.CARD_START).write_bytes(b"card")
+        record = {"port": str(self.root / "port"), "pak": "off", "pads": 2,
+                  "oracle": {"host": str(self.host), "render_lead": 0}}  # fmt: skip
+        (run / tas.RECORD).write_text(json.dumps(record))
+        return run
+
+    def test_lockstep_dump_replays_both_sides_to_the_named_poll_and_matches_again(self):
+        run, seen, ran = self.lockstep_run(), {}, []
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                side = "oracle" if argv[0] == host else "port"
+                seen[side] = (argv, env)
+                folder = Path(env["N64R_LOCKSTEP_DIR" if side == "oracle" else "N64C_LOCKSTEP_DIR"])
+                poll = env["N64R_LOCKSTEP_DUMP" if side == "oracle" else "N64C_LOCKSTEP_DUMP"].split(":")[0]
+                (folder / "dump" / poll).mkdir(parents=True)
+                (folder / "dump" / poll / "dump.bin").write_bytes(b"pages")  # the side's dump, then its exit
+
+            def wait(self):
+                return 0
+
+        def lockstep(argv, **kwargs):
+            ran.append(argv[2:])
+            if argv[2] == "pages":  # the dump request match.json names
+                return subprocess.CompletedProcess(argv, 0, stdout='{"poll": 9, "pages": [3, 5]}\n', stderr="")
+            (run / "lockstep" / "match.json").write_text(json.dumps({"matched_through_poll": 11, "first": None}))
+            return subprocess.CompletedProcess(argv, 0)
+
+        with (
+            mock.patch.object(tas_oracle.subprocess, "Popen", Process),
+            mock.patch.object(tas_oracle.subprocess, "run", lockstep),
+        ):
+            result = tas_oracle.lockstep_dump(self.profile, "r1")
+        self.assertEqual(ran, [["pages", "--run", str(run)], ["match", "--run", str(run)]])
+        argv, port = seen["port"]
+        self.assertEqual(port["N64C_LOCKSTEP"], "1")
+        self.assertEqual(port["N64C_LOCKSTEP_DIR"], str(run / "lockstep" / "port"))  # the record's folder
+        self.assertEqual(port["N64C_LOCKSTEP_DUMP"], "9:3,5")
+        self.assertEqual(port["N64C_TAS_PLAY"], str(run / "movie.raw"))  # the whole movie: the dump poll ends it
+        self.assertEqual((port["N64C_PADS"], port["N64C_SPEED"]), ("2", "0"))
+        self.assertNotIn("N64C_CALLS", port)  # nothing recorded over the run's calls
+        replay = run / "lockstep" / "replay" / "9"
+        self.assertEqual(argv[:3], [str(self.root / "port"), "--cpak", str(replay / "cpak.mpk")])
+        self.assertIn("--pak", argv)
+        self.assertEqual((replay / "cpak.mpk").read_bytes(), b"card")
+        _, oracle = seen["oracle"]
+        self.assertEqual(oracle["N64R_LOCKSTEP_DIR"], str(run / "lockstep" / "oracle"))
+        self.assertEqual(oracle["N64R_LOCKSTEP_DUMP"], "9:3,5")
+        self.assertEqual(oracle["N64R_TAS_PLAY"], str(run / "movie.raw"))
+        self.assertEqual(oracle["N64R_TAS_RENDER_LEAD"], "0")  # the record's lead, not the profile's 2
+        self.assertEqual((oracle["N64R_PAK"], oracle["N64R_PADS"]), ("off", "2"))
+        self.assertEqual(oracle["N64R_CPAK"], str(replay / "oracle-cpak.mpk"))
+        self.assertEqual(result["dump"], {"poll": 9, "pages": [3, 5]})
+        for side in ("port", "oracle"):
+            self.assertEqual(result[side]["exit"], 0)
+            self.assertEqual(result[side]["dump"], str(run / "lockstep" / side / "dump" / "9" / "dump.bin"))
+            self.assertEqual(
+                (run / "lockstep" / side / "lockstep.jsonl").read_text(), f'{{"k":"meta","side":"{side}"}}\n'
+            )
+        self.assertEqual((result["match"]["exit"], result["match"]["matched_through_poll"]), (0, 11))
+        self.assertEqual(json.loads((run / tas.RECORD).read_text())["oracle"]["lockstep"], result["match"])
+
+    def test_lockstep_dump_names_a_side_that_ended_without_its_dump_and_does_not_match(self):
+        run, host = self.lockstep_run(), str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.code = 0 if argv[0] == host else 134
+                if argv[0] == host:
+                    folder = Path(env["N64R_LOCKSTEP_DIR"]) / "dump" / "4"
+                    folder.mkdir(parents=True)
+                    (folder / "dump.bin").write_bytes(b"pages")
+
+            def wait(self):
+                return self.code
+
+        def lockstep(argv, **kwargs):
+            if argv[2] != "pages":
+                raise AssertionError("matched without both dumps")
+            self.assertEqual(argv[-2:], ["--poll", "4"])
+            return subprocess.CompletedProcess(argv, 0, stdout='{"poll": 4, "pages": [0]}', stderr="")
+
+        with (
+            mock.patch.object(tas_oracle.subprocess, "Popen", Process),
+            mock.patch.object(tas_oracle.subprocess, "run", lockstep),
+        ):
+            result = tas_oracle.lockstep_dump(self.profile, str(run), poll=4)
+        self.assertEqual((result["port"]["exit"], result["port"]["dump"]), (134, None))
+        self.assertIn("no dump from port at poll 4", result["error"])
+        self.assertNotIn("match", result)
+
+    def test_lockstep_dump_without_a_request_or_a_record_starts_nothing(self):
+        run = self.lockstep_run()
+        none = subprocess.CompletedProcess([], 0, stdout="null\n", stderr="")
+        with (
+            mock.patch.object(tas_oracle.subprocess, "Popen", side_effect=AssertionError("started")),
+            mock.patch.object(tas_oracle.subprocess, "run", return_value=none),
+        ):
+            self.assertIsNone(tas_oracle.lockstep_dump(self.profile, "r1")["dump"])
+            (run / "lockstep" / "port" / "lockstep.jsonl").unlink()
+            with self.assertRaises(DecompError):
+                tas_oracle.lockstep_dump(self.profile, "r1")
+
     def test_without_the_lockstep_flag_only_the_port_records_its_side(self):
         seen = {}
         host = str(self.host)

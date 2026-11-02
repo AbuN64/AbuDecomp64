@@ -105,7 +105,8 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 | `movie.raw` | the inputs played, one row of pads per poll | `tas` play | `tas.read_raw` |
 | `lockstep/<side>/lockstep.jsonl` | side `port` (trace.c, `N64C_LOCKSTEP=1`, `N64C_LOCKSTEP_DIR`, set by every `tas` play) and `oracle` (lockstep.cpp, `N64R_LOCKSTEP_DIR`); its `poll` lines are also the pads the guest read: a pad word is buttons (high 16 bits), stick x, stick y (signed bytes) | the side | `lockstep.Side`; `tas.read_polls` for the pads (retry, take, start points, site_feedback) |
 | `lockstep/port/calls.jsonl` | the whole-movie `call`/`ret` lines keyed by (`fn`, `caller`, `o`), `frame` the poll (trace.c, `N64C_CALLS=` the same directory, set by every `tas` play beside `N64C_LOCKSTEP=1`; the oracle's calls for per-call behaviour are `lockstep/oracle/lockstep.jsonl`) | port | `Side.movie_lines` (class `calls`) |
-| `lockstep/<side>/pages.bin` | each distinct page content once (both writers dedup by hash): `<u32 page><u32 0><u64 hash>` + 4096 bytes; read mapped, never whole | the side | `Side.page` |
+| `lockstep/<side>/dump/<poll>/dump.bin` | the bytes of the pages `match` names at that poll, nothing else (the record itself is hashes only): `<u32 page><u32 0><u64 hash>` + 4096 bytes per page, port native, oracle canonical; written by the dump replay `decomp tas lockstep-dump RUN [--poll P]` (both sides replay `movie.raw` with `N64C_LOCKSTEP_DUMP` / `N64R_LOCKSTEP_DUMP` = `POLL:PAGE,...`, write at that poll and exit; done on process exit) | the side | `Side.bytes` (`Matcher.page_diff`) |
+| `lockstep/replay/<poll>/` | a dump replay's own files: output, user dir, card copies | `tas lockstep-dump` | a person |
 | `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | `tas_oracle.read_match` (`/api/stream/RUN` `match`: counts per class, matched-through poll, first; null until it exists), play cycle |
 | `reach.bin` | the functions the port entered: a bare bitset over the census fnrows rows (row r is bit r&7 of byte r>>3), ceil(rows/8) bytes, pad bits clear | `tas_reach.Collector.finish` when the play ends (zero-filled to the census rows) | `tas_serve` (`/video` reach records), `lockstep.py check`, `lockstep.py coverage` |
 | `run.json` `census` | {`fnrows` (the site's fnrows file name), `sha256` (of that file's bytes), `rows` (its line count)}: what reach.bin is a bitset over, recorded when the play names the port that file (`N64C_REACH_ROWS`) | `tas.play` (`tas.census`) | `lockstep.py check`, `lockstep.py coverage` |
@@ -120,14 +121,18 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
   (`native` for the port, `canonical-be` for the oracle), `hash` `fnv1a64-le64` (over the canonical big-endian page, the
   port's swapped word by word first).
 - `poll`: `poll` (contiguous indices), `vi` (integer), `pad` (pad words, 8 hex digits each), `pages` (`[page, hash]`
-  for the pages changed since the previous poll: the page baseline is the previous poll's; every hash is in pages.bin
-  or is the zero page).
+  for the pages changed since the previous poll: the page baseline is the previous poll's; hashes only, no page bytes).
 - `call` / `ret` with `o`: one whole-movie call, keyed by `fn`, `caller`, ordinal `o`; `a` the argument words.
 - `hit`, `call`/`ret` with `i`, `watch`: the boot `compare` points (first hits of the boot trace).
 
 `match.json`: `polls` {`oracle`, `port`, `common`}, `matched_through_poll` (the last poll before the first divergence),
 `first` (null, or the first divergence with its `class`), `divergences` {`input`, `vi`, `calls`, `memory`}: per class
-the persistent divergences in poll order, each with its `poll`.
+the persistent divergences in poll order, each with its `poll`; a `memory` row is a word (`class` `value`, 8-hex
+`oracle`/`port`) when both sides hold the page's bytes (a dump), else the page (`class` `page`, its two 16-hex hashes).
+`dump` (null, or {`poll`, `pages`}): the poll of the first `page` row and every page there whose hashes differ without
+bytes: the request `tas lockstep-dump RUN` replays (`lockstep.py pages --run RUN [--poll P]` prints it). Each dump
+must be the recorded state: `check` refuses a dump page whose bytes do not hash to its key or whose hash is not the
+record's at that poll.
 
 Census: `lockstep.py check RUN` refuses a run whose reach.bin has no run.json `census`, whose census names a fnrows
 file the site (`<tas.runs>/site`) no longer has with that sha256 and row count, whose reach.bin is not ceil(rows/8)

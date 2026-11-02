@@ -43,8 +43,19 @@ SYMBOLS = (
 )
 
 
+def write_dump(side_dir, poll, pages):
+    """<side>/dump/<poll>/dump.bin as both recorders' dump replay writes it: pages {page: bytes}, the side's own order
+    (port native, oracle canonical), each keyed by its canonical hash."""
+    native = json.loads((side_dir / "lockstep.jsonl").read_text().splitlines()[0])["bytes"] == "native"
+    folder = side_dir / ls.DUMP / str(poll)
+    folder.mkdir(parents=True, exist_ok=True)
+    data = b"".join(struct.pack("<IIQ", pg, 0, ls.page_hash(b, native=native)) + b for pg, b in sorted(pages.items()))
+    (folder / ls.DUMP_FILE).write_bytes(data)
+
+
 class Recorder:
-    """Writes one side's lockstep.jsonl and pages.bin as the C recorders do."""
+    """Writes one side's lockstep.jsonl as the C recorders do, and a dump holding every page content it listed (as if
+    a dump replay had written them all), so compare sees the bytes of every page."""
 
     def __init__(self, path, side):
         self.path = path
@@ -60,19 +71,17 @@ class Recorder:
                 "hash": "fnv1a64-le64",
             }
         ]
-        self.last, self.stored, self.store, self.n = {}, set(), b"", 0
+        self.last, self.dumped, self.n = {}, {}, 0
 
     def hit(self, key, ram, sp=0x80003F00, thr=1):
         pages = []
         for pg in range(PAGES):
             data = bytes(ram[pg * 4096 : (pg + 1) * 4096])
-            h = ls.page_hash(data)
+            h = ls.page_hash(data, native=self.side == "port")
             if self.n and self.last.get(pg) == h:
                 continue
             self.last[pg] = h
-            if h not in self.stored:
-                self.stored.add(h)
-                self.store += struct.pack("<IIQ", pg, 0, h) + data
+            self.dumped.setdefault(h, (pg, data))
             pages.append([pg, f"{h:016x}"])
         rec = {"k": "hit", "n": self.n, "thr": thr, "pages": pages, "sp": f"{sp:08x}"}
         rec.update({"fn": key} if self.side == "oracle" else {"order": key})
@@ -97,7 +106,9 @@ class Recorder:
 
     def close(self):
         (self.path / "lockstep.jsonl").write_text("".join(json.dumps(r) + "\n" for r in self.lines))
-        (self.path / "pages.bin").write_bytes(self.store)
+        # one dump file per distinct page content (a dump keys its records by page, so one page per file)
+        for n, (pg, data) in enumerate(self.dumped.values()):
+            write_dump(self.path, n, {pg: data})
 
 
 class Ram:
@@ -518,7 +529,8 @@ int main(void) { memcpy(ram + 0x2000, "\x78\x56\x34\x12", 4); n64c_trace_init();
 """
 
 
-ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381), its 3-poll driver
+ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381), its 3-poll driver,
+# hashes only, and its dump replay (N64R_LOCKSTEP_DUMP=2:1,2): dump/2/dump.bin holds pages 1 and 2 at poll 2
 PORT_PADS = ["80000000", "1000b050", "040005fb"]  # the port row's n64c_tas_lockstep movie, polls 1..3
 
 
@@ -527,37 +539,62 @@ def native(page):
     return b"".join(page[i : i + 4][::-1] for i in range(0, len(page), 4))
 
 
-def port_from_oracle(out, edit=None):
+def oracle_pages(poll):
+    """The oracle fixture's RDRAM at a poll, canonical, from what its driver stores: 0x11223344 at 0x80002000 before
+    poll 1, the byte 0xab at 0x80001000 before poll 2. The record's hashes prove it (oracle_state)."""
+    ram = {pg: bytes(4096) for pg in range(4)}
+    ram[2] = bytes.fromhex("11223344") + bytes(4092)
+    if poll >= 2:
+        ram[1] = b"\xab" + bytes(4095)
+    return ram
+
+
+def oracle_state(oracle, poll):
+    """oracle_pages(poll), checked page by page against the hashes the record holds at that poll."""
+    current = {}
+    for p, listing in oracle.poll_pages():
+        if p <= poll:
+            current.update((pg, int(h, 16)) for pg, h in listing)
+    pages = oracle_pages(poll)
+    assert {pg: ls.page_hash(b) for pg, b in pages.items()} == current, poll
+    return pages
+
+
+def port_from_oracle(out, edit=None, dump=None):
     """A port run of the real oracle slice: the lines trace.c writes (meta, poll, call/ret) over the oracle's pages in
-    native order, hashed by the port's canonical hash. edit(record, pages, current) changes one poll before writing."""
+    native order, hashed by the port's canonical hash. edit(record, pages, current) changes one poll before writing;
+    dump (poll, pages) also writes what the port's dump replay writes there: those pages, native."""
     oracle = ls.Side(ORACLE_POLLS, lambda r: None)
-    out.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(out, ignore_errors=True)  # a dump an earlier run left there would hold bytes this run has not dumped
+    out.mkdir(parents=True)
     meta = {"k": "meta", "side": "port", "ram": oracle.meta["ram"], "page": 4096, "bytes": "native",
             "hash": "fnv1a64-le64", "calls": 8, "trace": 0, "watch": "00000000"}  # fmt: skip
-    lines, store, stored, current = [json.dumps(meta, separators=(",", ":"))], b"", set(), {}
+    lines, current, held = [json.dumps(meta, separators=(",", ":"))], {}, {}
     oracle_pages = dict(oracle.poll_pages())
     for poll in sorted(oracle.polls):
         r = dict(oracle.polls[poll])
-        pages = {pg: native(oracle.page(int(h, 16))) for pg, h in oracle_pages[poll]}
+        state = oracle_state(oracle, poll)
+        pages = {pg: native(state[pg]) for pg, _ in oracle_pages[poll]}
         if edit:
             edit(r, pages, current)
         listed = []
         for pg in sorted(pages):
             h = ls.page_hash(pages[pg], native=True)
+            held[pg] = pages[pg]
             if current.get(pg) == h:
                 continue
             current[pg] = h
-            if h not in stored:
-                stored.add(h)
-                store += struct.pack("<IIQ", pg, 0, h) + pages[pg]
             listed.append([pg, f"{h:016x}"])
         r["pages"] = listed
         lines.append(json.dumps(r, separators=(",", ":")))
+        if dump and dump[0] == poll:
+            dumped = {pg: held.get(pg, bytes(4096)) for pg in dump[1]}
     for line in (ORACLE_POLLS / "lockstep.jsonl").read_text().splitlines():
         if json.loads(line)["k"] in ("call", "ret"):
             lines.append(line)
     (out / "lockstep.jsonl").write_text("\n".join(lines) + "\n")
-    (out / "pages.bin").write_bytes(store)
+    if dump:
+        write_dump(out, dump[0], dumped)
     return out
 
 
@@ -599,11 +636,18 @@ class RunRecordTests(unittest.TestCase):
         poll["pad"], poll["pages"] = ["xyz"], [[0, "00000000000000aa"]]
         meta.write_text("\n".join([json.dumps(head), json.dumps(poll), *lines[2:]]) + "\n")
         report = run / "lockstep" / "match.json"
-        report.write_text(json.dumps({"polls": {}, "matched_through_poll": "1", "first": None, "divergences": {}}))
+        report.write_text(json.dumps({"polls": {}, "matched_through_poll": "1", "first": None, "divergences": {},
+                                      "dump": {"poll": 2}}))  # fmt: skip
+        oracle = run / "lockstep" / "oracle"
+        write_dump(oracle, 3, {3: b"\x01" + bytes(4095)})  # a replay that did not reach the recorded state
+        data = (oracle / "dump" / "2" / "dump.bin").read_bytes()
+        (oracle / "dump" / "2" / "dump.bin").write_bytes(data[:16] + b"\xff" + data[17:])  # bytes off their hash
+        write_dump(oracle, 9, {0: bytes(4096)})  # a dump of a poll the record never reached
         code, text = self.check(run)
         self.assertEqual(code, 1)
-        for field in ("meta.bytes", "pad:", "page 00000000000000aa listed but not stored", "match.json polls",
-                      "matched_through_poll", "match.json divergences"):  # fmt: skip
+        for field in ("meta.bytes", "pad:", "match.json polls", "matched_through_poll", "match.json divergences",
+                      "match.json dump", "dump 3 page 3", "the replay is not the recorded run",
+                      "dump 2 page 1: its bytes do not hash", "dump 9: no such poll"):  # fmt: skip
             self.assertIn(field, text)
 
     def test_run_without_inputs_or_sides_refuses(self):
@@ -634,25 +678,60 @@ class MatchTests(unittest.TestCase):
     def test_real_oracle_page_hashes_the_same_as_the_port_holding_it_natively(self):
         oracle = ls.Side(ORACLE_POLLS, lambda r: None)
         h = int(dict(oracle.poll_pages())[1][2][1], 16)
-        page = oracle.page(h)
+        page = oracle.bytes(h)  # page 2 is unchanged from poll 1 to the dump at poll 2
         self.assertEqual(page[:4], bytes.fromhex("11223344"))
         self.assertEqual(ls.page_hash(page), h)
         self.assertEqual(ls.page_hash(native(page), native=True), h)
         self.assertNotEqual(ls.page_hash(native(page)), h)  # the old port hash over native bytes never met the oracle's
 
-    def test_real_oracle_store_holds_each_distinct_page_once_and_is_indexed_not_held(self):
-        # A whole-movie pages.bin is gigabytes (pp-1p-match: 10,526,152,544 B): Side keeps only its sorted hashes.
+    def test_real_oracle_record_is_hashes_only_and_its_dump_holds_just_the_named_pages(self):
+        # A whole-movie store of every distinct page was gigabytes (pp-1p-match: 10,491,587,072 B): the record keeps
+        # hashes only, and the dump replay wrote the two pages it was asked for at poll 2, nothing else.
+        self.assertEqual(sorted(p.name for p in ORACLE_POLLS.iterdir()), ["dump", "lockstep.jsonl"])
+        self.assertEqual([p.name for p in (ORACLE_POLLS / "dump").iterdir()], ["2"])
+        self.assertEqual([p.name for p in (ORACLE_POLLS / "dump" / "2").iterdir()], ["dump.bin"])
         oracle = ls.Side(ORACLE_POLLS, lambda r: None)
-        data = (ORACLE_POLLS / "pages.bin").read_bytes()
-        heads = [struct.unpack_from("<IIQ", data, at) for at in range(0, len(data), 16 + 4096)]
-        self.assertEqual(len(heads), len({h for _, _, h in heads}))  # one record per distinct page content
-        self.assertEqual(list(oracle.hashes), sorted(h for _, _, h in heads))
-        self.assertTrue(all("pages" not in r for r in oracle.polls.values()))  # streamed by poll_pages, not held
-        listed = {int(h, 16) for _, pages in oracle.poll_pages() for _, h in pages}
-        for h in listed:
-            self.assertEqual(ls.page_hash(oracle.page(h)), h)
-        code, _report, text = self.run_match(port_from_oracle(args.work / "match-mapped"))
+        self.assertEqual(sorted(oracle.dumps), [2])
+        self.assertEqual(sorted(oracle.dumps[2]), [1, 2])
+        self.assertEqual(oracle.bad_dumps, [])
+        state = oracle_state(oracle, 2)
+        for pg, h in oracle.dumps[2].items():
+            self.assertEqual(oracle.bytes(h), state[pg])
+        self.assertIsNone(oracle.bytes(ls.page_hash(b"\x01" + bytes(4095))))  # no dump holds it: no bytes
+        code, report, text = self.run_match(port_from_oracle(args.work / "match-hashes"))
         self.assertEqual(code, 0, text)
+        self.assertIsNone(report["dump"])  # equal hashes need no bytes
+
+    def test_page_without_bytes_is_the_divergence_and_the_dump_names_it_then_resolves_it_word_by_word(self):
+        def edit(r, pages, current):
+            if r["poll"] >= 2:
+                pages[1] = native(b"\xac" + bytes(4095))  # the game stored 0xac where the original stored 0xab
+
+        port = port_from_oracle(args.work / "match-dump", edit)
+        code, report, _ = self.run_match(port)
+        self.assertEqual(code, 1)
+        hashes = [f"{ls.page_hash(b + bytes(4095)):016x}" for b in (b"\xab", b"\xac")]
+        self.assertEqual(report["divergences"]["memory"],
+                         [{"poll": 2, "address": "80001000", "symbol": "0x80001000", "class": "page",
+                           "oracle": hashes[0], "port": hashes[1]}])  # fmt: skip
+        self.assertEqual(report["dump"], {"poll": 2, "pages": [1]})
+        with contextlib.redirect_stdout(io.StringIO()) as text:
+            run = args.work / "match-dump-run"
+            shutil.rmtree(run, ignore_errors=True)
+            (run / ls.RUN_LOCKSTEP).mkdir(parents=True)
+            shutil.copytree(ORACLE_POLLS, run / ls.RUN_LOCKSTEP / "oracle")
+            shutil.copytree(port, run / ls.RUN_LOCKSTEP / "port")
+            self.assertEqual(ls.main(["pages", "--run", str(run), "--poll", "2"]), 0)
+            self.assertEqual(ls.main(["pages", "--run", str(run), "--poll", "1"]), 0)
+        self.assertEqual([json.loads(x) for x in text.getvalue().splitlines()], [{"poll": 2, "pages": [1]}, None])
+        # the port's dump replay of poll 2 (the oracle's is the fixture's): the page compares word by word
+        port_from_oracle(port, edit, dump=(2, [1]))
+        code, report, _ = self.run_match(port)
+        self.assertEqual(code, 1)
+        self.assertEqual(report["divergences"]["memory"],
+                         [{"poll": 2, "address": "80001000", "symbol": "0x80001000", "class": "value",
+                           "oracle": "ab000000", "port": "ac000000"}])  # fmt: skip
+        self.assertIsNone(report["dump"])
 
     def test_matching_movie_writes_equal_poll_lines_and_matches_through_the_last_poll(self):
         port = port_from_oracle(args.work / "match-same")
@@ -672,7 +751,7 @@ class MatchTests(unittest.TestCase):
             if r["poll"] == 2:
                 pages[0] = b"\x2a\x00\x00\x00" + bytes(4092)  # a word the game wrote differently, kept to the end
 
-        port = port_from_oracle(args.work / "match-diverge", edit)
+        port = port_from_oracle(args.work / "match-diverge", edit, dump=(2, [0]))  # the oracle's page 0 is zero
         code, report, text = self.run_match(port, "--persist", "1")
         self.assertEqual(code, 1)
         d = report["divergences"]
@@ -714,10 +793,11 @@ class MatchTests(unittest.TestCase):
         self.assertIn("poll lines", err.getvalue())
 
 
-# pp-1p-match (rig play 20261102T055254Z, 29,779 common polls, a 10.5 GB oracle pages.bin): its first polls cut to the
-# pages that diverge most, and the memory divergences lockstep.py listed for that cut before match_memory went
-# incremental. The whole play once took over 20 minutes in match_memory (every RAM page and every differing word
-# revisited at every poll); each poll now costs only the pages it lists.
+# pp-1p-match (rig play 20261102T055254Z, 29,779 common polls, then a 10.5 GB oracle page store): its first polls cut to
+# the pages that diverge most, every differing page's bytes held as one dump per side, and the memory divergences
+# lockstep.py listed for that cut before match_memory went incremental. The whole play once took over 20 minutes in
+# match_memory (every RAM page and every differing word revisited at every poll); each poll now costs only the pages it
+# lists.
 PP_SLICE = ROOT / "fixtures" / "lockstep-pp-1p-match"
 
 
@@ -726,7 +806,8 @@ class MatchSliceTests(unittest.TestCase):
         oracle, port = ls.Side(PP_SLICE / "oracle", lambda r: None), ls.Side(PP_SLICE / "port", lambda r: None)
         reads = []
         for side in (oracle, port):
-            side.page = lambda h, read=side.page: reads.append(h) or read(h)
+            self.assertEqual(side.bad_dumps, [])
+            side.bytes = lambda h, read=side.bytes: reads.append(h) or read(h)
         matcher = ls.Matcher(min(oracle.meta["ram"], port.meta["ram"]), ([], {}), [])
         polls = sorted(set(oracle.polls) & set(port.polls))
         memory = ls.match_memory(matcher, oracle, port, polls, 2)
@@ -825,18 +906,36 @@ class PortRecorderTests(unittest.TestCase):
             self.assertEqual(len(polls[0]["pages"]), 1024)
             self.assertTrue(polls[1]["pages"])
             self.assertEqual(polls[2]["pages"], [])
-            side = ls.Side(out, lambda r: r.get("order"))
-            for _, h in polls[1]["pages"]:
-                self.assertEqual(ls.page_hash(side.page(int(h, 16)), native=True), int(h, 16))
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["lockstep.jsonl"])  # hashes only
             self.assertNotIn("boot-shim-bind:", result.stderr)
             self.assertNotIn("boot-shim:", result.stderr)
             side = ls.Side(out, lambda r: r.get("order"))
             self.assertEqual(sorted(side.points), [1, 2, 3, 4, 5, 6, 7, 8, 9])
             self.assertEqual(side.meta["bytes"], "native")
             first = side.points[1][0]
-            self.assertEqual(side.page(first[2])[:4], b"\x78\x56\x34\x12")
-            self.assertEqual(ls.page_hash(side.page(first[2]), native=True), first[2])
-            self.assertEqual(side.page(side.points[3][0][1])[0], 5)  # add wrote 5 before half's first hit
+            self.assertEqual(first[2], ls.page_hash(b"\x78\x56\x34\x12" + bytes(4092), native=True))
+            self.assertEqual(side.points[3][0][1], ls.page_hash(b"\x05" + bytes(4095), native=True))  # add wrote 5
+            # the dump replay: the same run to poll 2, nothing recorded, pages 1 and 2 written, the process ended there
+            record = (out / "lockstep.jsonl").read_bytes()
+            dumped = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, check=False,
+                                    env={**env, "N64C_LOCKSTEP_DUMP": "2:2,1"})  # fmt: skip
+            self.assertEqual(dumped.returncode, 0, dumped.stderr)
+            self.assertIn("boot-lockstep: dump at poll 2", dumped.stderr)
+            self.assertNotIn("points written", dumped.stderr)  # it ended at poll 2, before the summary
+            self.assertEqual((out / "lockstep.jsonl").read_bytes(), record)
+            self.assertEqual([p.name for p in (out / "dump").iterdir()], ["2"])
+            self.assertEqual([p.name for p in (out / "dump" / "2").iterdir()], ["dump.bin"])
+            rows = ls.read_dump(out / "dump" / "2" / "dump.bin")
+            self.assertEqual([pg for pg, _, _ in rows], [1, 2])
+            at2 = {}
+            for p in polls[:2]:
+                at2.update((pg, int(h, 16)) for pg, h in p["pages"])
+            for pg, h, data in rows:
+                self.assertEqual((ls.page_hash(data, native=True), at2[pg]), (h, h))  # the recorded state
+            self.assertEqual(rows[0][2][:1], b"\x02")  # add(1, 1) stored last
+            self.assertEqual(rows[1][2][:4], b"\x78\x56\x34\x12")
+            side = ls.Side(out, lambda r: r.get("order"))
+            self.assertEqual((sorted(side.dumps[2]), side.bad_dumps), ([1, 2], []))
             self.assertEqual(
                 [side.calls[2][i]["a"][:2] for i in range(3)],
                 [["00000002", "00000003"], ["00000000", "00000028"], ["00000001", "00000001"]],

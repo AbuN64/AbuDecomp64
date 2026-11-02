@@ -2,14 +2,17 @@
 """Lockstep divergence: the first point where the port's boot behaves differently from the oracle's.
 
 Both sides record the same thing at the first hit of each boot-trace function (port: trace.c with N64C_LOCKSTEP=1;
-oracle: cake-taste hosts/n64recomp lockstep.cpp with N64R_LOCKSTEP_DIR): per-4-KiB-page hashes of RDRAM with the
-changed pages' bytes, and the arguments and return of the first 8 calls of each function.
+oracle: cake-taste hosts/n64recomp lockstep.cpp with N64R_LOCKSTEP_DIR): per-4-KiB-page hashes of RDRAM (hashes only,
+no page bytes), and the arguments and return of the first 8 calls of each function. Page bytes come from a dump: both
+sides replay the movie to one poll (N64C_LOCKSTEP_DUMP / N64R_LOCKSTEP_DUMP = POLL:PAGE,...) and write just those pages
+to <side>/dump/POLL/dump.bin; every dump a side holds gives the bytes of the hashes it names (Side.bytes).
 
     lockstep.py types --build BUILD --trace boot-trace.tsv --out types.tsv
     lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--json out]
     lockstep.py match --run RUN [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N]
     lockstep.py check RUN
     lockstep.py coverage --run RUN
+    lockstep.py pages --run RUN [--poll P]
     lockstep.py compare --oracle DIR --port DIR --trace boot-trace.tsv [--symbols symbol_addrs.txt]
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
                         [--rom baserom.z64] [--json out.json]
@@ -40,6 +43,10 @@ match --run RUN reads the run record (CONTRACTS.md "Run record"): RUN/lockstep/{
 out. check RUN validates a run record field by field against that contract; exit 0 when it holds, 1 when a field breaks it.
 coverage --run RUN joins reach.bin (over its run.json census), lockstep/port/calls.jsonl and match.json into
 RUN/coverage.tsv, one row per function; exit 2 when an input is missing.
+A page whose two hashes differ is compared word by word only when both sides hold its bytes (a dump); otherwise match
+lists the page itself (memory class `page`, both hashes) and its report's `dump` names the poll and the pages a dump
+replay must write (`decomp tas lockstep-dump RUN`); compare lists such a page the same way. pages --run RUN prints that
+request ({poll, pages}, or null), from match.json or, with --poll, for that poll.
 """  # noqa: E501
 
 import argparse
@@ -73,6 +80,7 @@ RDRAM = 0x80000000
 EMPTY_WORDS = (np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, object))
 FNV_OFFSET, FNV_PRIME, MASK64 = 0xCBF29CE484222325, 0x100000001B3, (1 << 64) - 1
 ORACLE_STACK, PORT_STACK = 0x10000, 0x100000
+DUMP, DUMP_FILE, DUMP_HEAD = "dump", "dump.bin", 16  # <side>/dump/<poll>/dump.bin: <u32 page><u32 0><u64 hash> + page
 
 
 def page_hash(data, native=False):
@@ -166,22 +174,36 @@ def read_boot_copy(path):
     return bytes(rom[BOOT_COPY[1] :])
 
 
+def read_dump(path):
+    """[(page, hash, bytes)] of one dump.bin, in file order; a record cut short is refused."""
+    data = pathlib.Path(path).read_bytes()
+    step = DUMP_HEAD + PAGE
+    if len(data) % step:
+        raise ValueError(f"{path}: {len(data)} bytes is not whole {step}-byte records")
+    out = []
+    for at in range(0, len(data), step):
+        page, _, h = struct.unpack_from("<IIQ", data, at)
+        out.append((page, h, data[at + DUMP_HEAD : at + step]))
+    return out
+
+
 class Side:
     """One run's lockstep files: points (key -> page-hash array), calls and returns (key -> index -> record), polls
-    (index -> record without its pages: a whole movie's page lists are gigabytes parsed, so poll_pages streams them)."""
+    (index -> record without its pages: poll_pages streams them) and the page bytes its dumps hold (dumps: poll -> page
+    -> hash; bytes(hash))."""
 
     def __init__(self, directory, key_of):
         self.dir = pathlib.Path(directory)
         self.points, self.calls, self.rets, self.sps, self.watch = {}, {}, {}, {}, []
         self.polls, self.movie_calls, self.movie_rets = {}, {}, {}
-        self.meta, self.store, self.hashes, self.slots = None, None, array.array("Q"), array.array("I")
+        self.meta = None
         with open(self.dir / "lockstep.jsonl") as stream:
             lines = itertools.chain(stream, self.movie_lines(self.dir / "calls.jsonl"))
             self.read_lines(lines, key_of)
         if self.meta is None:
             raise ValueError(f"{self.dir}: no meta line")
         self.canonical = self.meta.get("bytes") == "canonical-be"
-        self.index_store()
+        self.read_dumps()
 
     def read_lines(self, lines, key_of):
         current = None
@@ -222,17 +244,20 @@ class Side:
             elif kind == "watch":
                 self.watch.append(r)
 
-    def index_store(self):
-        """pages.bin holds each distinct page once (both writers dedup by hash); a whole movie's store is gigabytes
-        (pp-1p-match: 10.5 GB), so it is neither mapped nor held: one chunked read keeps each record's hash as sorted
-        arrays (16 B a page, not a dict entry), and page() preads one page's bytes on demand."""
-        self.store = open(self.dir / "pages.bin", "rb")  # noqa: SIM115 - held for page() for the Side's life
-        step, heads = 16 + PAGE, array.array("Q")
-        chunk = memoryview(bytearray(step * 2048))
-        while n := self.store.readinto(chunk):
-            heads.frombytes(chunk[: n - n % step].cast("Q")[1 :: step // 8].tobytes())
-        order = sorted(range(len(heads)), key=heads.__getitem__)
-        self.hashes, self.slots = array.array("Q", map(heads.__getitem__, order)), array.array("I", order)
+    def read_dumps(self):
+        # The record is hashes only. Page bytes are the dumps' (<side>/dump/<poll>/dump.bin, a few pages each), keyed by
+        # hash: a dump record whose bytes do not hash to its key is no evidence (bad_dumps) and gives no bytes.
+        self.dumps, self.bad_dumps = {}, []
+        self.dumped = {page_hash(bytes(PAGE)): bytes(PAGE)}
+        folders = (self.dir / DUMP).iterdir() if (self.dir / DUMP).is_dir() else ()
+        for folder in sorted(f for f in folders if f.name.isdigit() and (f / DUMP_FILE).is_file()):
+            poll = int(folder.name)
+            for page, h, data in read_dump(folder / DUMP_FILE):
+                self.dumps.setdefault(poll, {})[page] = h
+                if page_hash(data, native=not self.canonical) == h:
+                    self.dumped[h] = data
+                else:
+                    self.bad_dumps.append((poll, page, h))
 
     def poll_pages(self):
         """Each poll line's (poll, [[page, hash hex], ...]) in file order, read again from lockstep.jsonl."""
@@ -264,13 +289,9 @@ class Side:
                 kept.append(line)
         return kept
 
-    def page(self, h):
-        i = bisect.bisect_left(self.hashes, h)
-        if i < len(self.hashes) and self.hashes[i] == h:
-            return os.pread(self.store.fileno(), PAGE, self.slots[i] * (16 + PAGE) + 16)
-        if h == ZERO_PAGE:
-            return bytes(PAGE)
-        raise ValueError(f"{self.dir}: page {h:016x} listed but not stored")
+    def bytes(self, h):
+        """The page bytes of hash h (the zero page, or a dump's), None when no dump holds them."""
+        return self.dumped.get(h)
 
 
 # ---- word equivalence -------------------------------------------------------------------------------------------
@@ -888,7 +909,9 @@ def compare(args):
             a, b = oracle.points[key][0], other.points[key][0]
             for pg in range(ram // PAGE):
                 if a[pg] != b[pg]:
-                    x, y = oracle.page(a[pg]), other.page(b[pg])
+                    x, y = oracle.bytes(a[pg]), other.bytes(b[pg])
+                    if x is None or y is None:  # no dump holds the bytes: the words cannot be told apart
+                        continue
                     volatile.update(
                         pg * WORDS + w for w in range(WORDS) if x[4 * w : 4 * w + 4] != y[4 * w : 4 * w + 4]
                     )
@@ -901,9 +924,19 @@ def compare(args):
         for pg in range(ram // PAGE):
             pair = (a[pg], b[pg])
             if pair not in cache:
-                cache[pair] = matcher.page_diff(oracle.page(a[pg]), port.page(b[pg]))
-                if boot is not None and cache[pair]:
-                    cache[pair] = boot_unmask(cache[pair], pg, oracle.page(a[pg]), boot, boot_words)
+                o, p = oracle.bytes(a[pg]), port.bytes(b[pg])
+                if pair[0] == pair[1]:  # one canonical hash: the same words
+                    cache[pair] = {}
+                elif o is None or p is None:  # no dump holds the bytes: the page itself differs
+                    cache[pair] = None
+                else:
+                    cache[pair] = matcher.page_diff(o, p)
+                    if boot is not None and cache[pair]:
+                        cache[pair] = boot_unmask(cache[pair], pg, o, boot, boot_words)
+            if cache[pair] is None:
+                if not all(pg * WORDS + w in masked_words for w in range(WORDS)):
+                    diff[-1 - pg] = ("page", pair)  # a page key: -1 - page, ahead of every word
+                continue
             for w, cls in cache[pair].items():
                 index = pg * WORDS + w
                 if index not in masked_words and index not in volatile:
@@ -912,8 +945,10 @@ def compare(args):
     memory, shim, transient, setup, ulp = [], set(), 0, {}, set()
 
     def oracle_word(index, pair):
+        if index < 0:  # a page without bytes: its oracle hash
+            return pair[0]
         w = index % WORDS
-        return oracle.page(pair[0])[4 * w : 4 * w + 4]
+        return oracle.bytes(pair[0])[4 * w : 4 * w + 4]
 
     for j, key in enumerate(common):
         previous = per_point[j - 1] if j else {}
@@ -1004,6 +1039,21 @@ def compare(args):
         "watch": {"oracle": oracle.watch[:50], "port": port.watch[:50]},
     }
     for key, index, (oh, ph) in memory:
+        if index < 0:
+            address = RDRAM + (-1 - index) * PAGE
+            report["memory"].append(
+                {
+                    "order": key,
+                    "function": names.get(key, ["?"])[0],
+                    "page": f"0x{address:08x}",
+                    "address": f"0x{address:08x}",
+                    "symbol": matcher.symbol(address),
+                    "class": "page",
+                    "oracle": f"{oh:016x}",
+                    "port": f"{ph:016x}",
+                }
+            )
+            continue
         address = RDRAM + index * 4
         w = index % WORDS
         report["memory"].append(
@@ -1013,8 +1063,8 @@ def compare(args):
                 "page": f"0x{address & ~(PAGE - 1):08x}",
                 "address": f"0x{address:08x}",
                 "symbol": matcher.symbol(address),
-                "oracle": words_text(oracle.page(oh), w, True),
-                "port": words_text(port.page(ph), w, False),
+                "oracle": words_text(oracle.bytes(oh), w, True),
+                "port": words_text(port.bytes(ph), w, False),
             }
         )
     for key, i, why in calls:
@@ -1161,6 +1211,7 @@ def match_memory(matcher, oracle, port, polls, persist):
     active = np.zeros((pages, WORDS), bool)
     since, poll_of, ov_of, pv_of = (np.zeros((pages, WORDS), np.int64) for _ in range(4))
     runs = []  # (word, start poll, oracle value, port value) arrays of each run recorded
+    unknown, page_runs = {}, []  # page -> (start index, poll, hashes) while no dump holds its bytes; recorded page runs
 
     def listed(side):
         """Each of polls' page list, streamed from the side's file in poll order."""
@@ -1182,8 +1233,16 @@ def match_memory(matcher, oracle, port, polls, persist):
                     changed.add(page)
         for pg in changed:
             now = np.zeros(WORDS, bool)
-            if oh[pg] != ph[pg]:  # one canonical hash: the same words
-                ws, ovs, pvs, kinds = matcher.page_words(oracle.page(oh[pg]), port.page(ph[pg]))
+            differ = oh[pg] != ph[pg]  # one canonical hash: the same words
+            o, p = (oracle.bytes(oh[pg]), port.bytes(ph[pg])) if differ else (None, None)
+            if differ and (o is None or p is None):  # no dump holds it: the page is the unit, its words still differ
+                unknown.setdefault(pg, (index, poll, oh[pg], ph[pg]))
+                continue
+            start = unknown.pop(pg, None)
+            if start is not None and index - start[0] > persist:
+                page_runs.append((pg, *start[1:]))
+            if differ:
+                ws, ovs, pvs, kinds = matcher.page_words(o, p)
                 value = kinds == "value"
                 ws, ovs, pvs = ws[value], ovs[value], pvs[value]
                 now[ws] = True
@@ -1192,7 +1251,7 @@ def match_memory(matcher, oracle, port, polls, persist):
             ended = np.flatnonzero(active[pg] & ~now & (index - since[pg] > persist))  # differed past persist polls
             if ended.size:
                 runs.append((pg * WORDS + ended, poll_of[pg, ended], ov_of[pg, ended], pv_of[pg, ended]))
-            if oh[pg] != ph[pg]:
+            if differ:
                 since[pg, ws], poll_of[pg, ws], ov_of[pg, ws], pv_of[pg, ws] = index, poll, ovs, pvs
             active[pg] = now
     left = np.flatnonzero(active)
@@ -1203,17 +1262,37 @@ def match_memory(matcher, oracle, port, polls, persist):
         address = RDRAM + 4 * words[i]
         out.append({"poll": starts[i], "address": f"{address:08x}", "symbol": matcher.symbol(address), "class": "value",
                     "oracle": f"{ovs[i]:08x}", "port": f"{pvs[i]:08x}"})  # fmt: skip
-    return out
+    page_runs += [(pg, *start[1:]) for pg, start in unknown.items()]
+    out += [{"poll": poll, "address": f"{RDRAM + pg * PAGE:08x}", "symbol": matcher.symbol(RDRAM + pg * PAGE),
+             "class": "page", "oracle": f"{o:016x}", "port": f"{p:016x}"} for pg, poll, o, p in page_runs]  # fmt: skip
+    return sorted(out, key=lambda r: (r["poll"], r["address"], r["class"]))
+
+
+def dump_request(oracle, port, polls, at):
+    """{poll, pages} a dump replay writes: at poll `at`, every page whose two hashes differ and whose bytes a side does
+    not hold yet (both sides dump the same pages); None when there is none. The page lists stream from the files."""
+    ram = min(oracle.meta["ram"], port.meta["ram"])
+    oh, ph = [0] * (ram // PAGE), [0] * (ram // PAGE)
+    streams = oracle.poll_pages(), port.poll_pages()
+    for poll in polls:
+        for stream, hashes in zip(streams, (oh, ph), strict=True):
+            listing = next((pages for got, pages in stream if got == poll), None)
+            if listing is None:
+                raise ValueError(f"poll {poll} missing or out of order")
+            for page, h in listing:
+                if page < len(hashes):
+                    hashes[page] = int(h, 16)
+        if poll == at:
+            missing = [pg for pg, (o, p) in enumerate(zip(oh, ph, strict=True))
+                       if o != p and (oracle.bytes(o) is None or port.bytes(p) is None)]  # fmt: skip
+            return {"poll": at, "pages": missing} if missing else None
+    return None
 
 
 def match(args):
     """The whole movie compared poll by poll: per class the ordered persistent divergences, matched-through poll and the
     first divergence."""
-    oracle, port = Side(args.oracle, lambda r: None), Side(args.port, lambda r: None)
-    if not oracle.canonical or port.canonical:
-        raise ValueError("--oracle must be the canonical-be side and --port the native one")
-    if not oracle.polls or not port.polls:
-        raise ValueError("both sides need poll lines (a TAS movie played with lockstep on)")
+    oracle, port, _ = sides(args)
     matcher = Matcher(min(oracle.meta["ram"], port.meta["ram"]), read_symbols(args.symbols),
                       read_exe_functions(args.port_exe), read_exe_data(args.port_exe))  # fmt: skip
     every = sorted(set(oracle.polls) | set(port.polls))
@@ -1231,17 +1310,42 @@ def match(args):
         if divergences[cls] and (first is None or divergences[cls][0]["poll"] < first["poll"]):
             first = dict(divergences[cls][0], **{"class": cls})
     last = every[-1]
+    pending = [r for r in divergences["memory"] if r["class"] == "page"]
     return {
         "polls": {"oracle": len(oracle.polls), "port": len(port.polls), "common": len(common)},
         "matched_through_poll": first["poll"] - 1 if first else last,
         "first": first,
         "divergences": divergences,
+        "dump": dump_request(oracle, port, common, pending[0]["poll"]) if pending else None,
     }
+
+
+def sides(args):
+    """The two Sides of `match`/`pages` (oracle canonical, port native) and their common polls."""
+    oracle, port = Side(args.oracle, lambda r: None), Side(args.port, lambda r: None)
+    if not oracle.canonical or port.canonical:
+        raise ValueError("--oracle must be the canonical-be side and --port the native one")
+    if not oracle.polls or not port.polls:
+        raise ValueError("both sides need poll lines (a TAS movie played with lockstep on)")
+    return oracle, port, sorted(set(oracle.polls) & set(port.polls))
+
+
+def pages(args):
+    """The dump request of a run: --poll P computes it for that poll, else match.json's `dump`."""
+    lockstep = pathlib.Path(args.run) / RUN_LOCKSTEP
+    if args.poll is None:
+        return json.loads((lockstep / RUN_MATCH).read_text()).get("dump")
+    args.oracle, args.port = lockstep / "oracle", lockstep / "port"
+    oracle, port, common = sides(args)
+    if args.poll not in common:
+        raise ValueError(f"poll {args.poll} is not a poll both sides recorded")
+    return dump_request(oracle, port, common, args.poll)
 
 
 # ---- the run record (CONTRACTS.md "Run record") ------------------------------------------------------------------
 def check_side(side_dir, name):
-    """The problems of one side's lockstep.jsonl + pages.bin: meta, poll, call/ret lines (one reader: Side)."""
+    """The problems of one side's lockstep.jsonl and dumps: meta, poll, call/ret lines, and every dump being the
+    recorded state (its pages hash to their keys, and to the record's hashes at that poll) (one reader: Side)."""
     try:
         side = Side(side_dir, lambda r: None)
     except (OSError, ValueError, KeyError) as error:
@@ -1255,6 +1359,11 @@ def check_side(side_dir, name):
     polls = sorted(side.polls)
     if not polls or polls != list(range(polls[0], polls[0] + len(polls))):
         problems.append(f"lockstep/{name} poll: indices {polls[:3]}... are not one contiguous run")
+    current = {}
+    for poll, page, h in side.bad_dumps:
+        problems.append(f"lockstep/{name} dump {poll} page {page}: its bytes do not hash to {h:016x}")
+    for poll in sorted(set(side.dumps) - set(polls)):
+        problems.append(f"lockstep/{name} dump {poll}: no such poll in the record")
     for poll in polls:
         r = side.polls[poll]
         if not isinstance(r.get("vi"), int):
@@ -1268,10 +1377,11 @@ def check_side(side_dir, name):
                     and isinstance(entry[1], str) and HEX16.fullmatch(entry[1])):  # fmt: skip
                 problems.append(f"lockstep/{name} poll {poll} pages: {entry!r}, expected [page, 16-hex hash]")
                 continue
-            try:
-                side.page(int(entry[1], 16))
-            except ValueError as error:
-                problems.append(f"lockstep/{name} poll {poll} pages: {error}")
+            current[entry[0]] = int(entry[1], 16)
+        for page, h in sorted(side.dumps.get(poll, {}).items()):
+            if current.get(page) != h:
+                problems.append(f"lockstep/{name} dump {poll} page {page}: {h:016x}, the record holds "
+                                f"{current.get(page, 0):016x} (the replay is not the recorded run)")  # fmt: skip
     for (fn, caller, o), r in {**side.movie_calls, **side.movie_rets}.items():
         if not isinstance(fn, str) or not isinstance(caller, str) or not isinstance(o, int):
             problems.append(f"lockstep/{name} {r['k']}: {fn!r}/{caller!r}/{o!r}, expected fn, caller, ordinal")
@@ -1295,6 +1405,12 @@ def check_match(path):
     divergences = report.get("divergences", {})
     if sorted(divergences) != sorted(MATCH_CLASSES) or not all(isinstance(v, list) for v in divergences.values()):
         problems.append(f"lockstep/{RUN_MATCH} divergences: expected one list per class {', '.join(MATCH_CLASSES)}")
+    dump = report.get("dump", "missing")
+    if dump is not None and not (
+        isinstance(dump, dict) and isinstance(dump.get("poll"), int) and isinstance(dump.get("pages"), list)
+        and dump["pages"] and all(isinstance(pg, int) for pg in dump["pages"])
+    ):  # fmt: skip
+        problems.append(f"lockstep/{RUN_MATCH} dump: {dump!r}, expected null or {{poll, pages}}")
     return problems
 
 
@@ -1420,6 +1536,10 @@ def print_match(report, shown=8):
     print(f"matched through poll {report['matched_through_poll']}")
     first = report["first"]
     print("first divergence: " + (json.dumps(first, sort_keys=True) if first else "none"))
+    dump = report.get("dump")
+    print(
+        "dump: " + (f"poll {dump['poll']} pages {dump['pages']}" if dump else "none (every differing page has bytes)")
+    )
     for cls in MATCH_CLASSES:
         rows = report["divergences"][cls]
         print(f"{cls}: {len(rows)}")
@@ -1466,6 +1586,9 @@ def build_parser():
     k.add_argument("run")
     v = sub.add_parser("coverage", help="the per-function parity join of a run: RUN/coverage.tsv (CONTRACTS.md)")
     v.add_argument("--run", required=True, help="a run record with reach.bin, its census, calls.jsonl and match.json")
+    d = sub.add_parser("pages", help="the dump request of a run record: {poll, pages} a dump replay writes, or null")
+    d.add_argument("--run", required=True)
+    d.add_argument("--poll", type=int, help="this poll (default: the one match.json names)")
     return parser
 
 
@@ -1486,6 +1609,9 @@ def main(argv=None):
             summary = write_coverage(args.run)  # a refusal writes no join and names none
             print(f"lockstep coverage: {pathlib.Path(args.run) / RUN_COVERAGE}")
             print(summary)
+            return 0
+        if args.command == "pages":
+            print(json.dumps(pages(args)))
             return 0
         if args.command == "match":
             if args.run:

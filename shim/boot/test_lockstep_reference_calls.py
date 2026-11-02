@@ -2,7 +2,6 @@
 
 import importlib.util
 import json
-import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -50,8 +49,7 @@ class ReferenceCallTests(unittest.TestCase):
             (root / "trace").write_text("order\taddress\tsymbol\n1\t0x80001000\tfixture\n")
             (root / "types").write_text("name\treturn\tparams\nfixture\tint32\tint32,int32\n")
             (root / "accept").write_text("\t".join(ls.ACCEPT_FIELDS) + "\n")
-            page = bytes(4096)
-            h = ls.page_hash(page)
+            h = ls.page_hash(bytes(4096))  # the zero page: its bytes need no dump
             for name, values in [("oracle", [1, 2, 0, 0]), ("peer", [1, 3, 0, 0]), ("port", [8, 9, 0, 0])]:
                 directory = root / name
                 directory.mkdir()
@@ -63,7 +61,6 @@ class ReferenceCallTests(unittest.TestCase):
                     dict(k="call", i=0, thr=1, **identity, **call(values)),
                 ]
                 (directory / "lockstep.jsonl").write_text("".join(json.dumps(r) + "\n" for r in data))
-                (directory / "pages.bin").write_bytes(struct.pack("<IIQ", 0, 0, h) + page)
             argv = [
                 "compare",
                 "--oracle",

@@ -404,6 +404,13 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     triage.add_argument(
         "--backfill", action="store_true", help="first add findings for each movie's newest recorded run"
     )
+    dump = actions.add_parser(
+        "lockstep-dump",
+        help="the page bytes of a --lockstep run at one poll: both sides replay its movie to the poll lockstep.py "
+        "match names and write those pages to RUN/lockstep/<side>/dump/POLL/, then match runs again",
+    )
+    dump.add_argument("run", help="the run id (or folder) played with --oracle --lockstep")
+    dump.add_argument("--poll", type=int, help="this poll instead (every page without bytes there)")
     stream = actions.add_parser("stream", help="the lockstep stream of recorded runs (both sides' pictures per poll)")
     stream_verbs = stream.add_subparsers(dest="verb", required=True, parser_class=_Parser)
     pack = stream_verbs.add_parser("pack", help="turn runs' oracle shots into RUN/stream/{port,oracle}/POLL.jpg")
@@ -646,6 +653,11 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         return tas_coverage.lists(report, 25), (5 if refused else 0), refused
     if args.action == "triage":
         return _run_triage(profile, args)
+    if args.action == "lockstep-dump":
+        from abu_decomp import tas_oracle
+
+        done = tas_oracle.lockstep_dump(profile, args.run, args.poll)
+        return done, 1 if done.get("error") else 0, []
     if args.action == "stream":
         from abu_decomp import tas_stream
 

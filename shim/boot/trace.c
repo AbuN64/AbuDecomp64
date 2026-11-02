@@ -119,8 +119,11 @@ NOINST static int expected_entry(void)
 
 /* ---- Lockstep (N64C_LOCKSTEP=1, diagnostic flavour): the port half of the oracle comparison (lockstep.py). ----
  * At the first hit of every watched trace function the RDRAM image is hashed per 4 KiB page; pages whose hash
- * changed since the previous point are listed in lockstep.jsonl and their bytes stored once per hash in pages.bin
- * (16-byte header: u32 page, u32 0, u64 hash; then the page). The port keeps RDRAM in its own (native) byte order;
+ * changed since the previous point are listed in lockstep.jsonl. The record is hashes only: page bytes come from a
+ * dump replay, N64C_LOCKSTEP_DUMP=POLL:PAGE,PAGE,... (the same movie again, nothing recorded, lockstep.jsonl left as
+ * it is), whose poll POLL writes the named pages to DIR/dump/POLL/dump.bin (per page a 16-byte header: u32 page,
+ * u32 0, u64 hash; then the page; written beside it, then renamed) and exits 0, so the dump is complete when the port
+ * has exited. The port keeps RDRAM in its own (native) byte order;
  * lockstep.py owns every equivalence between that and the oracle's canonical big-endian bytes. The first
  * LOCKSTEP_CALLS calls of each trace function also record 8 argument words from the frame and, through a return
  * trampoline, eax/edx/st(0) at its return. N64C_LOCKSTEP_WATCH=<addr> records every change of that RDRAM word seen
@@ -128,10 +131,12 @@ NOINST static int expected_entry(void)
  * n64c_trace_poll_point). Nothing here runs unless N64C_LOCKSTEP=1. */
 extern void *n64c_memory_ram(unsigned physical, unsigned bytes) __attribute__((weak));
 enum { LS_PAGE = 4096, LS_CALLS = 8, LS_SHADOW = 256, LS_WATCH_LINES = 20000 };
-static int ls_on, ls_log = -1, ls_store = -1;
+static int ls_on, ls_log = -1;
 static const unsigned char *ls_ram;
-static unsigned ls_pages, ls_points, ls_stored_mask, ls_stored_n, ls_zero_stored;
-static uint64_t *ls_stored;
+static unsigned ls_pages, ls_points;
+static long ls_dump_poll = -1;        /* N64C_LOCKSTEP_DUMP: the poll whose named pages are dumped; -1 records */
+static unsigned char *ls_dump_pages; /* one flag per page: named by the dump */
+static const char *ls_dir;
 /* One stream of points (first hits, controller polls): the page hashes and RDRAM it saw at its own previous point, so
  * each stream lists the pages changed since its own last point and the poll stream reads the same whichever functions
  * a build hooks (the oracle keeps the same two baselines). */
@@ -175,7 +180,7 @@ NOINST static long ls_tid(void)
 }
 /* FNV-1a over little-endian 64-bit words of the page in canonical big-endian bytes: each native (host-order) 32-bit
  * word is byte-swapped first, the bytes the oracle hashes, so a page whose words hold the same values hashes the same
- * on both sides. pages.bin keeps the native bytes (meta bytes "native"); lockstep.py computes the same. */
+ * on both sides. A dump keeps the native bytes (meta bytes "native"); lockstep.py computes the same. */
 NOINST uint64_t n64c_lockstep_hash(const unsigned char *page)
 {
     uint64_t h = 0xcbf29ce484222325ull;
@@ -198,38 +203,60 @@ NOINST static void ls_write(int fd, const void *data, size_t size)
         size -= (size_t)n;
     }
 }
-/* 1 when the hash is new to pages.bin (its content must be stored). */
-NOINST static int ls_stored_add(uint64_t h)
+/* N64C_LOCKSTEP_DUMP=POLL:PAGE,PAGE,...: the dump replay. Nothing is recorded; the poll point at POLL writes the named
+ * pages (ls_dump) and ends the process. 1 when the spec holds. */
+NOINST static int ls_dump_init(const char *spec)
 {
-    if (!h) {
-        const int fresh = !ls_zero_stored;
-        ls_zero_stored = 1;
-        return fresh;
+    char *end;
+    const long poll = strtol(spec, &end, 10);
+    int ok = *end == ':' && poll > 0, named = 0;
+    ls_dump_pages = calloc(ls_pages ? ls_pages : 1, 1);
+    while (ok && ls_dump_pages && *end && *++end) {
+        const char *at = end;
+        const unsigned long pg = strtoul(at, &end, 10);
+        ok = end != at && (*end == ',' || !*end) && pg < ls_pages;
+        if (ok && !ls_dump_pages[pg]) {
+            ls_dump_pages[pg] = 1;
+            named++;
+        }
     }
-    if ((ls_stored_n + 1) * 2 > ls_stored_mask) {
-        const unsigned old_mask = ls_stored_mask;
-        uint64_t *old = ls_stored, *grown = calloc((size_t)(old_mask + 1) * 2, sizeof *grown);
-        if (!grown)
-            return 1;
-        ls_stored = grown;
-        ls_stored_mask = old_mask * 2 + 1;
-        for (unsigned i = 0; i <= old_mask; i++)
-            if (old[i]) {
-                unsigned s = (unsigned)(old[i] >> 17) & ls_stored_mask;
-                while (ls_stored[s])
-                    s = (s + 1) & ls_stored_mask;
-                ls_stored[s] = old[i];
-            }
-        free(old);
-    }
-    unsigned s = (unsigned)(h >> 17) & ls_stored_mask;
-    while (ls_stored[s] && ls_stored[s] != h)
-        s = (s + 1) & ls_stored_mask;
-    if (ls_stored[s])
+    if (!ok || !named) {
+        fprintf(stderr, "boot-lockstep: dump off (N64C_LOCKSTEP_DUMP is POLL:PAGE,..., got %s)\n", spec);
         return 0;
-    ls_stored[s] = h;
-    ls_stored_n++;
+    }
+    ls_dump_poll = poll;
+    fprintf(stderr, "boot-lockstep: dump of %d pages at poll %ld into %s/dump/%ld\n", named, poll, ls_dir, poll);
     return 1;
+}
+/* The dump at poll ls_dump_poll: DIR/dump/POLL/dump.bin, then the process ends; its exit is the dump's completion. */
+NOINST static void ls_dump(void)
+{
+    char folder[4096], part[4200], done[4200];
+    snprintf(folder, sizeof folder, "%s/dump", ls_dir);
+    mkdir(folder, 0777);
+    snprintf(folder, sizeof folder, "%s/dump/%ld", ls_dir, ls_dump_poll);
+    mkdir(folder, 0777);
+    snprintf(part, sizeof part, "%s/dump.bin.part", folder);
+    snprintf(done, sizeof done, "%s/dump.bin", folder);
+    const int fd = open(part, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        fprintf(stderr, "boot-lockstep: dump cannot write %s\n", part);
+        _Exit(6);
+    }
+    for (unsigned pg = 0; pg < ls_pages; pg++) {
+        if (!ls_dump_pages[pg])
+            continue;
+        const unsigned char *page = ls_ram + (size_t)pg * LS_PAGE;
+        const uint64_t h = n64c_lockstep_hash(page);
+        uint32_t head[4] = {pg, 0, (uint32_t)h, (uint32_t)(h >> 32)};
+        ls_write(fd, head, sizeof head);
+        ls_write(fd, page, LS_PAGE);
+    }
+    if (close(fd) != 0 || rename(part, done) != 0)
+        _Exit(6);
+    fprintf(stderr, "boot-lockstep: dump at poll %ld in %s\n", ls_dump_poll, done);
+    fflush(stderr);
+    _Exit(0);
 }
 NOINST static void ls_init(void)
 {
@@ -244,21 +271,25 @@ NOINST static void ls_init(void)
             bytes = b;
     char path[4096];
     mkdir(dir, 0777);
+    ls_dir = dir;
+    ls_pages = bytes / LS_PAGE;
+    const char *dump = getenv("N64C_LOCKSTEP_DUMP");
+    if (dump && *dump) { /* the dump replay: ls_on stays 0, so no point, call or watch is recorded */
+        if (!ls_ram)
+            fprintf(stderr, "boot-lockstep: dump off (no RDRAM)\n");
+        else
+            ls_dump_init(dump);
+        return;
+    }
     snprintf(path, sizeof path, "%s/lockstep.jsonl", dir);
     ls_log = ls_ram ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666) : -1;
-    snprintf(path, sizeof path, "%s/pages.bin", dir);
-    ls_store = ls_log >= 0 ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666) : -1;
-    ls_pages = bytes / LS_PAGE;
-    ls_stored_mask = 4095;
     ls_hits.last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_hits.last);
     ls_polls.last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_polls.last);
-    ls_stored = calloc(ls_stored_mask + 1, sizeof *ls_stored);
     ls_calls = calloc(n64c_trace_count, sizeof *ls_calls);
     ls_line = malloc((size_t)ls_pages * 32 + 1024);
     ls_hits.seen = malloc(bytes ? bytes : 1);
     ls_polls.seen = malloc(bytes ? bytes : 1);
-    if (ls_store < 0 || !ls_hits.last || !ls_polls.last || !ls_stored || !ls_calls || !ls_line || !ls_hits.seen ||
-        !ls_polls.seen) {
+    if (ls_log < 0 || !ls_hits.last || !ls_polls.last || !ls_calls || !ls_line || !ls_hits.seen || !ls_polls.seen) {
         fprintf(stderr, "boot-lockstep: off (%s)\n", ls_ram ? "cannot write its files" : "no RDRAM");
         return;
     }
@@ -387,8 +418,8 @@ NOINST static void ca_init(void)
     ca_on = 1;
     fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
 }
-/* The pages of a point: every page whose hash changed since the stream's previous point (all at its first), its bytes
- * stored once per hash in pages.bin; writes the line that p (inside ls_line) ends. Called with the census lock held. */
+/* The pages of a point: every page whose hash changed since the stream's previous point (all at its first), hashes
+ * only; writes the line that p (inside ls_line) ends. Called with the census lock held. */
 NOINST static void ls_pages_out(LsStream *s, char *p)
 {
     const char *sep = "";
@@ -402,11 +433,6 @@ NOINST static void ls_pages_out(LsStream *s, char *p)
         if (s->started && h == s->last[pg])
             continue;
         s->last[pg] = h;
-        if (ls_stored_add(h)) {
-            uint32_t head[4] = {pg, 0, (uint32_t)h, (uint32_t)(h >> 32)};
-            ls_write(ls_store, head, sizeof head);
-            ls_write(ls_store, copy, LS_PAGE);
-        }
         p += sprintf(p, "%s[%u,\"%016" PRIx64 "\"]", sep, pg, h);
         sep = ",";
     }
@@ -427,6 +453,8 @@ NOINST static void ls_point(unsigned i)
  * the same line on both sides (lockstep.py match keys a whole movie by it). */
 NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads)
 {
+    if (ls_dump_poll >= 0 && poll == ls_dump_poll)
+        ls_dump();
     if (!ls_on)
         return;
     pthread_mutex_lock(&lock);

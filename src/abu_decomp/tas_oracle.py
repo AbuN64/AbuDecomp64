@@ -20,7 +20,11 @@ names, and the run folder gets the same files for both sides:
   record marks every oracle picture with the lead it was drawn under (`oracle.render_lead`, `oracle.pictures`), and
   every picture comparison (`compare`, `summary`, `verdict`, /shot, /diff) refuses a picture drawn under a lead above
   0: a screen built over more than `render_lead` frames can differ from a full render;
-- poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll.
+- poll timing: `N64C_TAS_TRACE` / `N64R_TAS_TRACE` = port-trace.txt / oracle-trace.txt, one "poll vi" line per poll;
+- the whole-movie lockstep (`tas play --lockstep`): `N64C_LOCKSTEP=1` / `N64C_LOCKSTEP_DIR` and `N64R_LOCKSTEP_DIR` =
+  RUN/lockstep/{port,oracle}, a record of page hashes only. `tas lockstep-dump RUN` replays the same movie on both
+  sides with `N64C_LOCKSTEP_DUMP` / `N64R_LOCKSTEP_DUMP` = POLL:PAGE,... (the poll and pages `lockstep.py match` names):
+  each writes those pages to RUN/lockstep/<side>/dump/POLL/dump.bin at that poll and exits, then match runs again.
 The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) on the logical
 guest clock, so its guest time comes from the work done, not the host: the same movie gives the same pictures
 every time, at any speed. It always runs at full speed beside the port.
@@ -76,6 +80,7 @@ LOCKSTEP = "lockstep"  # RUN/lockstep/{port,oracle}/ and RUN/lockstep/match.json
 LOCKSTEP_MATCH = "match.json"
 LOCKSTEP_LOG = "lockstep.txt"  # lockstep.py match's own output
 LOCKSTEP_PY = Path(__file__).resolve().parents[2] / "shim" / "boot" / "lockstep.py"
+LOCKSTEP_REPLAY = "replay"  # RUN/lockstep/replay/<poll>/: a dump replay's own files (output, user dir, card copies)
 WIDTH, HEIGHT = 320, 240
 PPM_HEAD = f"P6\n{WIDTH} {HEIGHT}\n255\n".encode()
 PPM_SIZE = len(PPM_HEAD) + WIDTH * HEIGHT * 3
@@ -197,7 +202,8 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
 
 
 def lockstep_side(run: Path, side: str) -> Path:
-    """RUN/lockstep/<side>, made: the folder that side's recorder writes lockstep.jsonl and pages.bin into."""
+    """RUN/lockstep/<side>, made: the folder that side's recorder writes lockstep.jsonl into, and its dumps
+    (dump/<poll>/dump.bin)."""
     folder = run / LOCKSTEP / side
     folder.mkdir(parents=True, exist_ok=True)
     return folder
@@ -252,6 +258,123 @@ def read_match(run: Path) -> dict[str, Any] | None:
         return None
 
 
+def lockstep_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
+    """The oracle half of the lockstep: N64R_LOCKSTEP_DIR (RUN/lockstep/oracle of the run it records into) and, for a
+    dump replay, N64R_LOCKSTEP_DUMP; nothing without --lockstep."""
+    if not oracle.get("lockstep"):
+        return {}
+    env = {"N64R_LOCKSTEP_DIR": str(lockstep_side(oracle.get("lockstep_into", run), "oracle"))}
+    if oracle.get("lockstep_dump"):  # the dump replay: those pages at that poll, then the host exits
+        env["N64R_LOCKSTEP_DUMP"] = oracle["lockstep_dump"]
+    return env
+
+
+def lockstep_request(run: Path, poll: int | None = None) -> dict[str, Any] | None:
+    """`lockstep.py pages --run RUN [--poll P]`: {poll, pages} a dump replay writes (the poll and pages match.json
+    names, or every page without bytes at poll P), None when every differing page already has its bytes."""
+    argv = [sys.executable, str(lockstep_script()), "pages", "--run", str(run)]
+    done = subprocess.run(
+        argv + (["--poll", str(poll)] if poll is not None else []),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode:
+        raise DecompError("tas.lockstep", f"lockstep.py pages: {(done.stderr or done.stdout).strip()[-400:]}")
+    return json.loads(done.stdout)
+
+
+def lockstep_dump(profile: Profile, run_id: str, poll: int | None = None) -> dict[str, Any]:
+    """The page bytes of a lockstep run at one poll: both sides replay the run's movie (the record's port executable,
+    paks, pads and starting card; the oracle under the record's render lead) with the dump input POLL:PAGE,... and
+    write those pages to RUN/lockstep/<side>/dump/POLL/dump.bin at that poll, ending there. Each side is done when its
+    process has exited (no timeout: the replay runs at full speed to one poll). Then `lockstep.py match` runs again
+    on the record and its new bytes: match.json's `dump` names the next poll, or null."""
+    from abu_decomp import tas
+
+    cfg = tas.settings(profile)
+    run = Path(run_id) if Path(run_id).is_dir() else cfg["runs"] / "plays" / run_id
+    folder = run / LOCKSTEP
+    if not all((folder / side / "lockstep.jsonl").is_file() for side in SIDES) or not (run / "movie.raw").is_file():
+        raise DecompError("tas.lockstep", f"{run} holds no lockstep record (play it with --oracle --lockstep)")
+    record = json.loads((run / tas.RECORD).read_text())
+    request = lockstep_request(run, poll)
+    if request is None:
+        return {"run": str(run), "dump": None, "why": "every page whose hashes differ already has its bytes"}
+    at = request["poll"]
+    original = required(profile, fresh=False)
+    if host := (record.get("oracle") or {}).get("host"):
+        original["host"] = Path(host)  # the host that recorded: the same build replays the same run
+    lead = (record.get("oracle") or {}).get("render_lead", effective_lead(original))
+    spec = f"{at}:" + ",".join(str(page) for page in request["pages"])
+    original.update(pictures=False, render_lead=lead, lockstep=True, lockstep_into=run, lockstep_dump=spec)
+    replay = folder / LOCKSTEP_REPLAY / str(at)
+    shutil.rmtree(replay, ignore_errors=True)
+    (replay / "user").mkdir(parents=True)
+    pak, pads = record.get("pak", "on"), int(record.get("pads", 1))
+    card = oracle_card = None
+    if (run / tas.CARD_START).is_file():  # each side its own copy of the card the run started with
+        card, oracle_card = replay / tas.CARD, replay / "oracle-cpak.mpk"
+        shutil.copyfile(run / tas.CARD_START, card)
+        shutil.copyfile(run / tas.CARD_START, oracle_card)
+    port_cfg = tas.with_port(cfg, record.get("port"))
+    env = {
+        **tas.port_env(port_cfg, replay),
+        **port_env(original, replay),
+        # the port half of the dump replay (shim/boot/trace.c): the record's folder, those pages at that poll, then exit
+        "N64C_LOCKSTEP": "1",
+        "N64C_LOCKSTEP_DIR": str(lockstep_side(run, "port")),
+        "N64C_LOCKSTEP_DUMP": spec,
+        "N64C_TAS_PLAY": str(run / "movie.raw"),
+        "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
+        "N64C_SPEED": "0",
+        **({"N64C_PADS": str(pads)} if pads > 1 else {}),
+    }
+    env.pop("N64C_CALLS", None)  # the dump replay records nothing; the record's calls stay as they are
+    ended: dict[str, dict[str, Any]] = {}
+
+    def wait(side: str, process: subprocess.Popen) -> None:  # the side's exit is the dump's completion signal
+        ended[side] = {"exit": process.wait()}
+
+    oracle_process = start(
+        original, replay, cfg["exit_after"], pak, card=oracle_card, pads=pads, movie=run / "movie.raw"
+    )
+    with (replay / "output.txt").open("w") as output:
+        port_process = subprocess.Popen(
+            tas._argv(port_cfg, replay / "user", pak, card, False),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            **procguard.owned(),
+        )
+    waiters = [
+        threading.Thread(target=wait, args=(side, process))
+        for side, process in (("port", port_process), ("oracle", oracle_process))
+    ]
+    for waiter in waiters:
+        waiter.start()
+    for waiter in waiters:
+        waiter.join()
+    result: dict[str, Any] = {"run": str(run), "dump": request, "replay": str(replay)}
+    for side in SIDES:
+        dump = folder / side / "dump" / str(at) / "dump.bin"
+        result[side] = {**ended[side], "dump": str(dump) if dump.is_file() else None}
+    missing = [side for side in SIDES if result[side]["dump"] is None]
+    if missing:
+        result["error"] = (
+            f"no dump from {' and '.join(missing)} at poll {at} (the side ended before it: see "
+            f"{replay / 'output.txt'} and {replay / LOG})"
+        )
+        return result
+    result["match"] = lockstep_match(run)
+    if isinstance(record.get("oracle"), dict):
+        record["oracle"]["lockstep"] = result["match"]
+        tas._write_record(run, record)
+    return result
+
+
 def movie_env(play: Path, pak: str, pads: int, exit_after: int, card: Path | None) -> dict[str, str]:
     """The host variables that replay a movie: the deterministic clock (guest time from the work done), the
     Expansion Pak, the pads, the poll-keyed movie, when the host stops and the Controller Pak card, if any."""
@@ -289,7 +412,7 @@ def start(
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
         "N64R_TAS_RENDER_LEAD": str(effective_lead(oracle)),
-        **({"N64R_LOCKSTEP_DIR": str(lockstep_side(run, "oracle"))} if oracle.get("lockstep") else {}),
+        **lockstep_env(oracle, run),
         **(extra or {}),
     }
     if oracle.get("pictures"):  # no SHOT_DIR, no .ppm: the host still writes its checkpoints

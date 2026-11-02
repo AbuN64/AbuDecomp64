@@ -6,7 +6,13 @@ The engine is generic and names no project: the rules are project facts, TOML fi
     id        short name, the bucket key of its hits
     (a line's `unless` sees the line with its comments, so `/* swap */` can mark a line as meant)
     kind      pattern    a regex per line (`match`), minus lines that also match `unless`; with `multiline = true` the
-                         regex runs over the whole text and a hit is the line the match starts on
+                         regex runs over the whole text and a hit is the line the match starts on;
+                         `unless_type` (regex) drops a hit whose `match` names a variable (group `var`) declared with
+                         a type it fully matches, or a member (group `member`) of that variable's struct declared so:
+                         the variable's declaration is read from the file (the nearest one above the hit, parameters
+                         included), else from `declare_paths`, and typedefs expand, so each spelling of the type
+                         (`f32`, then `float`; a function-pointer typedef as its whole `void (*Name)(void)` text) is
+                         tried. A rule about a narrow member or an unprototyped pointer then names only those
               decl-use   `declare` finds the names (named group `datum`) a tree defines; `use` finds the places that
                          touch a declared name (also group `datum`): a word array read through a byte cast
               call-arity `callee` (regex, default every name) selects the functions whose definition is read from the
@@ -71,6 +77,7 @@ _KEYS = frozenset(
         "skip",
         "match",
         "unless",
+        "unless_type",
         "multiline",
         "declare",
         "declare_paths",
@@ -242,6 +249,7 @@ class Rule:
             flags = re.S | re.M if self.multiline else 0
             self.match = re.compile(table["match"], flags) if "match" in table else None
             self.unless = re.compile(table["unless"]) if "unless" in table else None
+            self.unless_type = re.compile(table["unless_type"]) if "unless_type" in table else None
             self.declare = re.compile(table["declare"]) if "declare" in table else None
             self.use = re.compile(table["use"]) if "use" in table else None
             self.callee = re.compile(str(table.get("callee", r"\w+")))
@@ -261,6 +269,10 @@ class Rule:
             for name, rx in (("array", self.array), ("narrow", self.narrow)):
                 if rx is not None and "datum" not in rx.groupindex:
                     raise DecompError("sweep.rule", f"{origin}: rule {self.id}: `{name}` needs a (?P<datum>...) group")
+        if self.unless_type is not None and (self.match is None or "var" not in self.match.groupindex):
+            raise DecompError(
+                "sweep.rule", f"{origin}: rule {self.id}: `unless_type` needs a (?P<var>...) group in `match`"
+            )
         if self.mode not in ("fewer", "any"):
             raise DecompError("sweep.rule", f"{origin}: rule {self.id}: mode is fewer or any")
 
@@ -394,11 +406,144 @@ def _fp(rule: str, rel: str, text: str) -> str:
     return hashlib.sha1(f"{rule}\0{rel}\0{_norm(text)}".encode()).hexdigest()[:12]
 
 
+_DECL_WORDS = frozenset({"const", "static", "register", "volatile", "extern", "struct", "union", "unsigned", "signed"})
+_NOT_TYPES = frozenset({"return", "else", "goto", "case", "sizeof", "if", "while", "for", "switch", "do"})
+
+
+def _declares(statement: str, name: str) -> str | None:
+    """The type `statement` (one declaration, `TYPE a, *b = 1, c[3]`) gives `name`, star included, or None."""
+    words = statement.split()
+    i = 0
+    while i < len(words) and words[i] in _DECL_WORDS:
+        i += 1
+    if i >= len(words) or not re.fullmatch(r"[A-Za-z_]\w*", words[i]) or words[i] in _NOT_TYPES:
+        return None
+    head = " ".join(words[: i + 1])
+    rest = statement.split(words[i], 1)[1] if i < len(words) else ""
+    if head.split()[-1] in ("unsigned", "signed"):
+        return None
+    for item in _split_top(rest):
+        item = item.split("=", 1)[0]
+        item = re.sub(r"\[[^\]]*\]", "", item)
+        stars = item.count("*")
+        if item.replace("*", " ").split() == [name]:
+            return head + " *" * stars
+    return None
+
+
+def _declared_type(before: str, name: str) -> str | None:
+    """The type of `name` from its nearest declaration in `before` (statements and parameter lists), or None."""
+    if not re.search(rf"\b{re.escape(name)}\b", before):
+        return None
+    for piece in reversed(re.split(r"[;{}]", before)):
+        if not re.search(rf"\b{re.escape(name)}\b", piece):
+            continue
+        params = re.search(r"\(([^()]*)\)\s*$", piece.strip())
+        candidates = [piece, *(_split_top(params[1]) if params else []), piece.rsplit("(", 1)[-1]]
+        for candidate in candidates:
+            found = _declares(candidate.strip(), name)
+            if found:
+                return found
+    return None
+
+
+class TypeIndex:
+    """typedefs, struct/union bodies and file-scope variables of a set of sources, for `unless_type`."""
+
+    def __init__(self, sources: list[Source]) -> None:
+        self.aliases: dict[str, str] = {}  # typedef name -> the type text it stands for
+        self.function_types: dict[str, str] = {}  # function-pointer typedef name -> its whole declaration
+        self.bodies: dict[str, str] = {}  # struct/union tag or typedef name -> member text
+        self.globals: dict[str, str] = {}
+        for src in sources:
+            text = src.text
+            for m in re.finditer(r"\b(struct|union)\s+(\w+)?\s*\{", text):
+                end = _close_brace(text, m.end() - 1)
+                if end is None:
+                    continue
+                body = text[m.end() : end]
+                if m[2]:
+                    self.bodies.setdefault(m[2], body)
+                tail = re.match(r"\s*([^;{}()]*);", text[end + 1 :])
+                lead = text[max(0, m.start() - 40) : m.start()].split(";")[-1].split("}")[-1]
+                if tail and re.match(r"\s*typedef\b", lead):
+                    for alias in _split_top(tail[1]):
+                        alias = alias.replace("*", " ").strip()
+                        if re.fullmatch(r"\w+", alias):
+                            self.bodies.setdefault(alias, body)
+            for m in re.finditer(r"\btypedef\s+([^;{}]*?\(\s*\*\s*(\w+)\s*\)\s*\([^;{}]*\))\s*;", text):
+                self.function_types.setdefault(m[2], " ".join(m[1].split()))
+            for m in re.finditer(r"\btypedef\s+((?:struct|union)\s+)?([^;{}()]*?)\b(\w+)\s*;", text):
+                target = " ".join(m[2].split())
+                if m[1] and target in self.bodies and m[3] not in self.bodies:
+                    self.bodies[m[3]] = self.bodies[target]
+                if target:
+                    self.aliases.setdefault(m[3], target)
+            depth = 0
+            for line in text.split("\n"):
+                if depth == 0 and "(" not in line and not line.lstrip().startswith(("typedef", "#")):
+                    statement = line.split("=", 1)[0].rstrip().rstrip(";")
+                    words = statement.replace("*", " ").replace("[", " [").split()
+                    names = [w for w in words if re.fullmatch(r"[A-Za-z_]\w*", w)]
+                    if len(names) >= 2:
+                        found = _declares(statement, names[-1])
+                        if found:
+                            self.globals.setdefault(names[-1], found)
+                depth += line.count("{") - line.count("}")
+
+    def variable(self, name: str) -> str | None:
+        return self.globals.get(name)
+
+    def member(self, type_name: str, member: str) -> str | None:
+        seen = set()
+        while type_name not in self.bodies and type_name in self.aliases and type_name not in seen:
+            seen.add(type_name)
+            type_name = re.sub(r"\b(?:struct|union|const|volatile)\b", " ", self.aliases[type_name]).split()[-1]
+        body = self.bodies.get(type_name)
+        if body is None:
+            return None
+        flat = re.sub(r"\b(?:struct|union)\s*\w*\s*\{|\}", ";", body)
+        for statement in flat.split(";"):
+            found = _declares(statement.strip(), member)
+            if found:
+                return found
+        return None
+
+    def spellings(self, type_text: str) -> list[str]:
+        """`type_text` and what each typedef in it stands for, outermost first."""
+        out, current, seen = [], " ".join(type_text.split()), set()
+        while current and current not in seen:
+            seen.add(current)
+            out.append(current)
+            words = current.split()
+            last = next((w for w in reversed(words) if w != "*"), "")
+            if last in self.function_types:
+                out.append(self.function_types[last])
+                break
+            if last not in self.aliases:
+                break
+            current = " ".join(words[: words.index(last)] + self.aliases[last].split() + words[words.index(last) + 1 :])
+        return out
+
+
+def _close_brace(text: str, at: int) -> int | None:
+    depth = 0
+    for i in range(at, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
 class Sweep:
     def __init__(self, rules: list[Rule], trees: dict[str, Path]) -> None:
         self.rules, self.trees = rules, trees
         self.sources: dict[tuple[str, str], Source] = {}
         self.listing: dict[str, list[str]] = {}
+        self._types: dict[tuple[str, ...], TypeIndex] = {}
         for rule in rules:
             for label in rule.trees:
                 if label not in trees:
@@ -469,11 +614,36 @@ class Sweep:
                         continue
                     hits.append(self.hit(rule, src, src.line_of(m.start()), datum=_group(m, "datum")))
                 continue
+            offset = 0
             for number, line in enumerate(src.lines, 1):
                 m = rule.match.search(line)
                 if m and not (rule.unless and rule.unless.search(src.raw_lines[number - 1])):
-                    hits.append(self.hit(rule, src, number, datum=_group(m, "datum")))
+                    if not (rule.unless_type and self._typed_as(rule, src, offset + m.start(), m)):
+                        hits.append(self.hit(rule, src, number, datum=_group(m, "datum")))
+                offset += len(line) + 1
         return hits
+
+    def types(self, rule: Rule) -> TypeIndex:
+        key = tuple(p.pattern for p in rule.declare_paths)
+        if key not in self._types:
+            self._types[key] = TypeIndex(self.selected(rule, rule.declare_paths))
+        return self._types[key]
+
+    def _typed_as(self, rule: Rule, src: Source, at: int, m: re.Match[str]) -> bool:
+        """True when the variable (or its member) the match names is declared with a type `unless_type` matches."""
+        assert rule.unless_type is not None
+        index = self.types(rule)
+        declared = _declared_type(src.text[:at], m["var"]) or index.variable(m["var"])
+        if declared is None:
+            return False
+        member = _group(m, "member")
+        if member:
+            base = re.sub(r"\b(?:const|volatile|struct|union)\b|\*", " ", declared).split()
+            found = index.member(base[-1], member) if base else None
+            if found is None:
+                return False
+            declared = found
+        return any(rule.unless_type.fullmatch(spelling) for spelling in index.spellings(declared))
 
     def _decl_use(self, rule: Rule) -> list[dict[str, Any]]:
         assert rule.declare is not None and rule.use is not None

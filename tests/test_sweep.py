@@ -439,3 +439,75 @@ class AddressNameTests(unittest.TestCase):
         )
         hits = tree.sweep(ADDRESS_NAME)["hits"]
         self.assertEqual([h["line"] for h in hits], [1, 2])  # 4 hex digits or no decimal digit is no address
+
+
+WIDE_MEMBER = """
+[[rule]]
+id = "wide-member"
+kind = "pattern"
+why = "w"
+paths = ["**/*.CPP", "**/*.H"]
+match = '\\*\\s*\\(\\s*(?:u32|s32)\\s*\\*\\s*\\)\\s*&\\s*(?P<var>\\w+)\\s*(?:->|\\.)\\s*(?P<member>\\w+)'
+unless_type = '(?:s32|u32|f32|int|float)'
+"""
+
+BARE_HOOK = """
+[[rule]]
+id = "bare-hook"
+kind = "pattern"
+why = "w"
+paths = ["**/*.CPP", "**/*.H"]
+match = '^\\s*(?P<var>fn|end)\\s*\\(\\s*\\)\\s*;'
+unless_type = '.*\\(\\s*void\\s*\\)'
+"""
+
+
+class UnlessTypeTests(unittest.TestCase):
+    # Shapes cut from RageWarsDecomp at 478a7685d: VISDATA2's float bounds read as bit patterns, CINEMA's onClose hook.
+    HEADER = (
+        "typedef float f32;\n"
+        "typedef struct CVector3_t CVector3;\n"
+        "struct CVector3_t { f32 x, y, z; };\n"
+        "typedef struct { unsigned char kind; unsigned char flags; s32 word; } Packed;\n"
+        "typedef void (*FuncPtr)(void);\n"
+        "typedef void (*LooseHook)();\n"
+    )
+
+    def test_a_word_store_into_a_32_bit_member_is_no_hit_and_a_narrow_member_is(self):
+        tree = Tree(
+            {
+                "include/T.H": self.HEADER,
+                "SOURCE/V.CPP": "void f(Packed *record, CVector3 *position) {\n"
+                "    CVector3 minimum, maximum;\n"
+                "    *(s32 *)&minimum.x = 1;\n"
+                "    *(s32 *)&maximum.z = 1;\n"
+                "    *(u32 *)&record->kind = 2;\n"
+                "    *(u32 *)&record->word = 2;\n"
+                "    *(u32 *)&position->y = 3;\n"
+                "    *(u32 *)&unknown->y = 4;\n"
+                "}\n",
+            }
+        )
+        hits = tree.sweep(WIDE_MEMBER)["hits"]
+        self.assertEqual([h["line"] for h in hits], [5, 8])  # the u8 member, and a variable with no declaration
+
+    def test_a_hook_prototyped_void_is_no_hit_and_an_unprototyped_one_is(self):
+        tree = Tree(
+            {
+                "include/T.H": self.HEADER,
+                "SOURCE/C.CPP": "extern FuncPtr g_onClose;\n"
+                "void close(void) {\n"
+                "    FuncPtr fn = g_onClose;\n"
+                "    fn();\n"
+                "}\n"
+                "void later(LooseHook end) {\n"
+                "    end();\n"
+                "}\n",
+            }
+        )
+        hits = tree.sweep(BARE_HOOK)["hits"]
+        self.assertEqual([h["line"] for h in hits], [7])
+
+    def test_unless_type_without_a_var_group_names_the_rule(self):
+        with self.assertRaisesRegex(DecompError, "bare.*var"):
+            rules(BARE_HOOK.replace("(?P<var>fn|end)", "(?:fn|end)").replace('"bare-hook"', '"bare"'))

@@ -12,7 +12,8 @@ Nothing here blocks a play. Whether a shared port seat may run at all is tas_sea
 against the project's current main); `pins_stale` only reports a port build older than its tree: "pins" is the stamp
 the build writes ({<pins_key>: sha}); "pins_repo" is the reference, a git URL or path whose HEAD is mirrored into a bare
 repo under the user's cache directory (fetched on every check; a mirror whose fetch fails is refetched once into a
-fresh one that replaces it) and compared by git ancestry: a build is stale only when its sha is an ancestor of the reference's HEAD (and differs) or unrelated to it. A reference that cannot be
+fresh one that replaces it) and compared by git ancestry: a build is stale only when its sha is an ancestor of the
+reference's HEAD (and differs) or unrelated to it. A reference that cannot be
 fetched refuses with its cause; it never falls back to comparing equality.
 """
 

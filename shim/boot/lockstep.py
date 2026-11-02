@@ -6,6 +6,7 @@ oracle: cake-taste hosts/n64recomp lockstep.cpp with N64R_LOCKSTEP_DIR): per-4-K
 changed pages' bytes, and the arguments and return of the first 8 calls of each function.
 
     lockstep.py types --build BUILD --trace boot-trace.tsv --out types.tsv
+    lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--json out]
     lockstep.py compare --oracle DIR --port DIR --trace boot-trace.tsv [--symbols symbol_addrs.txt]
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
                         [--rom baserom.z64] [--json out.json]
@@ -26,6 +27,12 @@ Calls of functions without a known prototype (--types) are not compared: their a
 that code natively and never copies it) are masked. A memory divergence is persistent when the word
 still differs at the next --persist compared points. Words holding a host pointer (outside RDRAM, not a function)
 are shim-owned state, and floats within 4 ulp are rounding (MIPS single vs x87): listed, never counted. Exit 0 when nothing diverges, 1 when something does, 2 on bad input.
+
+match takes a whole TAS movie played on both sides (`poll` lines: poll, vi, pad, pages since the previous poll; the
+port's and the oracle's are the same line when the poll matches) and lists per class, in poll order, the persistent
+divergences: input (pad words or a poll one side lacks), vi (the poll where the VI offset changes), calls (whole-movie
+call/ret lines keyed by fn, caller, ordinal: missing, other poll, args, return) and memory (a word that differs at a
+poll and the next --persist polls); matched_through_poll is the last poll before the first divergence of any class.
 """  # noqa: E501
 
 import argparse
@@ -52,8 +59,13 @@ FNV_OFFSET, FNV_PRIME, MASK64 = 0xCBF29CE484222325, 0x100000001B3, (1 << 64) - 1
 ORACLE_STACK, PORT_STACK = 0x10000, 0x100000
 
 
-def page_hash(data):
-    """FNV-1a over little-endian 64-bit words, as trace.c and lockstep.cpp compute it."""
+def page_hash(data, native=False):
+    """FNV-1a over little-endian 64-bit words of the canonical big-endian page, as trace.c and lockstep.cpp compute it:
+    a native page (the port's, host-order 32-bit words) is byte-swapped word by word first."""
+    if native:
+        words = array.array("I", data)
+        words.byteswap()
+        data = words.tobytes()
     h = FNV_OFFSET
     for (w,) in struct.iter_unpack("<Q", data):
         h = ((h ^ w) * FNV_PRIME) & MASK64
@@ -141,6 +153,7 @@ class Side:
     def __init__(self, directory, key_of):
         self.dir = pathlib.Path(directory)
         self.points, self.calls, self.rets, self.sps, self.watch = {}, {}, {}, {}, []
+        self.polls, self.movie_calls, self.movie_rets = {}, {}, {}
         self.meta, self.store, self.offsets = None, None, {}
         current = None
         for number, line in enumerate((self.dir / "lockstep.jsonl").read_text().splitlines()):
@@ -167,6 +180,11 @@ class Side:
                 key = key_of(r)
                 if key is not None and key not in self.points:
                     self.points[key] = (array.array("Q", current), r)
+            elif kind == "poll":
+                self.polls[r["poll"]] = r
+            elif kind in ("call", "ret") and "o" in r:  # a whole-movie call, keyed by (fn, caller, ordinal)
+                movie = self.movie_calls if kind == "call" else self.movie_rets
+                movie[(r["fn"], r.get("caller", ""), r["o"])] = r
             elif kind in ("call", "ret"):
                 key = key_of(r)
                 if key is not None:
@@ -989,6 +1007,156 @@ def print_report(report):
     )
 
 
+# ---- whole-movie match keyed by poll ----------------------------------------------------------------------------
+MATCH_CLASSES = ("input", "vi", "calls", "memory")
+
+
+def match_input(oracle, port, polls):
+    """Polls whose pad words differ, or that only one side reached."""
+    out = []
+    for poll in polls:
+        o, p = oracle.get(poll), port.get(poll)
+        if o is None or p is None or o["pad"] != p["pad"]:
+            out.append({"poll": poll, "oracle": o and o["pad"], "port": p and p["pad"]})
+    return out
+
+
+def match_vi(oracle, port, polls):
+    """Polls where the VI offset (port vi - oracle vi) changes: each is one retrace the two sides spent differently."""
+    out, offset = [], 0
+    for poll in polls:
+        o, p = oracle.get(poll), port.get(poll)
+        if o is None or p is None:
+            continue
+        now = p["vi"] - o["vi"]
+        if now != offset:
+            out.append({"poll": poll, "oracle": o["vi"], "port": p["vi"], "offset": now})
+            offset = now
+    return out
+
+
+def same_words(matcher, ow, pw):
+    return len(ow) == len(pw) and all(
+        same_word(matcher, "unknown", int(a, 16), int(b, 16), 0, -PORT_STACK * 4) for a, b in zip(ow, pw)
+    )
+
+
+def match_calls(matcher, oracle, port, last_poll):
+    """Whole-movie calls by (fn, caller, ordinal): missing on one side, in another poll, other args or return."""
+    out = []
+    for key in sorted(set(oracle.movie_calls) | set(port.movie_calls), key=lambda k: (k[0], k[1], k[2])):
+        oc, pc = oracle.movie_calls.get(key), port.movie_calls.get(key)
+        fn, caller, o = key
+        row = {"fn": fn, "caller": caller, "o": o}
+        if oc is None or pc is None:
+            frame = (oc or pc).get("frame", 0)
+            if frame <= last_poll:
+                out.append(dict(row, poll=frame, field="missing", oracle=oc is not None, port=pc is not None))
+            continue
+        frame = min(oc.get("frame", 0), pc.get("frame", 0))
+        if oc.get("frame") != pc.get("frame"):
+            out.append(dict(row, poll=frame, field="poll", oracle=oc.get("frame"), port=pc.get("frame")))
+        if not same_words(matcher, oc.get("a", []), pc.get("a", [])):
+            out.append(dict(row, poll=frame, field="args", oracle=oc.get("a"), port=pc.get("a")))
+        orr, prr = oracle.movie_rets.get(key), port.movie_rets.get(key)
+        if orr and prr and not same_words(matcher, orr.get("r", [])[:1], prr.get("r", [])[:1]):
+            out.append(dict(row, poll=frame, field="return", oracle=orr.get("r"), port=prr.get("r")))
+    return sorted(out, key=lambda r: (r["poll"], r["fn"], r["caller"], r["o"]))
+
+
+def match_memory(matcher, oracle, port, polls, persist):
+    """Words that start differing at a poll and still differ at the next persist polls (or to the movie's end).
+    Each stream keeps its own baseline, so a poll's page hashes are the previous poll's with this poll's pages."""
+    ram = min(oracle.meta["ram"], port.meta["ram"])
+    pages = ram // PAGE
+    oh, ph = [0] * pages, [0] * pages
+    cache, active, out = {}, {}, []
+
+    def record(w, start):
+        c, ov, pv = start[2], start[3], start[4]
+        out.append({"poll": start[0], "address": f"{RDRAM + 4 * w:08x}", "symbol": matcher.symbol(RDRAM + 4 * w),
+                    "class": c, "oracle": f"{ov:08x}", "port": f"{pv:08x}"})  # fmt: skip
+
+    for poll in polls:
+        for side, hashes in ((oracle, oh), (port, ph)):
+            for page, h in side.polls[poll]["pages"]:
+                if page < pages:
+                    hashes[page] = int(h, 16)
+        now = {}
+        for pg in range(pages):
+            pair = (oh[pg], ph[pg])
+            if pair[0] == pair[1]:  # one canonical hash: the same words
+                continue
+            if pair not in cache:
+                cache[pair] = matcher.page_diff(oracle.page(pair[0]), port.page(pair[1]))
+            if cache[pair]:
+                o, p = oracle.page(pair[0]), port.page(pair[1])
+                for w, c in cache[pair].items():
+                    if c == "value":
+                        word = pg * WORDS + w
+                        now[word] = (int.from_bytes(o[4 * w : 4 * w + 4], "big"), int.from_bytes(p[4 * w : 4 * w + 4], "little"))
+        for w in list(active):
+            if w not in now:
+                del active[w]
+        for w, (ov, pv) in now.items():
+            if w not in active:
+                active[w] = [poll, 0, "value", ov, pv]
+            else:
+                active[w][1] += 1
+                if active[w][1] == persist:
+                    record(w, active[w])
+    for w, start in active.items():
+        if start[1] < persist:
+            record(w, start)
+    return sorted(out, key=lambda r: (r["poll"], r["address"]))
+
+
+def match(args):
+    """The whole movie compared poll by poll: per class the ordered persistent divergences, matched-through poll and the
+    first divergence."""
+    oracle, port = Side(args.oracle, lambda r: None), Side(args.port, lambda r: None)
+    if not oracle.canonical or port.canonical:
+        raise ValueError("--oracle must be the canonical-be side and --port the native one")
+    if not oracle.polls or not port.polls:
+        raise ValueError("both sides need poll lines (a TAS movie played with lockstep on)")
+    matcher = Matcher(min(oracle.meta["ram"], port.meta["ram"]), read_symbols(args.symbols),
+                      read_exe_functions(args.port_exe), read_exe_data(args.port_exe))  # fmt: skip
+    every = sorted(set(oracle.polls) | set(port.polls))
+    common = [p for p in every if p in oracle.polls and p in port.polls]
+    if common != every[: len(common)]:
+        raise ValueError("poll indices skip on one side")
+    divergences = {
+        "input": match_input(oracle.polls, port.polls, every),
+        "vi": match_vi(oracle.polls, port.polls, common),
+        "calls": match_calls(matcher, oracle, port, common[-1]),
+        "memory": match_memory(matcher, oracle, port, common, args.persist),
+    }
+    first = None
+    for cls in MATCH_CLASSES:
+        if divergences[cls] and (first is None or divergences[cls][0]["poll"] < first["poll"]):
+            first = dict(divergences[cls][0], **{"class": cls})
+    last = every[-1]
+    return {
+        "polls": {"oracle": len(oracle.polls), "port": len(port.polls), "common": len(common)},
+        "matched_through_poll": first["poll"] - 1 if first else last,
+        "first": first,
+        "divergences": divergences,
+    }
+
+
+def print_match(report, shown=8):
+    counts = report["polls"]
+    print(f"lockstep match: polls oracle {counts['oracle']}, port {counts['port']}, common {counts['common']}")
+    print(f"matched through poll {report['matched_through_poll']}")
+    first = report["first"]
+    print("first divergence: " + (json.dumps(first, sort_keys=True) if first else "none"))
+    for cls in MATCH_CLASSES:
+        rows = report["divergences"][cls]
+        print(f"{cls}: {len(rows)}")
+        for row in rows[:shown]:
+            print("  " + json.dumps(row, sort_keys=True))
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1016,6 +1184,13 @@ def build_parser():
         help="reviewed exact differences with reasons (kept visible in the report)",
     )
     c.add_argument("--json")
+    m = sub.add_parser("match", help="a whole TAS movie compared poll by poll: divergences per class, matched-through poll")
+    m.add_argument("--oracle", required=True)
+    m.add_argument("--port", required=True)
+    m.add_argument("--symbols")
+    m.add_argument("--port-exe")
+    m.add_argument("--persist", type=int, default=2)
+    m.add_argument("--json")
     return parser
 
 
@@ -1026,6 +1201,12 @@ def main(argv=None):
             found, units = build_types(args.build, args.trace, args.out, args.compiler, args.jobs)
             print(f"lockstep: types for {found} trace functions from {units} units -> {args.out}")
             return 0
+        if args.command == "match":
+            report = match(args)
+            print_match(report)
+            if args.json:
+                pathlib.Path(args.json).write_text(json.dumps(report, indent=1) + "\n")
+            return 1 if report["first"] else 0
         report = compare(args)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         print(f"lockstep: {error}", file=sys.stderr)

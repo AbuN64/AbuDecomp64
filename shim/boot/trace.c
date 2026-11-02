@@ -131,7 +131,16 @@ enum { LS_PAGE = 4096, LS_CALLS = 8, LS_SHADOW = 256, LS_WATCH_LINES = 20000 };
 static int ls_on, ls_log = -1, ls_store = -1;
 static const unsigned char *ls_ram;
 static unsigned ls_pages, ls_points, ls_stored_mask, ls_stored_n, ls_zero_stored;
-static uint64_t *ls_last, *ls_stored;
+static uint64_t *ls_stored;
+/* One stream of points (first hits, controller polls): the page hashes and RDRAM it saw at its own previous point, so
+ * each stream lists the pages changed since its own last point and the poll stream reads the same whichever functions
+ * a build hooks (the oracle keeps the same two baselines). */
+typedef struct {
+    uint64_t *last;
+    unsigned char *seen;
+    int started;
+} LsStream;
+static LsStream ls_hits, ls_polls;
 static unsigned *ls_calls;
 /* Per-call capture (N64C_CALLS=DIR): the lockstep call/ret machinery without the page hashing, for whole movies. */
 enum { CA_SLOTS = 1 << 20, CA_PROBES = 64, CA_FIRST = 16 };
@@ -144,7 +153,6 @@ static int ca_on;
 static unsigned ls_limit = LS_CALLS; /* calls of one function recorded: LS_CALLS in lockstep, N64C_CALLS_FIRST here */
 static long reach_poll;
 static char *ls_line;
-static unsigned char *ls_seen; /* RDRAM as of the last point */
 static pthread_mutex_t ls_lock = PTHREAD_MUTEX_INITIALIZER;
 static volatile const uint32_t *ls_watch;
 static uint32_t ls_watch_value;
@@ -160,14 +168,17 @@ NOINST static long ls_tid(void)
 {
     return (long)syscall(SYS_gettid);
 }
-/* FNV-1a over little-endian 64-bit words of the page bytes; lockstep.py and the oracle compute the same. */
+/* FNV-1a over little-endian 64-bit words of the page in canonical big-endian bytes: each native (host-order) 32-bit
+ * word is byte-swapped first, the bytes the oracle hashes, so a page whose words hold the same values hashes the same
+ * on both sides. pages.bin keeps the native bytes (meta bytes "native"); lockstep.py computes the same. */
 NOINST uint64_t n64c_lockstep_hash(const unsigned char *page)
 {
     uint64_t h = 0xcbf29ce484222325ull;
     for (unsigned i = 0; i < LS_PAGE; i += 8) {
-        uint64_t w;
-        memcpy(&w, page + i, 8);
-        h = (h ^ w) * 0x100000001b3ull;
+        uint32_t lo, hi;
+        memcpy(&lo, page + i, 4);
+        memcpy(&hi, page + i + 4, 4);
+        h = (h ^ ((uint64_t)__builtin_bswap32(hi) << 32 | __builtin_bswap32(lo))) * 0x100000001b3ull;
     }
     return h;
 }
@@ -234,12 +245,15 @@ NOINST static void ls_init(void)
     ls_store = ls_log >= 0 ? open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666) : -1;
     ls_pages = bytes / LS_PAGE;
     ls_stored_mask = 4095;
-    ls_last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_last);
+    ls_hits.last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_hits.last);
+    ls_polls.last = calloc(ls_pages ? ls_pages : 1, sizeof *ls_polls.last);
     ls_stored = calloc(ls_stored_mask + 1, sizeof *ls_stored);
     ls_calls = calloc(n64c_trace_count, sizeof *ls_calls);
     ls_line = malloc((size_t)ls_pages * 32 + 1024);
-    ls_seen = malloc(bytes ? bytes : 1);
-    if (ls_store < 0 || !ls_last || !ls_stored || !ls_calls || !ls_line || !ls_seen) {
+    ls_hits.seen = malloc(bytes ? bytes : 1);
+    ls_polls.seen = malloc(bytes ? bytes : 1);
+    if (ls_store < 0 || !ls_hits.last || !ls_polls.last || !ls_stored || !ls_calls || !ls_line || !ls_hits.seen ||
+        !ls_polls.seen) {
         fprintf(stderr, "boot-lockstep: off (%s)\n", ls_ram ? "cannot write its files" : "no RDRAM");
         return;
     }
@@ -365,21 +379,21 @@ NOINST static void ca_init(void)
     ca_on = 1;
     fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
 }
-/* The pages of a point: every page whose hash changed since the previous point (hit or poll), its bytes stored once
- * per hash in pages.bin; writes the line that p (inside ls_line) ends. Called with the census lock held. */
-NOINST static void ls_pages_out(char *p)
+/* The pages of a point: every page whose hash changed since the stream's previous point (all at its first), its bytes
+ * stored once per hash in pages.bin; writes the line that p (inside ls_line) ends. Called with the census lock held. */
+NOINST static void ls_pages_out(LsStream *s, char *p)
 {
     const char *sep = "";
     for (unsigned pg = 0; pg < ls_pages; pg++) {
         /* Only pages whose raw bytes changed since the last point are hashed: a point costs about one memcmp. */
-        unsigned char *copy = ls_seen + (size_t)pg * LS_PAGE;
-        if (ls_points > 1 && memcmp(copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE) == 0)
+        unsigned char *copy = s->seen + (size_t)pg * LS_PAGE;
+        if (s->started && memcmp(copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE) == 0)
             continue;
         memcpy(copy, ls_ram + (size_t)pg * LS_PAGE, LS_PAGE);
         const uint64_t h = n64c_lockstep_hash(copy);
-        if (ls_points > 1 && h == ls_last[pg])
+        if (s->started && h == s->last[pg])
             continue;
-        ls_last[pg] = h;
+        s->last[pg] = h;
         if (ls_stored_add(h)) {
             uint32_t head[4] = {pg, 0, (uint32_t)h, (uint32_t)(h >> 32)};
             ls_write(ls_store, head, sizeof head);
@@ -388,6 +402,7 @@ NOINST static void ls_pages_out(char *p)
         p += sprintf(p, "%s[%u,\"%016" PRIx64 "\"]", sep, pg, h);
         sep = ",";
     }
+    s->started = 1;
     p += sprintf(p, "]}\n");
     ls_write(ls_log, ls_line, (size_t)(p - ls_line));
 }
@@ -397,22 +412,22 @@ NOINST static void ls_point(unsigned i)
     char *p = ls_line;
     p += sprintf(p, "{\"k\":\"hit\",\"n\":%u,\"order\":%u,\"fn\":\"%s\",\"thr\":%ld,\"pages\":[", ls_points++,
                  n64c_trace_entries[i].order, entry_name(i), ls_tid());
-    ls_pages_out(p);
+    ls_pages_out(&ls_hits, p);
 }
 /* The per-poll point (n64c_hook.h): at every guest controller poll the poll index, the VI retrace count, the pad words the
- * guest read and the changed pages, the same record the oracle writes at its poll (lockstep.py keys a whole movie by it). */
+ * guest read and the pages changed since the previous poll, the oracle's poll line key for key, so a matching poll is
+ * the same line on both sides (lockstep.py match keys a whole movie by it). */
 NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads)
 {
     if (!ls_on)
         return;
     pthread_mutex_lock(&lock);
     char *p = ls_line;
-    p += sprintf(p, "{\"k\":\"poll\",\"n\":%u,\"poll\":%ld,\"vi\":%u,\"thr\":%ld,\"pads\":[", ls_points++, poll, vi,
-                 ls_tid());
+    p += sprintf(p, "{\"k\":\"poll\",\"poll\":%ld,\"vi\":%u,\"pad\":[", poll, vi);
     for (int i = 0; i < pads && i < 4; i++)
         p += sprintf(p, "%s\"%08x\"", i ? "," : "", pad[i]);
     p += sprintf(p, "],\"pages\":[");
-    ls_pages_out(p);
+    ls_pages_out(&ls_polls, p);
     pthread_mutex_unlock(&lock);
 }
 NOINST static void ls_line_out(const char *line, int n)

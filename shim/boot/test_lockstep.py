@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import struct
 import subprocess
 import sys
@@ -554,6 +555,65 @@ def port_from_oracle(out, edit=None):
 
 def poll_lines(directory):
     return [x for x in (directory / "lockstep.jsonl").read_text().splitlines() if '"k":"poll"' in x]
+
+
+class RunRecordTests(unittest.TestCase):
+    """CONTRACTS.md Run record: a run of the real oracle slice and its port, matched with --run, checked by check."""
+
+    def run_record(self, name):
+        run = args.work / name
+        shutil.rmtree(run, ignore_errors=True)
+        (run / ls.RUN_LOCKSTEP).mkdir(parents=True)
+        shutil.copytree(ORACLE_POLLS, run / ls.RUN_LOCKSTEP / "oracle")
+        port_from_oracle(run / ls.RUN_LOCKSTEP / "port")
+        (run / "movie.raw").write_text("0 0 0\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ls.main(["match", "--run", str(run)]), 0)
+        return run
+
+    def check(self, run):
+        with contextlib.redirect_stdout(io.StringIO()) as text:
+            code = ls.main(["check", str(run)])
+        return code, text.getvalue()
+
+    def test_matched_run_holds_field_by_field(self):
+        run = self.run_record("record-holds")
+        self.assertEqual(json.loads((run / "lockstep" / "match.json").read_text())["first"], None)
+        self.assertEqual(self.check(run), (0, f"lockstep check: {run}: holds\n"))
+
+    def test_each_broken_field_is_named(self):
+        run = self.run_record("record-breaks")
+        meta = run / "lockstep" / "port" / "lockstep.jsonl"
+        lines = meta.read_text().splitlines()
+        head = json.loads(lines[0])
+        head["bytes"] = "canonical-be"
+        poll = json.loads(lines[1])
+        poll["pad"], poll["pages"] = ["xyz"], [[0, "00000000000000aa"]]
+        meta.write_text("\n".join([json.dumps(head), json.dumps(poll), *lines[2:]]) + "\n")
+        report = run / "lockstep" / "match.json"
+        report.write_text(json.dumps({"polls": {}, "matched_through_poll": "1", "first": None, "divergences": {}}))
+        code, text = self.check(run)
+        self.assertEqual(code, 1)
+        for field in ("meta.bytes", "pad:", "page 00000000000000aa listed but not stored", "match.json polls",
+                      "matched_through_poll", "match.json divergences"):  # fmt: skip
+            self.assertIn(field, text)
+
+    def test_run_without_inputs_or_sides_refuses(self):
+        run = args.work / "record-empty"
+        shutil.rmtree(run, ignore_errors=True)
+        run.mkdir()
+        self.assertIn("movie.raw: missing", self.check(run)[1])
+        (run / "movie.raw").write_text("")
+        code, text = self.check(run)
+        self.assertEqual(code, 1)
+        self.assertIn("lockstep/oracle:", text)
+        self.assertIn("lockstep/match.json:", text)
+
+    def test_match_run_refuses_mixed_addressing(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(ls.main(["match", "--run", "x", "--port", "y"]), 2)
+            self.assertEqual(ls.main(["match", "--port", "y"]), 2)
+        self.assertIn("--run names the sides", err.getvalue())
 
 
 class MatchTests(unittest.TestCase):

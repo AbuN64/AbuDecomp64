@@ -7,6 +7,8 @@ changed pages' bytes, and the arguments and return of the first 8 calls of each 
 
     lockstep.py types --build BUILD --trace boot-trace.tsv --out types.tsv
     lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--json out]
+    lockstep.py match --run RUN [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N]
+    lockstep.py check RUN
     lockstep.py compare --oracle DIR --port DIR --trace boot-trace.tsv [--symbols symbol_addrs.txt]
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
                         [--rom baserom.z64] [--json out.json]
@@ -33,6 +35,8 @@ port's and the oracle's are the same line when the poll matches) and lists per c
 divergences: input (pad words or a poll one side lacks), vi (the poll where the VI offset changes), calls (whole-movie
 call/ret lines keyed by fn, caller, ordinal: missing, other poll, args, return) and memory (a word that differs at a
 poll and the next --persist polls); matched_through_poll is the last poll before the first divergence of any class.
+match --run RUN reads the run record (CONTRACTS.md "Run record"): RUN/lockstep/{oracle,port}/ in, RUN/lockstep/match.json
+out. check RUN validates a run record field by field against that contract; exit 0 when it holds, 1 when a field breaks it.
 """  # noqa: E501
 
 import argparse
@@ -1009,6 +1013,8 @@ def print_report(report):
 
 # ---- whole-movie match keyed by poll ----------------------------------------------------------------------------
 MATCH_CLASSES = ("input", "vi", "calls", "memory")
+RUN_LOCKSTEP, RUN_SIDES, RUN_MATCH = "lockstep", {"oracle": "canonical-be", "port": "native"}, "match.json"
+HEX8, HEX16 = re.compile(r"[0-9a-f]{8}"), re.compile(r"[0-9a-f]{16}")
 
 
 def match_input(oracle, port, polls):
@@ -1147,6 +1153,76 @@ def match(args):
     }
 
 
+# ---- the run record (CONTRACTS.md "Run record") ------------------------------------------------------------------
+def check_side(side_dir, name):
+    """The problems of one side's lockstep.jsonl + pages.bin: meta, poll, call/ret lines (one reader: Side)."""
+    try:
+        side = Side(side_dir, lambda r: None)
+    except (OSError, ValueError, KeyError) as error:
+        return [f"lockstep/{name}: {error}"]
+    meta, problems = side.meta, []
+    for key, want in (("side", name), ("page", PAGE), ("bytes", RUN_SIDES[name]), ("hash", "fnv1a64-le64")):
+        if meta.get(key) != want:
+            problems.append(f"lockstep/{name} meta.{key}: {meta.get(key)!r}, expected {want!r}")
+    if not isinstance(meta.get("ram"), int) or meta["ram"] <= 0 or meta["ram"] % PAGE:
+        problems.append(f"lockstep/{name} meta.ram: {meta.get('ram')!r}, expected a positive multiple of {PAGE}")
+    polls = sorted(side.polls)
+    if not polls or polls != list(range(polls[0], polls[0] + len(polls))):
+        problems.append(f"lockstep/{name} poll: indices {polls[:3]}... are not one contiguous run")
+    for poll in polls:
+        r = side.polls[poll]
+        if not isinstance(r.get("vi"), int):
+            problems.append(f"lockstep/{name} poll {poll} vi: {r.get('vi')!r}, expected an integer")
+        pad = r.get("pad")
+        if not isinstance(pad, list) or not pad or not all(isinstance(w, str) and HEX8.fullmatch(w) for w in pad):
+            problems.append(f"lockstep/{name} poll {poll} pad: {pad!r}, expected 8-hex-digit words")
+        for entry in r.get("pages", ()):
+            if not (isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], int)
+                    and isinstance(entry[1], str) and HEX16.fullmatch(entry[1])):  # fmt: skip
+                problems.append(f"lockstep/{name} poll {poll} pages: {entry!r}, expected [page, 16-hex hash]")
+                continue
+            try:
+                side.page(int(entry[1], 16))
+            except ValueError as error:
+                problems.append(f"lockstep/{name} poll {poll} pages: {error}")
+    for (fn, caller, o), r in {**side.movie_calls, **side.movie_rets}.items():
+        if not isinstance(fn, str) or not isinstance(caller, str) or not isinstance(o, int):
+            problems.append(f"lockstep/{name} {r['k']}: {fn!r}/{caller!r}/{o!r}, expected fn, caller, ordinal")
+    return problems
+
+
+def check_match(path):
+    """The problems of RUN/lockstep/match.json, the `match` report."""
+    try:
+        report = json.loads(path.read_text())
+    except (OSError, ValueError) as error:
+        return [f"lockstep/{RUN_MATCH}: {error}"]
+    problems = []
+    if sorted(report.get("polls", {})) != ["common", "oracle", "port"]:
+        problems.append(f"lockstep/{RUN_MATCH} polls: {report.get('polls')!r}, expected oracle, port, common counts")
+    if not isinstance(report.get("matched_through_poll"), int):
+        problems.append(f"lockstep/{RUN_MATCH} matched_through_poll: expected an integer")
+    first = report.get("first")
+    if first is not None and (first.get("class") not in MATCH_CLASSES or not isinstance(first.get("poll"), int)):
+        problems.append(f"lockstep/{RUN_MATCH} first: {first!r}, expected null or {{class, poll, ...}}")
+    divergences = report.get("divergences", {})
+    if sorted(divergences) != sorted(MATCH_CLASSES) or not all(isinstance(v, list) for v in divergences.values()):
+        problems.append(f"lockstep/{RUN_MATCH} divergences: expected one list per class {', '.join(MATCH_CLASSES)}")
+    return problems
+
+
+def check_run(run):
+    """{run, problems}: the run record under RUN checked field by field; an empty list is a run that holds."""
+    run = pathlib.Path(run)
+    if not (run / "movie.raw").is_file():
+        return {"run": str(run), "problems": ["movie.raw: missing (the inputs the run played)"]}
+    problems = []
+    for name in RUN_SIDES:
+        problems += check_side(run / RUN_LOCKSTEP / name, name)
+    problems += check_match(run / RUN_LOCKSTEP / RUN_MATCH)
+    return {"run": str(run), "problems": problems}
+
+
 def print_match(report, shown=8):
     counts = report["polls"]
     print(f"lockstep match: polls oracle {counts['oracle']}, port {counts['port']}, common {counts['common']}")
@@ -1188,12 +1264,15 @@ def build_parser():
     )
     c.add_argument("--json")
     m = sub.add_parser("match", help="a whole TAS movie compared poll by poll: divergences per class")
-    m.add_argument("--oracle", required=True)
-    m.add_argument("--port", required=True)
+    m.add_argument("--run", help="a run record: RUN/lockstep/{oracle,port} in, RUN/lockstep/match.json out")
+    m.add_argument("--oracle")
+    m.add_argument("--port")
     m.add_argument("--symbols")
     m.add_argument("--port-exe")
     m.add_argument("--persist", type=int, default=2)
     m.add_argument("--json")
+    k = sub.add_parser("check", help="a run record validated field by field (CONTRACTS.md Run record)")
+    k.add_argument("run")
     return parser
 
 
@@ -1204,7 +1283,20 @@ def main(argv=None):
             found, units = build_types(args.build, args.trace, args.out, args.compiler, args.jobs)
             print(f"lockstep: types for {found} trace functions from {units} units -> {args.out}")
             return 0
+        if args.command == "check":
+            result = check_run(args.run)
+            for problem in result["problems"]:
+                print(f"lockstep check: {problem}")
+            print(f"lockstep check: {args.run}: {'holds' if not result['problems'] else 'breaks the contract'}")
+            return 1 if result["problems"] else 0
         if args.command == "match":
+            if args.run:
+                if args.oracle or args.port or args.json:
+                    raise ValueError("--run names the sides and the report; leave out --oracle, --port and --json")
+                lockstep = pathlib.Path(args.run) / RUN_LOCKSTEP
+                args.oracle, args.port, args.json = lockstep / "oracle", lockstep / "port", lockstep / RUN_MATCH
+            elif not (args.oracle and args.port):
+                raise ValueError("match needs --run RUN, or both --oracle and --port")
             report = match(args)
             print_match(report)
             if args.json:

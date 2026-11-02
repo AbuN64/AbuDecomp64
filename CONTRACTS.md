@@ -93,6 +93,42 @@ The port runs on one logical clock and pays the original's cost (CakeTaste64 RUN
 - **Cost.** The hook is an inline test of the baton-holder marker, a probe of a hash set of charged addresses and one relaxed decrement of `n64c_work_budget`; it calls out only (`n64c_work_due`) when the budget reaches the next clock event (a device, the Count compare, the retrace). Entries are folded into the clock at every clock read, so the clock value seen by game code is the one a per-entry tick would give; the host (no baton) and uncharged functions never charge.
 - **Tests.** `shim/tests/test_charge.c` (exact ticks, uncharged entries, retrace delivered at the charged entry), `test_charge_refuse.c` (exit 7 without a table), `test_charge_custom.c` (a unit compiled by a custom command is charged; its object passes `n64c_charge_audit.cmake`, an object built without the flags fails it; tracing off), `shim/boot/test_charged.py` (the generated set, its refusals and the `--port-dir` argument), `n64c_charge_port` (`shim/tests/charge_port/`: a configure and build whose effective manifest lives outside the port facts dir; a call without `PORT_DIR` stops the configure, a `PORT_DIR` without `sched_glue.c` stops the generator).
 
+## Run record
+
+One written record per played run, under `<tas.runs>/plays/<run>/`. The lockstep (step 1) writes it, the site and the
+Sol play cycles (steps 3, 4) read it; one reader per field, named below. `shim/boot/lockstep.py check RUN` validates a
+run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed Unsupported here, never faked.
+
+| Path (under RUN) | Field | Writer | Reader |
+|---|---|---|---|
+| `movie.raw` | the inputs played, one row of pads per poll | `tas` play | `tas.read_raw` |
+| `polls.raw` | the pads the guest read, one row per poll | port host | `tas.read_raw` (site_feedback) |
+| `lockstep/<side>/lockstep.jsonl` | side `port` (trace.c, `N64C_LOCKSTEP=1`, `N64C_LOCKSTEP_DIR`) and `oracle` (lockstep.cpp, `N64R_LOCKSTEP_DIR`) | the side | `lockstep.Side` |
+| `lockstep/<side>/pages.bin` | the changed pages by hash: `<u32 page><u32 0><u64 hash>` + 4096 bytes | the side | `Side.page` |
+| `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | site, play cycle |
+| `stream/<side>/<poll>.jpg`, `stream/index.json` | the pictures, sides `port` and `oracle` | `tas_stream.pack` | site_stream |
+| `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | the side | tas_serve |
+| `<tas.runs>/feedback/<id>/feedback.json` | a human flag at a poll | site_feedback | site_feedback |
+
+`lockstep.jsonl` lines (JSON, one per line; a last line cut mid-write is dropped):
+
+- `meta` (first line): `side` (`port`|`oracle`), `ram` (bytes, a multiple of 4096), `page` 4096, `bytes`
+  (`native` for the port, `canonical-be` for the oracle), `hash` `fnv1a64-le64` (over the canonical big-endian page, the
+  port's swapped word by word first).
+- `poll`: `poll` (contiguous indices), `vi` (integer), `pad` (pad words, 8 hex digits each), `pages` (`[page, hash]`
+  for the pages changed since the previous poll: the page baseline is the previous poll's; every hash is in pages.bin
+  or is the zero page).
+- `call` / `ret` with `o`: one whole-movie call, keyed by `fn`, `caller`, ordinal `o`; `a` the argument words.
+- `hit`, `call`/`ret` with `i`, `watch`: the boot `compare` points (first hits of the boot trace).
+
+`match.json`: `polls` {`oracle`, `port`, `common`}, `matched_through_poll` (the last poll before the first divergence),
+`first` (null, or the first divergence with its `class`), `divergences` {`input`, `vi`, `calls`, `memory`}: per class
+the persistent divergences in poll order, each with its `poll`.
+
+Unsupported until built: the port's per-run `lockstep/port/` from a `tas` play (the recorder runs from trace.c with an
+explicit `N64C_LOCKSTEP_DIR` only), the oracle's from `tas` plays (coverage still writes `oracle-golden/`), the
+stream side `oracle` (the site's stream still names it `original`), and `match.json` beside the site's run view.
+
 ## Site pages and actions
 
 `decomp tas serve` answers each page and action in one shape. A page is HTML; every other answer is JSON, a refusal

@@ -64,6 +64,11 @@ When they do not, find the sources before anything else:
   feed the guest a pad, a poll or a retrace the recomp would not see; the options screen holds the guest (the frame
   loop presents only: no poll, no VI, no clock) instead of feeding it a neutral pad. Prove each with the
   `N64C_TAS_HASH` trace byte-identical with and without the behaviour on one movie.
+- host code addresses: guest data holds native function pointers (callback tables compiled for the host), which
+  move whenever any host code changes size. The full-RDRAM hash (`N64C_TAS_HASH`) and dump (`N64C_TAS_DUMP_AT`)
+  read every word that points into host code as `N64C_TAS_CODE_WORD` ("CODE", 0x434F4445), on Linux (the ELF
+  range `__executable_start` to `etext`) and on Windows (the executable sections the loaded image's PE headers
+  name from `__ImageBase`), so two builds that differ only in host code give the same trace.
 
 ## Finding the cause, in order of cost
 

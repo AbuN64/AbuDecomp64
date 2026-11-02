@@ -108,7 +108,7 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 | `lockstep/<side>/pages.bin` | each distinct page content once (both writers dedup by hash): `<u32 page><u32 0><u64 hash>` + 4096 bytes; read mapped, never whole | the side | `Side.page` |
 | `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | site, play cycle |
 | `stream/<side>/<poll>.jpg`, `stream/index.json` | the pictures, sides `port` and `oracle` | `tas_stream.pack` | site_stream |
-| `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | the side | tas_serve |
+| `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | `/audio/RUN` serves `audio.pcm` only | tas_serve |
 | `<tas.runs>/feedback/<id>/feedback.json` | a human flag at a poll | site_feedback | site_feedback |
 
 `lockstep.jsonl` lines (JSON, one per line; a last line cut mid-write is dropped):

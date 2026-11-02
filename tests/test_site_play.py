@@ -69,6 +69,18 @@ show.offer("stale", 5); await tick();
 show.offer("c", 30); await tick(); await tick();
 show.stop(); show.offer("d", 40); await tick();
 out.painted = painted; out.shown = show.shown;
+// the sound paces the picture: a frame waits until the audio element's clock reaches its stamp
+const aticks = [], apainted = [], el = { paused: true, currentTime: 0 };
+let newest = 5000000;
+const clock = play.audioClock(el, () => newest);
+const timed = play.painter(b => { apainted.push(b); }, fn => aticks.push(fn), clock);
+const atick = async () => { aticks.shift()(); await Promise.resolve(); await Promise.resolve(); };
+timed.offer("f1", 5000000); await atick();                       // audio not playing: the newest shows at once
+timed.offer("f2", 5500000); timed.offer("f3", 6000000);
+el.paused = false; el.currentTime = 1; await atick();             // anchored: now = newest - lead
+el.currentTime = 1.8; await atick();                              // 5000000-250000+800000 = 5550000: f2 due, f3 waits
+el.currentTime = 2.5; await atick();                              // 6250000: f3 due
+out.apainted = apainted; out.silent = play.audioClock({ paused: true, currentTime: 0 }, () => 0)();
 console.log(JSON.stringify(out));
 """
 
@@ -97,6 +109,10 @@ class SessionGridTest(unittest.TestCase):
     def test_painter_paints_the_newest_stamp_once_per_display_refresh(self) -> None:
         self.assertEqual(self.got["painted"], ["b", "c"])
         self.assertEqual(self.got["shown"], 30)
+
+    def test_audio_clock_paces_the_picture_and_is_open_without_sound(self) -> None:
+        self.assertEqual(self.got["apainted"], ["f1", "f2", "f3"])
+        self.assertIsNone(self.got["silent"])  # Infinity serialises to null: no sound, the newest picture shows
 
     def test_session_grid_starts_empty_and_fills_with_what_the_session_reached(self) -> None:
         self.assertEqual(self.got["empty"], [4, 0, 0])  # every square "Not exercised" before the first record

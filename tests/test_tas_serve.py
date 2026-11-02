@@ -468,20 +468,15 @@ class HttpTests(Base):
         self.assertEqual(struct.unpack("<I", body[24:28])[0], 32000)
         self.assertEqual(body[44:], b"\x01\x00\x02\x00" * 10 + b"\x03\x00\x04\x00" * 5)
 
-    def test_audio_side_oracle_plays_the_original_at_wall_pace_from_the_run_start(self):
-        late = self.make_run("r3", movie="boot-idle", status="done", speed=1, started=time.time() - 60)
-        (late / "audio-oracle.pcm").write_bytes(b"\x05\x00\x06\x00" * 10)
-        (late / "audio-oracle.pcm.rate").write_text("22050\n")
-        (late / "audio.pcm").write_bytes(b"\x01\x00\x02\x00" * 10)
-        (late / "audio.pcm.rate").write_text("32000\n")
-        status, kind, body = self.get("/audio/r3?side=oracle")
-        self.assertEqual((status, kind, struct.unpack("<I", body[24:28])[0]), (200, "audio/wav", 22050))
-        self.assertEqual(body[44:], b"\x05\x00\x06\x00" * 10)
-        self.assertEqual(self.get("/audio/r3")[2][44:], b"\x01\x00\x02\x00" * 10)  # the port's, unchanged
-        early = self.make_run("r4", movie="boot-idle", status="done", speed=1, started=time.time() + 1000)
-        (early / "audio-oracle.pcm").write_bytes(b"\x05\x00\x06\x00" * 10)
-        (early / "audio-oracle.pcm.rate").write_text("22050\n")
-        self.assertEqual(self.get("/audio/r4?side=oracle")[2][44:], b"")  # not yet due in the run's own time
+    def test_audio_has_one_path_the_ports_pcm_whatever_side_is_asked(self):
+        run = self.make_run("r3", movie="boot-idle", status="done", speed=1, started=time.time() - 60)
+        (run / "audio-oracle.pcm").write_bytes(b"\x05\x00\x06\x00" * 10)
+        (run / "audio-oracle.pcm.rate").write_text("22050\n")
+        (run / "audio.pcm").write_bytes(b"\x01\x00\x02\x00" * 10)
+        (run / "audio.pcm.rate").write_text("32000\n")
+        for path in ("/audio/r3", "/audio/r3?side=oracle"):
+            _, _, body = self.get(path)
+            self.assertEqual((struct.unpack("<I", body[24:28])[0], body[44:]), (32000, b"\x01\x00\x02\x00" * 10))
 
     def test_play_and_stop(self):
         started = []

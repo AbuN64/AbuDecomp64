@@ -1,7 +1,7 @@
 // Site region "play": start a human run, drive it with keys or a gamepad, and flag it at a poll (card RUNNER-PLAY).
 // mount(el, ctx): ctx = {contract, api(path, init), go(route), on(kind, fn), route: {name, arg, query}}.
 // Routes: #/play starts nothing by itself; #/play/RUN shows that run. Pictures come from /video/RUN (frames pushed by the
-// server), poll counts from the feed's run events, flags from /api/feedback and its feedback.filed events: no polling.
+// server) and sound from /audio/RUN, whose audio element paces them, poll counts from the feed's run events, flags from /api/feedback and its feedback.filed events: no polling.
 // Pad input goes to /api/input only while the run's feed event says it runs with live input (fields.input "human");
 // a refused input shows its cause and holds the pad until the run's state moves or the owner presses a key again.
 import { sessionReach } from "./map.js";
@@ -105,7 +105,7 @@ let current = null;  // the mounted view; a handler of an older mount sees it is
 export function mount(el, ctx) {
   current?.stop();
   const S = { run: ctx.route.arg || null, status: null, input: null, refusal: null, poll: 0, keys: new Set(), last: "", lastAt: 0, seq: 0, abort: null, frame: 0, flags: new Map() };
-  const view = { stop: () => { S.abort?.abort(); cancelAnimationFrame(S.frame); removeEventListener("keydown", down); removeEventListener("keyup", up); } };
+  const view = { stop: () => { S.abort?.abort(); cancelAnimationFrame(S.frame); audio.pause(); audio.removeAttribute("src"); removeEventListener("keydown", down); removeEventListener("keyup", up); } };
   current = view;
   const live = () => current === view;
 
@@ -113,6 +113,7 @@ export function mount(el, ctx) {
   const flag = node("button", { class: "btn", type: "button", id: "play-flag", disabled: "" }, "Flag");
   const stop = node("button", { class: "btn alt", type: "button", id: "play-stop", disabled: "" }, "Stop");
   const tag = node("span", { class: "mono", id: "play-run" });
+  const audio = node("audio", { id: "play-audio" });
   const canvas = node("canvas", { id: "play-stage", width: "640", height: "480" });
   const list = node("ul", { class: "feed", id: "play-flags" });
   const dialog = flagDialog(ctx, S, () => live());
@@ -120,7 +121,7 @@ export function mount(el, ctx) {
     node("p", { class: "dim" }, "Click the page first so it has the keyboard. A gamepad works once you press any of its buttons."),
     node("table", {}, node("thead", {}, node("tr", {}, node("th", {}, "N64"), node("th", {}, "Keyboard"), node("th", {}, "Gamepad"))),
       node("tbody", {}, ...controls().map(([n64, key, pad]) => node("tr", {}, node("td", {}, n64), node("td", { class: "mono" }, key || "-"), node("td", {}, pad || "-"))))));
-  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag),
+  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag, audio),
     node("div", { class: "playarea" }, canvas, blurb), node("h2", {}, "Flags"), list, dialog.el);
   addStyle();
 
@@ -135,7 +136,7 @@ export function mount(el, ctx) {
     S.run = id; refresh();
     if (location.hash !== `#/play/${encodeURIComponent(id)}`) history.replaceState(null, "", `#/play/${encodeURIComponent(id)}`);
     S.abort?.abort(); S.abort = new AbortController();
-    video(id, S.abort.signal, canvas);
+    video(id, S.abort.signal, canvas, audio);
   }
   start.addEventListener("click", async () => {
     const got = await post(ctx, "/api/play", { label: "owner", fps_unlock: true });
@@ -217,38 +218,61 @@ function flagDialog(ctx, S, live) {
   return { el: dialog, open: (run, at) => { if (!live() || !run) return; poll.value = String(at); text.value = ""; status.textContent = ""; dialog.showModal(); } };
 }
 
-/** The painter of one canvas: `offer` keeps the newest frame by its capture stamp, and each display refresh (rAF) decodes and
- * paints it if its stamp is newer than the one shown; frames that arrive between two refreshes are dropped, never
- * replayed as a burst, and an older stamp never repaints over a newer one. */
-export function painter(paint, raf = requestAnimationFrame) {
-  let pending = null, shown = -1, busy = false, live = true;
+/** The painter of one canvas. Frames queue by capture stamp. Each display refresh (rAF) paints the newest frame whose stamp is
+ * due by `clock()` (the sound's position in stamp microseconds; Infinity when no sound plays, so the newest frame) and drops
+ * the older ones, never replaying a burst; a later frame waits for its time and an older stamp never repaints. */
+export function painter(paint, raf = requestAnimationFrame, clock = () => Infinity) {
+  let queue = [], shown = -1, busy = false, live = true;
   const tick = () => {
     if (!live) return;
-    if (pending && !busy && pending.stamp > shown) {
-      const { bytes, stamp } = pending; pending = null; busy = true; shown = stamp;
-      Promise.resolve(paint(bytes)).finally(() => { busy = false; });
+    if (!busy) {
+      const now = clock();
+      let due = -1;
+      for (let i = 0; i < queue.length; i++) if (queue[i].stamp <= now) due = i;
+      if (due >= 0) {
+        const { bytes, stamp } = queue[due]; queue = queue.slice(due + 1); busy = true; shown = stamp;
+        Promise.resolve(paint(bytes)).finally(() => { busy = false; });
+      }
     }
     raf(tick);
   };
   raf(tick);
   return {
-    offer(bytes, stamp) { if (stamp > shown && (!pending || stamp >= pending.stamp)) pending = { bytes, stamp }; },
+    offer(bytes, stamp) { if (stamp > shown) { queue.push({ bytes, stamp }); queue.sort((a, b) => a.stamp - b.stamp); } },
     stop() { live = false; },
     get shown() { return shown; },
   };
 }
 
-// Stream the run's pictures: the server pushes stamped JPEG frames; requestAnimationFrame paints the newest by stamp.
-async function video(id, signal, canvas) {
+// serve_audio.AUDIO_LEAD_SECONDS: a listener joins this far behind the live end of the sound.
+export const AUDIO_LEAD_US = 250000;
+
+/** The stamp clock of an audio element: once it plays, picture stamp = (newest stamp when it began - the lead) + elapsed sound.
+ * Before it plays (muted run, blocked autoplay, no PCM) the clock is Infinity and the newest picture shows. */
+export function audioClock(audio, newest) {
+  let anchor = null;
+  return () => {
+    if (audio.paused || !(audio.currentTime > 0)) return Infinity;
+    anchor ||= { at: audio.currentTime, stamp: newest() - AUDIO_LEAD_US };
+    return anchor.stamp + (audio.currentTime - anchor.at) * 1e6;
+  };
+}
+
+// One data path per run: /video/RUN pictures, /audio/RUN sound (the run's PCM as written, a WAV). The audio element's clock
+// paces the picture; requestAnimationFrame paints the newest frame due by it.
+async function video(id, signal, canvas, audio) {
   const paint = bytes => createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
     canvas.width = bmp.width; canvas.height = bmp.height; canvas.getContext("2d").drawImage(bmp, 0, 0); bmp.close();
   });
-  const show = painter(paint);
+  let newest = 0;
+  audio.src = `/audio/${encodeURIComponent(id)}`;
+  audio.play().catch(() => {});  // refused without a user gesture or answered 204 (muted run): the picture runs unpaced
+  const show = painter(paint, requestAnimationFrame, audioClock(audio, () => newest));
   try {
     const res = await fetch(`/video/${encodeURIComponent(id)}`, { cache: "no-store", signal });
     if (!res.ok || !res.body) return;
     const reader = res.body.getReader();
-    const feed = framer((frame, stamp) => show.offer(frame, stamp), rec => sessionReach(reachRows(rec)));
+    const feed = framer((frame, stamp) => { newest = Math.max(newest, stamp); show.offer(frame, stamp); }, rec => sessionReach(reachRows(rec)));
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;

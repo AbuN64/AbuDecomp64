@@ -85,7 +85,6 @@ from abu_decomp import (
 )
 from abu_decomp.config import Profile
 from abu_decomp.serve_audio import AUDIO_LEAD_SECONDS, wav_header
-from abu_decomp.serve_http import query_args
 from abu_decomp.serve_pace import RELEASED, driven, realtime
 from abu_decomp.serve_video import (
     REACH_FLAG,
@@ -1287,7 +1286,7 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
         return req.missing()
     if not realtime(run, row):
         return req.reply(b"", "audio/wav", HTTPStatus.NO_CONTENT, extra={"X-Audio-Muted": "not-realtime"})
-    name = tas_oracle.AUDIO if query_args(query).get("side") == "oracle" else tas.AUDIO
+    name = tas.AUDIO
     pcm, rate_file = run / name, run / (name + ".rate")
     deadline = time.monotonic() + 10
     while not rate_file.is_file() or not pcm.is_file():
@@ -1300,12 +1299,7 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
     req.stream_head("audio/wav", {"Connection": "close"})
     req.connection.settimeout(5)
     req.wfile.write(wav_header(rate))
-    oracle = name == tas_oracle.AUDIO
-
-    def due() -> int:
-        return int(max(0.0, time.time() - float(row.get("started") or 0)) * rate) * 4
-
-    end = min(due(), pcm.stat().st_size) if oracle else pcm.stat().st_size
+    end = pcm.stat().st_size
     offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
     # Even a producer that writes in bursts gets one steady wall-paced stream. Initial lead covers jitter.
     began, sent = time.monotonic(), 0
@@ -1313,8 +1307,6 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
         while True:
             allowance = int((time.monotonic() - began + AUDIO_LEAD_SECONDS) * rate) * 4 - sent
             count = min(max(0, allowance), int(rate * 0.05) * 4)
-            if oracle:
-                count = min(count, max(0, due() - offset))
             handle.seek(offset)
             chunk = handle.read(count)
             chunk = chunk[: len(chunk) // 4 * 4]
@@ -1323,7 +1315,7 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
                 req.wfile.flush()
                 offset += len(chunk)
                 sent += len(chunk)
-            elif not tas.running(run) and (offset >= pcm.stat().st_size or (oracle and offset >= due())):
+            elif not tas.running(run) and offset >= pcm.stat().st_size:
                 return
             time.sleep(0.02)
 

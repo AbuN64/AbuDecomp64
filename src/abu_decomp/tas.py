@@ -517,6 +517,16 @@ def port_env(cfg: dict[str, Any], folder: Path) -> dict[str, str]:
     }
 
 
+def live(profile: Profile, folder: Path) -> tuple[list[str], dict[str, str]]:
+    """The /live game `decomp display invoke` runs: the profile's port with its own args (`--rom`, `--no-dialog`,
+    `{user_dir}` a fresh `<folder>/user`, `--cpak off`) and env, the same `_argv`/`port_env` every replay uses, so the
+    display never starts the port bare on the host's default user folder and card."""
+    cfg = settings(profile)
+    user_dir = folder / "user"
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return _argv(cfg, user_dir), port_env(cfg, folder)
+
+
 _FPS_LINE = re.compile(
     r"boot-fps: \w+ unlock=(\d) speed=(\d+) retrace=(\d+) wall=([\d.]+) presented=(\d+) \(([\d.]+)/s\) "
     r"game=(\d+) \(([\d.]+)/s\) interpolated=(\d+)"

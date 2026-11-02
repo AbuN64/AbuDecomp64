@@ -427,3 +427,69 @@ def test_held_keys_are_planned_with_their_own_release() -> None:
     assert held == [("key", 0xFF51, 1, 0), ("key", 0xFF51, 0, 0)]
     with pytest.raises(DecompError, match="not a known key"):
         display.plan([{"keydown": "Hyper"}], W, H)
+
+
+class Shown:
+    """A display backend that records what invoke asked of it; the display folder is a real tmp folder."""
+
+    def __init__(self, root: Path) -> None:
+        self.root, self.deleted = root, []
+
+    def create(self, size: str, endpoint: str | None = None) -> display.Record:
+        (self.root / "d-live").mkdir()
+        return display.Record("d-live", W, H, "sock", {}, str(self.root / "d-live"))
+
+    def environment(self, subject: str) -> dict[str, str]:
+        return display.Linux.environment(self, subject)
+
+    def describe(self, subject: str) -> display.Record:
+        return display.Record(subject, W, H, "sock", {}, str(self.root / subject))
+
+    def delete(self, subject: str) -> display.Record:
+        self.deleted.append(subject)
+        return self.describe(subject)
+
+
+def live_profile(tmp_path: Path) -> Path:
+    """The rig's tas section shape: the port's args name the ROM, --no-dialog, a --cpak and the {user_dir} token."""
+    (tmp_path / "rom.z64").write_bytes(b"rom")
+    (tmp_path / "ragewars").write_text("")
+    profile = tmp_path / "profile.json"
+    tas_section = {
+        "movies": "movies",
+        "runs": "runs",
+        "port": "ragewars",
+        "rom": "rom.z64",
+        "args": ["--rom", str(tmp_path / "rom.z64"), "--no-dialog", "--cpak", "off", "--user-dir", "{user_dir}"],
+        "env": {"SDL_VIDEODRIVER": "offscreen", "SDL_AUDIODRIVER": "dummy"},
+    }
+    profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": tas_section}))
+    return profile
+
+
+def test_invoke_without_a_command_launches_the_profiles_game(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shown, ran = Shown(tmp_path), []
+    monkeypatch.setattr(display, "backend", lambda root, kind: shown)
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, env, check: ran.append((argv, env)) or subprocess.CompletedProcess(argv, 0)
+    )
+    assert cli.main(["--profile", str(live_profile(tmp_path)), "display", "invoke"]) == 0
+    (argv, env), user = ran[0], tmp_path / "d-live" / "game" / "user"
+    assert argv[0] == str(tmp_path / "ragewars")
+    assert argv[argv.index("--rom") + 1] == str(tmp_path / "rom.z64")
+    assert argv[argv.index("--user-dir") + 1] == str(user) and user.is_dir()
+    assert argv.count("--cpak") == 1 and argv[argv.index("--cpak") + 1] == "off"
+    assert "--no-dialog" in argv
+    assert env["SDL_AUDIODRIVER"] == "dummy" and env["SDL_VIDEODRIVER"] == "wayland"  # the display's driver wins
+    assert env["WAYLAND_DISPLAY"] == "wayland-0" and shown.deleted == ["d-live"]
+
+
+def test_invoke_with_a_command_runs_it_and_needs_no_profile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    shown, ran = Shown(tmp_path), []
+    monkeypatch.setattr(display, "backend", lambda root, kind: shown)
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, env, check: ran.append(argv) or subprocess.CompletedProcess(argv, 3)
+    )
+    monkeypatch.setattr(cli, "_profile", lambda path: pytest.fail("a command needs no profile"))
+    assert cli.main(["display", "invoke", "--", "foot", "-e", "true"]) == 0
+    assert ran == [["foot", "-e", "true"]] and shown.deleted == ["d-live"]

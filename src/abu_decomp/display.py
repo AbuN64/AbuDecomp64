@@ -472,9 +472,10 @@ class Linux:
         return write_png(read_frame(self.describe(subject), self.connect, drop_first=True), path)
 
     def environment(self, subject: str) -> dict[str, str]:
-        """What a client needs to draw on this display: its Wayland socket in the private run directory."""
+        """What a client needs to draw on this display: its Wayland socket in the private run directory, and SDL told
+        to use it (over a headless profile's `SDL_VIDEODRIVER=offscreen`, which would leave the display black)."""
         run = Path(self.describe(subject).directory) / "run"
-        return {"XDG_RUNTIME_DIR": str(run), "WAYLAND_DISPLAY": "wayland-0"}
+        return {"XDG_RUNTIME_DIR": str(run), "WAYLAND_DISPLAY": "wayland-0", "SDL_VIDEODRIVER": "wayland"}
 
     def input(self, subject: str, events: object) -> dict[str, object]:
         """Send the events over RFB; the framebuffer request after them is answered once the server has taken them."""

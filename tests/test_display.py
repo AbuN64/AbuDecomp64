@@ -478,7 +478,8 @@ def test_invoke_without_a_command_launches_the_profiles_game(tmp_path: Path, mon
     assert argv[0] == str(tmp_path / "ragewars")
     assert argv[argv.index("--rom") + 1] == str(tmp_path / "rom.z64")
     assert argv[argv.index("--user-dir") + 1] == str(user) and user.is_dir()
-    assert argv.count("--cpak") == 1 and argv[argv.index("--cpak") + 1] == "off"
+    # the Controller Pak screen: a card in the slot, never the replays' empty slot that stops on NO CONTROLLER PAK FOUND
+    assert argv.count("--cpak") == 1 and argv[argv.index("--cpak") + 1] == str(user / "controller-pak.mpk")
     assert "--no-dialog" in argv
     assert env["SDL_AUDIODRIVER"] == "dummy" and env["SDL_VIDEODRIVER"] == "wayland"  # the display's driver wins
     assert env["WAYLAND_DISPLAY"] == "wayland-0" and shown.deleted == ["d-live"]

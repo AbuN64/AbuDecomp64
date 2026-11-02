@@ -519,12 +519,14 @@ def port_env(cfg: dict[str, Any], folder: Path) -> dict[str, str]:
 
 def live(profile: Profile, folder: Path) -> tuple[list[str], dict[str, str]]:
     """The /live game `decomp display invoke` runs: the profile's port with its own args (`--rom`, `--no-dialog`,
-    `{user_dir}` a fresh `<folder>/user`, `--cpak off`) and env, the same `_argv`/`port_env` every replay uses, so the
-    display never starts the port bare on the host's default user folder and card."""
+    `{user_dir}` a fresh `<folder>/user`) and env, the same `_argv`/`port_env` every replay uses, so the display never
+    starts the port bare on the host's default user folder and card. A person plays it, so its slot holds a card:
+    `<folder>/user/controller-pak.mpk`, which the port formats when missing. A replay's empty slot (`--cpak off`) would
+    stop the game on NO CONTROLLER PAK FOUND, a prompt a replay's movie answers and a /live viewer cannot."""
     cfg = settings(profile)
     user_dir = folder / "user"
     user_dir.mkdir(parents=True, exist_ok=True)
-    return _argv(cfg, user_dir), port_env(cfg, folder)
+    return _argv(cfg, user_dir, card=user_dir / "controller-pak.mpk"), port_env(cfg, folder)
 
 
 _FPS_LINE = re.compile(

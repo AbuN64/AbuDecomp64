@@ -48,7 +48,6 @@ import time
 import zlib
 from collections import OrderedDict, deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -69,6 +68,7 @@ from abu_decomp import (
     serve_phase,
     serve_run,
     serve_video,
+    serve_wake,
     site_core,
     site_enhanced,
     site_map,
@@ -84,15 +84,13 @@ from abu_decomp import (
     tas_triage,
 )
 from abu_decomp.config import Profile
-from abu_decomp.serve_audio import AUDIO_LEAD_SECONDS, wav_header
+from abu_decomp.serve_audio import AUDIO_CHUNK_BYTES, AUDIO_LEAD_SECONDS, wav_header
 from abu_decomp.serve_pace import RELEASED, driven, realtime
 from abu_decomp.serve_video import (
     REACH_FLAG,
     VIDEO_FPS,
     VIDEO_HEADER,
     WALL_FPS,
-    WALL_KEEPALIVE_INDEX,
-    WALL_KEEPALIVE_SECONDS,
     WALL_TABLE,
 )
 
@@ -116,15 +114,11 @@ _SERVE_KEYS = frozenset(
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
 GZIP_KEPT = 16  # compressed bodies kept by tag, so a repeat fetch of an unchanged body costs no compression
-CACHE_SECONDS = 30.0
-ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
-GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
 UNDEPLOYED = "undeployed"  # the mark of a server started from a source tree, not from a deployed toolkit
 WALL_WIDTH = 192
-LIVE_SECONDS = 0.5  # while a run goes, live.json is refreshed at least this often (poll ticks)
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
-LIVE_IDLE_SECONDS = 60.0  # with nothing running, live.json is refreshed this often (its clock, an abandoned run)
+LIVE_IDLE_SECONDS = 60.0  # idle live.json refresh (its clock, a run whose owner vanished)
 REACH_READ_TIMEOUT = 1.0  # how long the reader waits for a datagram before it asks whether the run is still alive
 REACH_FILE = "reach.bin"  # RUN/reach.bin: the run's final reach bitset over fns.json rows
 REACH_MAX_RECORD = 65536
@@ -223,11 +217,13 @@ class Server:
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
         )
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
-        self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
+        self.slots = threading.Semaphore(max(1, self.jobs))  # replays that run at once; the others wait queued
+        self.quiet = threading.Condition()  # signalled when the runs or the build changed and none runs
+        self.quiet_count = 0
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
         self.refused: dict[str, dict[str, Any]] = {}  # id -> the row of a play refused at once (newest RECENT_SHOWN)
-        self.cache: dict[Any, tuple[float, Any]] = {}
+        self.cache: dict[Any, Any] = {}
         self.gating = False
         self.gz: dict[str, bytes] = {}
         self.site = self.cfg["runs"] / "site"  # the baked site (module tas_bake) and live.json
@@ -240,13 +236,31 @@ class Server:
 
     # --- cached facts ---
 
-    def _cached(self, key: Any, make: Any, seconds: float = CACHE_SECONDS) -> Any:
-        hit = self.cache.get(key)
-        if hit and time.monotonic() - hit[0] < seconds:
-            return hit[1]
-        value = make()
-        self.cache[key] = (time.monotonic(), value)
-        return value
+    def _cached(self, key: Any, make: Any) -> Any:
+        """`make()` once per key: a key names the facts it was made from (a file's mtime, a run's status)."""
+        if key not in self.cache:
+            self.cache[key] = make()
+        return self.cache[key]
+
+    @staticmethod
+    def stamp(path: Path | None) -> int:
+        """The mtime of `path` (0 when it is not there): the part of a cache key that changes with the file."""
+        try:
+            return path.stat().st_mtime_ns if path else 0
+        except OSError:
+            return 0
+
+    def settle(self) -> None:
+        """The runs or the port build changed with no run going: wake the gate and the archive."""
+        with self.quiet:
+            self.quiet_count += 1
+            self.quiet.notify_all()
+
+    def settled(self, seen: int) -> int:
+        """Block until `settle` was called after the count `seen`; the new count."""
+        with self.quiet:
+            self.quiet.wait_for(lambda: self.quiet_count != seen)
+            return self.quiet_count
 
     def gzipped(self, tag: str, body: bytes) -> bytes:
         """`body` compressed, kept under its tag (the newest few) so an unchanged body is compressed once."""
@@ -270,7 +284,7 @@ class Server:
             )
             return out.stdout.strip() or None
 
-        return self._cached("pin", read)
+        return self._cached(("pin", self.stamp(self.pin_dir / ".git" if self.pin_dir else None)), read)
 
     def fn_state(self, name: str) -> str:
         """exact / fuzzy / none for one function, as the progress states define them."""
@@ -290,7 +304,7 @@ class Server:
                 return "fuzzy" if fn is not None and fn.kind == evidence.NM else "exact"
             return "none"
 
-        return self._cached(("fn", name), read)
+        return self._cached(("fn", name, self.stamp(self.states)), read)
 
     def movie_meta(self, path: Path) -> dict[str, Any]:
         """A movie's poll count and branch: `root` (the movie its chain of takes started from), `from` / `at` (the
@@ -309,9 +323,7 @@ class Server:
                 "at": int(at) if at.isdigit() else None,
             }
 
-        return self._cached(
-            ("movie", str(path), path.stat().st_mtime_ns), read, float("inf")
-        )  # the key holds the mtime
+        return self._cached(("movie", str(path), path.stat().st_mtime_ns), read)
 
     def slot_pool(self) -> dict[str, Any]:
         """The host slot pool (module slots): who holds which slots, who waits, and the last landed->live seconds
@@ -352,14 +364,15 @@ class Server:
 
     def gatekeeper(self) -> None:
         """Gate the corpus whenever the port binary is a build it was not gated on (page-port.py rebuilds it after each
-        train round, a repin, a hand build): only with no run live and the build not older than its pins. A profile
-        naming no port has nothing to gate: that is one explicit state, printed once (the profile install restarts
-        the server when it names one), not a failure every check."""
+        train round, a repin, a hand build; Live sees the file change and settles the server): only with no run live
+        and the build not older than its pins. A profile naming no port has nothing to gate: that is one explicit
+        state, printed once (the profile install restarts the server when it names one), not a failure every check."""
         if not self.cfg.get("port"):
             print("tas page: corpus gate not configured: the profile names no tas.port (no shared seat)", flush=True)
             return
+        seen = 0
         while True:
-            time.sleep(GATE_CHECK_SECONDS)
+            seen = self.settled(seen)
             try:
                 if not tas_corpus.gate_due(self.cfg):
                     continue
@@ -496,10 +509,17 @@ class Server:
         }
 
     def running_runs(self) -> list[Path]:
-        """The folders of the runs going now (at most a second old: the wall asks 4 times a second)."""
-        return self._cached(
-            "running", lambda: [run for run, row in tas.run_rows(self.cfg) if row.get("status") == "running"], 1.0
-        )
+        """The folders of the runs going now."""
+        return [run for run, row in tas.run_rows(self.cfg) if row.get("status") == "running"]
+
+    def unfinished(self) -> set[Path]:
+        """The run folders whose record is missing or running: the ones that still change."""
+        plays = self.cfg["runs"] / "plays"
+        return {
+            run
+            for run in (plays.iterdir() if plays.is_dir() else [])
+            if run.is_dir() and (tas.read_record(run) or {"status": "running"}).get("status") == "running"
+        }
 
     def history(self, before: float | None, limit: int | None = None) -> dict[str, Any]:
         """Finished runs newest first, older than `before` (a `started` time), `limit` at most; `more` when older
@@ -820,6 +840,7 @@ class Server:
 
         def go() -> None:
             failure: Exception | None = None
+            self.slots.acquire()
             try:
                 options = {
                     "port": port or None,
@@ -836,9 +857,10 @@ class Server:
             except Exception as error:  # with a record the page shows it; without one the play is refused
                 failure = error
             finally:
+                self.slots.release()
                 self._ended(run_id, failure)
 
-        self.pool.submit(go)
+        threading.Thread(target=go, daemon=True).start()
         return {"id": run_id}
 
     def from_point(self, start: str, port: str | None, label: str | None, fps_unlock: bool = False) -> dict[str, Any]:
@@ -929,13 +951,15 @@ class Server:
         return out
 
     def archive(self) -> None:
-        """Every ARCHIVE_SECONDS: delete runs past keep_days (tas.archive); a failure waits for the next round."""
+        """Whenever the runs changed with none going: delete runs past keep_days (tas.archive); a failure waits for
+        the next change."""
+        seen = 0
         while True:
+            seen = self.settled(seen)
             with contextlib.suppress(OSError, DecompError):
                 gone = tas.archive(self.cfg, self.keep_days)
                 if gone:
                     print(f"tas page: archived {len(gone)} runs older than {self.keep_days:g} days", flush=True)
-            time.sleep(ARCHIVE_SECONDS)
 
     def run_dir(self, run_id: str) -> Path | None:
         return tas.run_folder(self.cfg, run_id)
@@ -969,10 +993,11 @@ class Server:
 
 class Live:
     """live.json (`<site>/live.json`): the body of `Server.state()` written whenever the runs change, never per request.
-    An inotify watch on `runs/plays` and on every folder of a run that is not done reports a new run, a rewritten
-    `run.json`, and the `taken` / `stopped` / `pinned` marks; while anything runs the file is also refreshed every
-    LIVE_SECONDS for the poll counter (the port appends to `hash.txt` without closing it, so that file raises no event).
-    Writes are at most one per LIVE_GAP_SECONDS and carry no change of their own when only the clock moved."""
+    An inotify watch on `runs/plays`, on every folder of a run that is not done and on the port's folder reports a new
+    run, a rewritten `run.json`, the `taken` / `stopped` / `pinned` marks, each poll the run's `hash.txt` gains and a
+    rebuilt port. Writes are at most one per LIVE_GAP_SECONDS (a kernel timer) and carry no change of their own when
+    only the clock moved; with nothing happening it is rewritten every LIVE_IDLE_SECONDS (its clock). A change with no
+    run going also wakes the corpus gate and the archive (`Server.settle`)."""
 
     def __init__(self, server: Server) -> None:
         self.server = server
@@ -1005,64 +1030,74 @@ class Live:
 
     def sync(self) -> None:
         """Watch the folders of runs that are not done, drop the others, and give the reach relay its running set."""
-        watcher, plays = self.watcher, self.server.cfg["runs"] / "plays"
+        watcher = self.watcher
         if watcher is None:
             return
-        for run in sorted(plays.iterdir()) if plays.is_dir() else []:
-            if run in self.watched or not run.is_dir():
-                continue
-            record = tas.read_record(run)
-            if record is None or record.get("status") == "running":
-                with contextlib.suppress(OSError):
-                    watcher.add(run, inotify.CREATE | inotify.MOVED_TO | inotify.CLOSE_WRITE | inotify.DELETE)
-                    self.watched.add(run)
-        for run in list(self.watched):
-            record = tas.read_record(run) if run.is_dir() else None
-            if record is not None and record.get("status") != "running":
-                watcher.remove(run)
-                self.watched.discard(run)
+        unfinished = self.server.unfinished()
+        for run in unfinished - self.watched:
+            with contextlib.suppress(OSError):
+                watcher.add(
+                    run,
+                    inotify.CREATE | inotify.MOVED_TO | inotify.CLOSE_WRITE | inotify.DELETE | inotify.MODIFY,
+                )
+                self.watched.add(run)
+        for run in self.watched - unfinished:
+            watcher.remove(run)
+            self.watched.discard(run)
         self.server.reach.sync([run for run in self.watched if tas.running(run)])
 
-    def relevant(self, events: list[tuple[Path, int]]) -> bool:
+    def classify(self, events: list[tuple[Path, int]]) -> tuple[bool, bool]:
+        """(a run appeared, went or was marked, anything the page shows moved): what the events were."""
         plays = self.server.cfg["runs"] / "plays"
-        for path, _mask in events:
-            if path.parent == plays or path.name in (tas.RECORD, tas.TAKEN, RELEASED, "stopped", tas.PINNED):
-                return True
-        return False
+        port = self.server.cfg.get("port")
+        marks = (tas.RECORD, tas.TAKEN, RELEASED, "stopped", tas.PINNED)
+        structural = any(path.parent == plays or path.name in marks for path, _mask in events)
+        moved = any(path.name == tas.HASH or (port is not None and path == Path(port)) for path, _mask in events)
+        return structural, structural or moved
 
     def loop(self) -> None:
         plays = self.server.cfg["runs"] / "plays"
         plays.mkdir(parents=True, exist_ok=True)
-        self.watcher = inotify.Watcher()
-        self.watcher.add(plays, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+        self.watcher = watcher = inotify.Watcher()
+        watcher.add(plays, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+        port = self.server.cfg.get("port")
+        if port and Path(port).parent.is_dir():
+            watcher.add(Path(port).parent, inotify.CREATE | inotify.MOVED_TO | inotify.CLOSE_WRITE)
+        gap, idle = inotify.Timer(), inotify.Timer()
         self.sync()
-        dirty, written = True, -LIVE_IDLE_SECONDS
+        dirty = event = True  # event: something happened, not just the idle clock
+        held = False  # the gap timer runs: no write before it goes off
         while True:
-            now = time.monotonic()
-            beat = LIVE_SECONDS if self.running else LIVE_IDLE_SECONDS
-            if (dirty and now - written >= LIVE_GAP_SECONDS) or now - written >= beat:
-                self.sync()  # also finds a run that died without a record, and drops watches of finished ones
-                self.write()
-                dirty, written = False, now
-            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - time.monotonic())
-            ready = select.select([self.watcher.fd, self.wake_r], [], [], wait)[0]
+            if dirty and not held:
+                dirty, held = False, True
+                gap.arm(LIVE_GAP_SECONDS)
+                idle.arm(LIVE_IDLE_SECONDS)
+                try:
+                    self.sync()  # also finds a run that died without a record, and drops watches of finished ones
+                    self.write()
+                except Exception as error:  # a bad record or a full disk: the next change writes again
+                    print(f"tas page: live.json writer: {error}", flush=True)
+                else:
+                    if event and not self.running:
+                        self.server.settle()
+                event = False
+            ready = select.select([watcher.fd, self.wake_r, gap.fd, idle.fd], [], [])[0]
+            if gap.fd in ready and gap.expired():
+                held = False
+            if idle.fd in ready and idle.expired():
+                dirty = True
             if self.wake_r in ready:
                 inotify.drain(self.wake_r)
-                dirty = True
-            if self.watcher.fd in ready and self.relevant(self.watcher.read()):
-                self.sync()  # a new run's reader must listen before its port sends its first record
-                dirty = True
-
-    def run(self) -> None:
-        while True:
-            try:
-                self.loop()
-            except Exception as error:  # a bad record or a full disk must not end the writer: start the watch again
-                print(f"tas page: live.json writer: {error}", flush=True)
-                time.sleep(1)
+                dirty = event = True
+            if watcher.fd in ready:
+                structural, moved = self.classify(watcher.read())
+                if structural:
+                    self.sync()  # a new run's reader must listen before its port sends its first record
+                dirty = dirty or moved
+                event = event or moved
 
     def start(self) -> None:
-        threading.Thread(target=self.run, daemon=True, name="live").start()
+        threading.Thread(target=self.loop, daemon=True, name="live").start()
 
 
 def varint(data: bytes, pos: int) -> tuple[int, int]:
@@ -1279,8 +1314,9 @@ class Reach:
 # answers through the request's reply helpers; none imports this module.
 
 
-# The two wall-clock stream handlers (sleep-paced) stay here as on main: they are carded for removal.
 def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
+    """The run's sound as written: a WAV header, then the PCM bytes as the port appends them, each sent when the
+    file grows. A listener joins AUDIO_LEAD_SECONDS behind the live end; the stream ends with the run or the peer."""
     row = tas.read_record(run)
     if not row:
         return req.missing()
@@ -1288,78 +1324,74 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
         return req.reply(b"", "audio/wav", HTTPStatus.NO_CONTENT, extra={"X-Audio-Muted": "not-realtime"})
     name = tas.AUDIO
     pcm, rate_file = run / name, run / (name + ".rate")
-    deadline = time.monotonic() + 10
-    while not rate_file.is_file() or not pcm.is_file():
-        if not tas.running(run) or time.monotonic() > deadline:
-            return req.missing()
-        time.sleep(0.05)
-    rate = int(rate_file.read_text().strip() or 32000)
-    if not 8000 <= rate <= 192000:
-        return req.missing()
-    req.stream_head("audio/wav", {"Connection": "close"})
-    req.connection.settimeout(5)
-    req.wfile.write(wav_header(rate))
-    end = pcm.stat().st_size
-    offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
-    # Even a producer that writes in bursts gets one steady wall-paced stream. Initial lead covers jitter.
-    began, sent = time.monotonic(), 0
-    with pcm.open("rb") as handle:
-        while True:
-            allowance = int((time.monotonic() - began + AUDIO_LEAD_SECONDS) * rate) * 4 - sent
-            count = min(max(0, allowance), int(rate * 0.05) * 4)
-            handle.seek(offset)
-            chunk = handle.read(count)
-            chunk = chunk[: len(chunk) // 4 * 4]
-            if chunk:
-                req.wfile.write(chunk)
-                req.wfile.flush()
-                offset += len(chunk)
-                sent += len(chunk)
-            elif not tas.running(run) and offset >= pcm.stat().st_size:
+    with serve_wake.Wake(req.connection) as wake:
+        wake.watch(run, {name, name + ".rate", tas.RECORD}, serve_wake.CHANGED | inotify.CREATE | inotify.MODIFY)
+        while not rate_file.is_file() or not pcm.is_file():
+            if not tas.running(run):
+                return req.missing()
+            if not wake.wait():
                 return
-            time.sleep(0.02)
+        rate = int(rate_file.read_text().strip() or 32000)
+        if not 8000 <= rate <= 192000:
+            return req.missing()
+        req.stream_head("audio/wav", {"Connection": "close"})
+        req.connection.settimeout(5)
+        req.wfile.write(wav_header(rate))
+        end = pcm.stat().st_size
+        with pcm.open("rb") as handle:
+            handle.seek(max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4)
+            while True:
+                alive = tas.running(run)  # asked before the read: what the port wrote before it left is sent
+                while chunk := handle.read(AUDIO_CHUNK_BYTES):
+                    handle.seek(-(len(chunk) % 4), os.SEEK_CUR)  # whole 16-bit stereo samples only
+                    chunk = chunk[: len(chunk) // 4 * 4]
+                    if not chunk:
+                        break
+                    req.wfile.write(chunk)
+                    req.wfile.flush()
+                if not alive or not wake.wait():
+                    return
 
 
 def video(req: Any, server: Any, run: Path, query: str = "") -> None:
-    """One bounded latest-frame stream: 30 samples/s, independent of RTT and turbo's game clock."""
+    """One bounded latest-frame stream: a frame goes out when the run's picture file is replaced, at most VIDEO_FPS
+    times a second, independent of RTT and turbo's game clock."""
     req.stream_head("application/x-tas-frames", {"X-Video-Fps": str(VIDEO_FPS), "Connection": "close"})
     # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
     req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
     req.connection.settimeout(5)
-    stamp, deadline, sent_seq = 0, time.monotonic(), 0
+    stamp, sent_seq = 0, 0
     feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
     first = feed.first() if feed else None
-    while True:
-        try:
-            current, body, seq = server.capture(run / tas.VIEW, "JPEG")
-        except (OSError, ValueError):
-            current, body, seq = stamp, b"", 0
-        changed = current != stamp
-        # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
-        records = ([first] if first else []) + (feed.pending() if feed else [])
-        first = None
-        out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
-        if changed:
-            out += VIDEO_HEADER.pack(len(body), current, seq) + body
-        if out:
+    with serve_wake.Wake(req.connection, 1 / VIDEO_FPS) as wake:
+        wake.watch(run, {tas.VIEW, tas.RECORD})
+        while True:
             try:
-                req.wfile.write(out)
-                req.wfile.flush()
-            except OSError:
-                return  # disconnect/backpressure timeout: release this viewer immediately
-        if changed:
-            stamp, sent_seq = current, seq
-        if not tas.running(run):
-            return
-        now = time.monotonic()
-        if changed:
-            deadline = max(deadline + 1 / VIDEO_FPS, now)
-        # When the producer is late, wait for its next capture without losing another whole period.
-        time.sleep(max(0.002, deadline - now))
+                current, body, seq = server.capture(run / tas.VIEW, "JPEG")
+            except (OSError, ValueError):
+                current, body, seq = stamp, b"", 0
+            changed = current != stamp
+            # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
+            records = ([first] if first else []) + (feed.pending() if feed else [])
+            first = None
+            out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
+            if changed:
+                out += VIDEO_HEADER.pack(len(body), current, seq) + body
+            if out:
+                try:
+                    req.wfile.write(out)
+                    req.wfile.flush()
+                except OSError:
+                    return  # disconnect/backpressure timeout: release this viewer immediately
+            if changed:
+                stamp, sent_seq = current, seq
+            if not tas.running(run) or not wake.wait():
+                return
 
 
 def wall(req: Any, server: Any, query: str = "") -> None:
-    """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, WALL_FPS a second. A frame is
+    """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, at most WALL_FPS a second, each
+    round woken by a run's picture file or a run starting or ending. A frame is
     VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
     shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
     per connection and never reused. Each run's reach records (section 10a) ride flagged under its index too, a
@@ -1371,40 +1403,43 @@ def wall(req: Any, server: Any, query: str = "") -> None:
     index: dict[str, int] = {}
     stamps: dict[str, int] = {}
     feeds: dict[str, Any] = {}
-    quiet = due = time.monotonic()
-    while True:
-        out = b""
-        for run in server.running_runs():
-            try:
-                stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
-            except (OSError, ValueError):
-                continue
-            if run.name not in index and len(index) < WALL_KEEPALIVE_INDEX:
-                index[run.name] = len(index)
-                name = json.dumps({"id": run.name}).encode()
-                out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
-                feeds[run.name] = feed = server.reach.feed_for(run)
-                first = feed.first() if feed else None
-                if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
-                    out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first
-            feed = feeds.get(run.name)
-            for record in feed.pending() if feed else []:
-                out += VIDEO_HEADER.pack(len(record) | REACH_FLAG, stamp, index[run.name]) + record
-            if run.name in index and stamps.get(run.name) != stamp:
-                stamps[run.name] = stamp
-                out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
-        now = time.monotonic()
-        if not out and now - quiet >= WALL_KEEPALIVE_SECONDS:
-            out = VIDEO_HEADER.pack(WALL_TABLE, 0, WALL_KEEPALIVE_INDEX)
-        if out:
-            quiet = now
-            try:
-                req.wfile.write(out)
-                req.wfile.flush()
-            except OSError:
+    plays = server.cfg["runs"] / "plays"
+    with serve_wake.Wake(req.connection, 1 / WALL_FPS) as wake:
+        wake.watch(plays, None, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+        while True:
+            unfinished = server.unfinished()  # a run's folder is watched from its creation: no record is missed
+            for run in unfinished - wake.watching():
+                wake.watch(run, {tas.VIEW, tas.RECORD})
+            for run in wake.watching() - unfinished - {plays}:
+                wake.drop(run)
+            out = b""
+            for run in server.running_runs():
+                try:
+                    stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
+                except (OSError, ValueError):
+                    continue
+                if run.name not in index:
+                    index[run.name] = len(index)
+                    name = json.dumps({"id": run.name}).encode()
+                    out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
+                    feeds[run.name] = feed = server.reach.feed_for(run)
+                    first = feed.first() if feed else None
+                    if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
+                        out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first
+                feed = feeds.get(run.name)
+                for record in feed.pending() if feed else []:
+                    out += VIDEO_HEADER.pack(len(record) | REACH_FLAG, stamp, index[run.name]) + record
+                if stamps.get(run.name) != stamp:
+                    stamps[run.name] = stamp
+                    out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
+            if out:
+                try:
+                    req.wfile.write(out)
+                    req.wfile.flush()
+                except OSError:
+                    return
+            if not wake.wait():
                 return
-        due = max(due + 1 / WALL_FPS, time.monotonic())  # a round's own work does not slow the pace
-        time.sleep(max(0.0, due - time.monotonic()))
 
 
 EXACT = {

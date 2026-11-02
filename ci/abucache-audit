@@ -37,7 +37,6 @@ src/abu_decomp/tas_coverage.py
 src/abu_decomp/tas_findings.py
 src/abu_decomp/tas_health.py
 src/abu_decomp/tas_sanitize.py
-src/abu_decomp/tas_serve.py
 src/abu_decomp/tas_statediff.py
 src/abu_decomp/tools.py
 src/abu_decomp/worktree.py'

@@ -44,9 +44,9 @@ class NoSeatTests(unittest.TestCase):
         self.assertIsNone(self.server.seat_refusal("/some/candidate", "m", None))
 
     def test_the_corpus_gate_without_a_port_is_one_explicit_state(self):
-        with mock.patch("builtins.print") as shown, mock.patch.object(tas_serve.time, "sleep") as sleep:
+        with mock.patch("builtins.print") as shown, mock.patch.object(self.server, "settled") as settled:
             self.server.gatekeeper()
-        sleep.assert_not_called()
+        settled.assert_not_called()
         (line,) = [call.args[0] for call in shown.call_args_list]
         self.assertIn("corpus gate not configured", line)
 

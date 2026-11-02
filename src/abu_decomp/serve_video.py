@@ -10,13 +10,11 @@ from typing import Any
 
 from abu_decomp import tas_oracle
 
-VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of missed pictures
+VIDEO_FPS = 30  # most pictures a second: the latest one, no backlog or replay of missed pictures
 VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
 REACH_FLAG = 0x80000000  # set in a /video header's length field: the body is a reach record, not a JPEG
 WALL_TABLE = REACH_FLAG  # set in a /wall header's length field: the body is JSON {"id": run id} naming run index `s
-WALL_KEEPALIVE_INDEX = 0xFFFFFFFF  # a flagged, empty /wall record: nothing to show, but a closed client is noticed
 WALL_FPS = 4
-WALL_KEEPALIVE_SECONDS = 10.0
 
 
 def oracle(req: Any, server: Any, run: Path, query: str = "") -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import struct
+import time
 from pathlib import Path
 
 CREATE = 0x00000100
@@ -75,6 +76,27 @@ class Watcher:
                 directory = self.directories.get(wd)
                 if directory is not None:
                     events.append((directory / os.fsdecode(name) if name else directory, mask))
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+class Timer:
+    """A one-shot kernel timer as a readable fd: arm it, select on `fd`, call `expired()` once it is readable."""
+
+    def __init__(self) -> None:
+        self.fd = os.timerfd_create(time.CLOCK_MONOTONIC, flags=os.TFD_NONBLOCK | os.TFD_CLOEXEC)
+
+    def arm(self, seconds: float) -> None:
+        os.timerfd_settime(self.fd, initial=seconds)
+
+    def expired(self) -> bool:
+        """True (and the fd quiet again) when the timer went off since the last call."""
+        try:
+            os.read(self.fd, 8)
+        except BlockingIOError:
+            return False
+        return True
 
     def close(self) -> None:
         os.close(self.fd)

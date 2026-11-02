@@ -645,13 +645,16 @@ class HttpTests(Base):
 
         def fake_play(profile, movie, *, run_id=None, **kwargs):
             seen.append((movie, kwargs.get("hold_at"), kwargs.get("oracle"), kwargs.get("shots_every")))
+            played.set()
             return {}
+
+        played = threading.Event()
 
         self.assertEqual(self.post("/api/play", {"hold_at": 5})[0], 400)
         self.server.stream_every = 25  # tas.serve.stream_every: a port-only play pictures the port for the wall
         with mock.patch.object(tas, "play", fake_play):
             self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "speed": 0, "hold_at": 25})[0], 200)
-            self.server.pool.shutdown(wait=True)
+            self.assertTrue(played.wait(5))
         self.assertEqual(seen, [("boot-idle", 25, False, 25)])
 
     def test_retry_from_a_poll_and_pin(self):
@@ -752,17 +755,29 @@ class HttpTests(Base):
             status, head, body = self.fetch(f"/audio/s{speed}")
             self.assertEqual((status, head["X-Audio-Muted"], body), (204, "not-realtime", b""))
 
-    def test_stream_samples_latest_and_preserves_the_capture_tag(self):
-        run = self.make_run("v", status="running", speed=1, pid=os.getpid())
+    def stream_handler(self):
+        """A /video or /audio request object over a real socket pair: (handler, the client's end)."""
+        server_end, client_end = socket.socketpair()
+        self.addCleanup(server_end.close)
+        self.addCleanup(client_end.close)
         h = object.__new__(tas_serve.handler(self.server))
         h.send_response = h.send_header = h.end_headers = mock.Mock()
-        h.connection, h.wfile = mock.Mock(), io.BytesIO()
+        h.connection, h.wfile = server_end, io.BytesIO()
+        return h, client_end
+
+    def test_stream_sends_each_new_picture_when_the_producer_replaces_it_and_ends_with_the_run(self):
+        run = self.make_run("v", status="running", speed=1, pid=os.getpid())
+        h, _client = self.stream_handler()
         png = tas_serve.picture(capture_bmp()[0])[0]
+        pictures = iter([(1, png, 7), (1, png, 7), (3, png, 9)])
+
+        def capture(*_):
+            (run / tas.VIEW).write_bytes(b"x")  # the producer replaces its picture: the next wait returns
+            return next(pictures)
+
         with (
-            mock.patch.object(self.server, "capture", side_effect=[(1, png, 7), (1, png, 7), (3, png, 9)]),
+            mock.patch.object(self.server, "capture", side_effect=capture),
             mock.patch.object(tas, "running", side_effect=[True, True, False]),
-            mock.patch.object(tas_serve.time, "monotonic", side_effect=[0, 0.001, 0.034]),
-            mock.patch.object(tas_serve.time, "sleep") as wait,
         ):
             tas_serve.video(h, self.server, run)
         data = h.wfile.getvalue()
@@ -770,19 +785,90 @@ class HttpTests(Base):
         self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
         self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[n + 16 : n + 32]), (n, 3, 9))
         self.assertEqual(len(data), 2 * (n + 16))
-        self.assertEqual(wait.call_count, 2)
-        self.assertEqual(wait.call_args_list[1].args[0], 0.002)
-        self.assertTrue(all(0 <= call.args[0] <= 1 / 30 for call in wait.call_args_list))
 
     def test_stream_disconnect_releases_the_viewer(self):
         run = self.make_run("v", status="running", speed=1, pid=os.getpid())
-        h = object.__new__(tas_serve.handler(self.server))
-        h.send_response = h.send_header = h.end_headers = mock.Mock()
-        h.connection, h.wfile = mock.Mock(), mock.Mock()
+        h, _client = self.stream_handler()
+        h.wfile = mock.Mock()
         h.wfile.write.side_effect = BrokenPipeError
         with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
             tas_serve.video(h, self.server, run)
         grab.assert_called_once()
+
+    def test_stream_ends_when_the_client_closes_with_nothing_to_send(self):
+        run = self.make_run("v", status="running", speed=1, pid=os.getpid())
+        h, client = self.stream_handler()
+        client.close()
+        with mock.patch.object(self.server, "capture", side_effect=OSError):
+            tas_serve.video(h, self.server, run)
+        self.assertEqual(h.wfile.getvalue(), b"")
+
+    def test_audio_waits_for_the_producers_files_and_gives_up_when_the_client_leaves(self):
+        run = self.make_run("a", status="running", speed=1, pid=os.getpid())
+        h, client = self.stream_handler()
+        h.missing = mock.Mock()
+        client.close()
+        tas_serve.audio(h, self.server, run)  # no pcm yet, run alive: only the peer closing ends the wait
+        h.missing.assert_not_called()
+        self.assertEqual(h.wfile.getvalue(), b"")
+
+    def test_audio_without_files_is_missing_once_the_run_is_gone(self):
+        run = self.make_run("a", status="done", speed=1)
+        h, _client = self.stream_handler()
+        h.missing = mock.Mock()
+        tas_serve.audio(h, self.server, run)
+        h.missing.assert_called_once()
+
+    def test_audio_sends_what_the_port_appends_whole_samples_only(self):
+        run = self.make_run("a", status="running", speed=1, pid=os.getpid())
+        (run / tas.AUDIO).write_bytes(b"")
+        (run / (tas.AUDIO + ".rate")).write_text("32000")
+        h, _client = self.stream_handler()
+
+        calls = []
+
+        def running(_run):
+            calls.append(1)
+            if len(calls) == 2:  # the port writes while the handler waits, then leaves
+                with (run / tas.AUDIO).open("ab") as handle:
+                    handle.write(b"\x01\x00\x02\x00\x03")  # a sample and a half
+            return len(calls) < 3
+
+        with mock.patch.object(tas, "running", side_effect=running):
+            tas_serve.audio(h, self.server, run)
+        self.assertEqual(h.wfile.getvalue()[44:], b"\x01\x00\x02\x00")
+
+
+class SettleTests(Base):
+    """The corpus gate and the archive wait on `settled`, which Live's `settle` signals."""
+
+    def test_settled_blocks_until_settle_is_signalled_after_the_count_seen(self):
+        server = tas_serve.Server(self.profile())
+        server.settle()
+        self.assertEqual(server.settled(0), 1)  # already past: no wait
+        woke = []
+        thread = threading.Thread(target=lambda: woke.append(server.settled(1)))
+        thread.start()
+        thread.join(0.05)
+        self.assertTrue(thread.is_alive())
+        server.settle()
+        thread.join(5)
+        self.assertEqual(woke, [2])
+
+    def test_unfinished_names_the_folders_without_a_record_or_still_running(self):
+        server = tas_serve.Server(self.profile())
+        live = self.make_run("a", status="running", speed=1, pid=os.getpid())
+        self.make_run("b", status="done", speed=1)
+        bare = server.cfg["runs"] / "plays" / "c"
+        bare.mkdir(parents=True)
+        self.assertEqual(server.unfinished(), {live, bare})
+
+    def test_a_cached_fact_is_made_once_per_key(self):
+        server = tas_serve.Server(self.profile())
+        made = []
+        for key in ("k", "k", "j"):
+            server._cached(key, lambda: made.append(key) or key)
+        self.assertEqual(made, ["k", "j"])
 
 
 class LiveTests(Base):
@@ -1004,8 +1090,6 @@ class ReachTests(Base):
         names, reach = {}, []
         while len(reach) < 2:
             flagged, (_length, _stamp, index), body = wall.record()
-            if index == serve_video.WALL_KEEPALIVE_INDEX:
-                continue
             if flagged and body.startswith(b"{"):
                 names[index] = json.loads(body)["id"]
             elif flagged:

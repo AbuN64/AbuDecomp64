@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import struct
 
+AUDIO_CHUNK_BYTES = 1 << 16  # the most one write to a listener carries
 AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
 
 

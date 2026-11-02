@@ -40,7 +40,8 @@ the person can watch it. The movie stays in the TAS folder as a regression test 
 block each other and a headless replay at any speed is watched the same way: `/watch` opens `/#/play/RUN` of the newest
 running run, which reads the run's data path (`/video/RUN` picture with reach records in-band, `/audio/RUN` the run's PCM as written, a WAV the page plays through an audio element whose clock paces the picture;
 the oracle's sound is not served); there is no remote-display viewer. The page always shows the newest active run, labelled with its kind (live / proof replay), movie, poll and outcome, and
-its switcher pins another; `tas watch` also reports `play-start` / `play-end`. No flag makes a run watched.
+its switcher pins another; `tas watch` also reports `play-start` / `play-end`. No flag makes a run watched. The server waits on signals,
+not sleeps: `/video/RUN` and `/wall` send when the run's picture file is replaced (at most 30 and 4 a second, a kernel timer), `/audio/RUN` when `audio.pcm` grows, each ends with the run's record or the client's hang-up; live.json follows inotify on the run folders (poll ticks included) and the port's folder, and the corpus gate and the archive run when the runs or the build changed with no run going.
 
 **Triage.** Every `stop`, `crash`, `hang` or `mark` is one cycle of [02](02-tas-behaviour-loop.md), with
 `tas watch --next` available to block for the page's next event when you wait on a person instead of playing:

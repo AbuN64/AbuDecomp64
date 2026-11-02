@@ -1422,6 +1422,7 @@ def play(
     pak: str | None = None,
     oracle: bool = False,
     oracle_pictures: bool = False,
+    lockstep: bool = False,
     hold_at: int | None = None,
     cpak: str | None = None,
     source: str | None = None,
@@ -1521,9 +1522,14 @@ def play(
         tas_statediff.load_ledger(
             cfg
         )  # refused here, before any process starts, not written into state-diff.json after
+    if lockstep and (not oracle or hold_at is not None):
+        raise DecompError("tas.lockstep", "--lockstep compares the whole movie beside --oracle (no hold)")
     original = tas_oracle.required(profile) if oracle else None
     if original and oracle_pictures:
         original["pictures"] = True
+    if original and lockstep:
+        tas_oracle.lockstep_script()
+        original["lockstep"] = True
     if retry:
         name, polls = retry["movie"], retry["polls"]
         speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
@@ -1797,6 +1803,8 @@ def play(
                 record["oracle"]["startup_fault"] = note
             if os.environ.get("N64C_TRACE_EVENTS"):
                 record["oracle"]["events"] = tas_oracle.split_events(run)  # the outcome above is gdb's then
+            if original.get("lockstep"):
+                record["oracle"]["lockstep"] = tas_oracle.lockstep_match(run)
             result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
         if oracle_waiter:
             record["oracle"]["verdict"] = result["oracle"]["verdict"] = tas_oracle.verdict(result)
@@ -1842,6 +1850,7 @@ def play_twice(
     pak: str | None = None,
     oracle: bool = False,
     oracle_pictures: bool = False,
+    lockstep: bool = False,
     cpak: str | None = None,
     fps_unlock: bool = False,
     start: str | None = None,
@@ -1861,6 +1870,7 @@ def play_twice(
         "pak": pak,
         "oracle": oracle,
         "oracle_pictures": oracle_pictures,
+        "lockstep": lockstep,
         "cpak": cpak,
         "fps_unlock": fps_unlock,
         "start": start,

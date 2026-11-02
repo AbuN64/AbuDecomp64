@@ -5,6 +5,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -370,6 +371,75 @@ class PlayTests(unittest.TestCase):
             tas.play(self.profile, None, oracle=True)  # a human run has no movie to replay
         with self.assertRaises(DecompError):
             tas.play(self.load(), "m", oracle=True)  # no oracle on this seat
+
+    def test_lockstep_records_both_sides_into_the_run_and_matches_them_at_the_end(self):
+        seen, ran = {}, []
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.pid = 4242 if argv[0] == host else 4343
+                self.stdin = io.StringIO()
+                seen["oracle" if argv[0] == host else "port"] = env
+                if argv[0] != host:
+                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                    stdout.write("n64c-tas: done polls=57\n")
+
+        def match(argv, stdout, **kwargs):  # lockstep.py match --run RUN: diverged at poll 9
+            ran.append(argv)
+            report = Path(argv[-1]) / tas_oracle.LOCKSTEP / tas_oracle.LOCKSTEP_MATCH
+            report.write_text(json.dumps({"matched_through_poll": 8, "first": {"poll": 9, "class": "memory"}}))
+            stdout.write("lockstep match: first divergence poll 9\n")
+            return subprocess.CompletedProcess(argv, 1)
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Process),
+            mock.patch.object(tas, "_wait", lambda *a, **k: (0, 0.5)),
+            mock.patch.object(tas_oracle.subprocess, "run", match),
+        ):
+            result = tas.play(self.profile, "m", oracle=True, lockstep=True)
+        run = Path(result["run"])
+        self.assertEqual(seen["port"]["N64C_LOCKSTEP"], "1")
+        self.assertEqual(seen["port"]["N64C_LOCKSTEP_DIR"], str(run / "lockstep" / "port"))
+        self.assertEqual(seen["port"]["N64C_CALLS"], str(run))
+        self.assertEqual(seen["oracle"]["N64R_LOCKSTEP_DIR"], str(run / "lockstep" / "oracle"))
+        self.assertTrue((run / "lockstep" / "port").is_dir() and (run / "lockstep" / "oracle").is_dir())
+        self.assertEqual(ran, [[sys.executable, str(tas_oracle.LOCKSTEP_PY), "match", "--run", str(run)]])
+        lockstep = result["oracle"]["lockstep"]
+        self.assertEqual((lockstep["exit"], lockstep["matched_through_poll"]), (1, 8))
+        self.assertEqual(lockstep["first"], {"poll": 9, "class": "memory"})
+        self.assertEqual(lockstep["match"], str(run / "lockstep" / "match.json"))
+        self.assertIn("poll 9", (run / "lockstep" / "lockstep.txt").read_text())
+
+    def test_without_lockstep_neither_side_records_it(self):
+        seen = {}
+        host = str(self.host)
+
+        class Process:
+            def __init__(self, argv, env, stdout, **kwargs):
+                self.pid = 4242 if argv[0] == host else 4343
+                self.stdin = io.StringIO()
+                seen["oracle" if argv[0] == host else "port"] = env
+                if argv[0] != host:
+                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+
+        with (
+            mock.patch.object(tas.subprocess, "Popen", Process),
+            mock.patch.object(tas, "_wait", lambda *a, **k: (0, 0.5)),
+            mock.patch.object(tas_oracle.subprocess, "run", side_effect=AssertionError("matched")),
+            mock.patch.dict(os.environ, {}, clear=False),
+        ):
+            os.environ.pop("N64C_LOCKSTEP", None)
+            result = tas.play(self.profile, "m", oracle=True)
+        self.assertNotIn("N64C_LOCKSTEP_DIR", seen["port"])
+        self.assertNotIn("N64R_LOCKSTEP_DIR", seen["oracle"])
+        self.assertNotIn("lockstep", result["oracle"])
+
+    def test_lockstep_is_refused_without_the_oracle_or_its_script(self):
+        with self.assertRaises(DecompError):
+            tas.play(self.profile, "m", lockstep=True)
+        with mock.patch.object(tas_oracle, "LOCKSTEP_PY", self.root / "missing.py"), self.assertRaises(DecompError):
+            tas.play(self.profile, "m", oracle=True, lockstep=True)
 
     def test_no_picture_is_dumped_unless_asked(self):
         # a monkey batch dumped ~650 .ppm per run and filled the rig disk; the oracle keeps its checkpoints

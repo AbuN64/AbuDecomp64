@@ -125,8 +125,9 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 `first` (null, or the first divergence with its `class`), `divergences` {`input`, `vi`, `calls`, `memory`}: per class
 the persistent divergences in poll order, each with its `poll`.
 
-Unsupported until built: the port's per-run `lockstep/port/` from a `tas` play (the recorder runs from trace.c with an
-explicit `N64C_LOCKSTEP_DIR` only), the oracle's from `tas` plays (coverage still writes `oracle-golden/`), the
+`decomp tas play MOVIE --oracle --lockstep` writes both sides (`lockstep/port/`, `lockstep/oracle/`) and, once both
+ended, `lockstep/match.json` (output in `lockstep/lockstep.txt`; the run's `oracle.lockstep` keeps the exit, 0 matched,
+1 diverged, 2 refused, the matched-through poll and the first divergence). Unsupported until built: the
 stream side `oracle` (the site's stream still names it `original`), and `match.json` beside the site's run view.
 
 ## Site pages and actions

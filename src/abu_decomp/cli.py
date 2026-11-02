@@ -591,6 +591,12 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "(off by default: ~650 .ppm per run filled the rig disk)",
     )
     play.add_argument(
+        "--lockstep",
+        action="store_true",
+        help="with --oracle: both sides record the whole-movie lockstep into RUN/lockstep/{port,oracle} and "
+        "shim/boot/lockstep.py match writes RUN/lockstep/match.json at the end",
+    )
+    play.add_argument(
         "--from",
         dest="start",
         metavar="POINT",
@@ -743,6 +749,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "cpak": args.cpak,
         "oracle": args.oracle,
         "oracle_pictures": args.oracle_pictures,
+        "lockstep": args.lockstep,
         "fps_unlock": args.fps_unlock,
         "start": args.start,
         "take": args.take,

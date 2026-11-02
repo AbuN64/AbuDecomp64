@@ -42,6 +42,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -70,6 +71,10 @@ PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
 CALLS_FIRST = 16  # calls per (caller, function) each side records for the per-call behaviour (RUN/calls.jsonl)
 SHOTS = "shots"
 SIDES = ("port", "oracle")
+LOCKSTEP = "lockstep"  # RUN/lockstep/{port,oracle}/ and RUN/lockstep/match.json (CONTRACTS.md "Run record")
+LOCKSTEP_MATCH = "match.json"
+LOCKSTEP_LOG = "lockstep.txt"  # lockstep.py match's own output
+LOCKSTEP_PY = Path(__file__).resolve().parents[2] / "shim" / "boot" / "lockstep.py"
 WIDTH, HEIGHT = 320, 240
 PPM_HEAD = f"P6\n{WIDTH} {HEIGHT}\n255\n".encode()
 PPM_SIZE = len(PPM_HEAD) + WIDTH * HEIGHT * 3
@@ -183,11 +188,52 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     env = {
         "N64C_TAS_TRACE": str(run / PORT_TRACE),
     }
+    if oracle.get("lockstep"):  # the port half of the whole-movie lockstep (shim/boot/trace.c); N64C_CALLS is tas's
+        env.update(N64C_LOCKSTEP="1", N64C_LOCKSTEP_DIR=str(lockstep_side(run, "port")))
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"
         shots.mkdir(parents=True, exist_ok=True)
         env.update(N64C_TAS_SHOT_EVERY=str(oracle["shot_every"]), N64C_TAS_SHOT_DIR=str(shots))
     return env
+
+
+def lockstep_side(run: Path, side: str) -> Path:
+    """RUN/lockstep/<side>, made: the folder that side's recorder writes lockstep.jsonl and pages.bin into."""
+    folder = run / LOCKSTEP / side
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+def lockstep_script() -> Path:
+    """shim/boot/lockstep.py of this checkout (the seat venv is `pip install -e`); refused before any process starts
+    when the package runs without its repository."""
+    if not LOCKSTEP_PY.is_file():
+        raise DecompError("tas.lockstep", f"--lockstep needs {LOCKSTEP_PY} (decomp installed from its checkout)")
+    return LOCKSTEP_PY
+
+
+def lockstep_match(run: Path) -> dict[str, Any]:
+    """`lockstep.py match --run RUN` once both sides ended: RUN/lockstep/match.json, its output in
+    RUN/lockstep/lockstep.txt; the record keeps the exit (0 matched, 1 diverged, 2 refused), matched-through poll and
+    the first divergence."""
+    folder = run / LOCKSTEP
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / LOCKSTEP_LOG).open("w") as output:
+        code = subprocess.run(
+            [sys.executable, str(lockstep_script()), "match", "--run", str(run)],
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            check=False,
+        ).returncode
+    found: dict[str, Any] = {"exit": code, "log": str(folder / LOCKSTEP_LOG)}
+    report = folder / LOCKSTEP_MATCH
+    if code in (0, 1) and report.is_file():
+        data = json.loads(report.read_text())
+        found.update(match=str(report), matched_through_poll=data.get("matched_through_poll"), first=data.get("first"))
+    else:
+        found["error"] = (folder / LOCKSTEP_LOG).read_text(errors="replace").strip()[-400:]
+    return found
 
 
 def movie_env(play: Path, pak: str, pads: int, exit_after: int, card: Path | None) -> dict[str, str]:
@@ -228,6 +274,7 @@ def start(
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
         "N64R_TAS_RENDER_LEAD": str(effective_lead(oracle)),
+        **({"N64R_LOCKSTEP_DIR": str(lockstep_side(run, "oracle"))} if oracle.get("lockstep") else {}),
         **(extra or {}),
     }
     if oracle.get("pictures"):  # no SHOT_DIR, no .ppm: the host still writes its checkpoints

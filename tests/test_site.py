@@ -98,7 +98,7 @@ class FeedTest(unittest.TestCase):
         self.assertEqual(feed.publish_runs([RUNNING, DONE]), 0)
         self.assertEqual(feed.snapshot()[0], 1)
         self.assertEqual(feed.publish_runs([{**RUNNING, "poll": 1300}]), 1)
-        version, items = feed.since(1, 0)
+        version, items = feed.since(1)
         self.assertEqual((version, [e["fields"]["poll"] for e in items]), (2, [1300]))
         self.assertEqual([e["subject"] for e in feed.snapshot()[1]], ["r1", "r2"])  # newest first
 
@@ -116,7 +116,7 @@ class FeedTest(unittest.TestCase):
     def test_since_wakes_on_publish_from_another_thread(self):
         feed = site_core.Feed()
         threading.Thread(target=feed.publish_runs, args=([RUNNING],)).start()
-        version, items = feed.since(0, 60)  # returns on the signal; the bound is never reached
+        version, items = feed.since(0)  # returns on the signal
         self.assertEqual((version, len(items)), (1, 1))
 
 

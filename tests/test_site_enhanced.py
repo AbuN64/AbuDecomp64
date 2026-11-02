@@ -173,7 +173,7 @@ class Record(Planned):
         version = feed.version
         feed.publish([site_core.event("run.queued", 1.0, "l", "r", movie="m")])
         self.assertGreater(feed.version, version)
-        self.assertEqual(feed.since(version, 0)[0], feed.version)  # a stream parked at `version` wakes at once
+        self.assertEqual(feed.since(version)[0], feed.version)  # a stream parked at `version` wakes at once
 
 
 class Settings(unittest.TestCase):

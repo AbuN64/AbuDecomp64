@@ -121,8 +121,7 @@ STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is kille
 UNDEPLOYED = "undeployed"  # the mark of a server started from a source tree, not from a deployed toolkit
 WALL_WIDTH = 192
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
-LIVE_IDLE_SECONDS = 60.0  # idle live.json refresh (its clock, a run whose owner vanished)
-REACH_READ_TIMEOUT = 1.0  # how long the reader waits for a datagram before it asks whether the run is still alive
+LIVE_IDLE_SECONDS = 60.0  # idle live.json refresh (its clock only: a dead run owner is noticed by its pidfd)
 REACH_KEPT_RECORDS = 2048  # records a slow /video client may lag behind before it is given a fresh full record
 REACH_KEPT_BYTES = 1 << 20
 REACH_RUNS_KEPT = 64  # finished runs whose relay stays in memory
@@ -1000,7 +999,9 @@ class Live:
     An inotify watch on `runs/plays`, on every folder of a run that is not done and on the port's folder reports a new
     run, a rewritten `run.json`, the `taken` / `stopped` / `pinned` marks, each poll the run's `hash.txt` gains and a
     rebuilt port. Writes are at most one per LIVE_GAP_SECONDS (a kernel timer) and carry no change of their own when
-    only the clock moved; with nothing happening it is rewritten every LIVE_IDLE_SECONDS (its clock). A change with no
+    only the clock moved; with nothing happening it is rewritten every LIVE_IDLE_SECONDS (its clock). The owner of each
+    running run (the pid in its record) is watched through a pidfd in the same select: its exit rewrites live.json at
+    once, and an owner already gone when it is first watched is noticed by the write that follows. A change with no
     run going also wakes the corpus gate and the archive (`Server.settle`)."""
 
     def __init__(self, server: Server) -> None:
@@ -1011,6 +1012,7 @@ class Live:
         self.running: list[Path] = []
         self.watched: set[Path] = set()
         self.watcher: inotify.Watcher | None = None
+        self.owners: dict[Path, int] = {}  # run -> pidfd of its owner; -1 once the owner is gone (reported, not watched)
 
     def touch(self) -> None:
         """Something the watch cannot see changed (a queued run, a pin): rewrite soon."""
@@ -1048,7 +1050,39 @@ class Live:
         for run in self.watched - unfinished:
             watcher.remove(run)
             self.watched.discard(run)
+        self.watch_owners()
         self.server.reach.sync([run for run in self.watched if tas.running(run)])
+
+    def watch_owners(self) -> None:
+        """Hold a pidfd on the owner of every watched running run and release those of runs no longer watched. An owner
+        that is already gone at open gets no fd: the write that follows this sync reports it."""
+        for run in set(self.owners) - self.watched:
+            self.release(run)
+        for run in self.watched - set(self.owners):
+            row = tas.read_record(run) or {}
+            if row.get("status") != "running":
+                continue
+            try:
+                self.owners[run] = os.pidfd_open(int(row["pid"]))
+            except (KeyError, TypeError, ValueError):  # an old or queued record with no owner pid
+                continue
+            except OSError:  # the owner is gone already
+                self.owners[run] = -1
+
+    def release(self, run: Path) -> None:
+        fd = self.owners.pop(run, -1)
+        if fd >= 0:
+            os.close(fd)
+
+    def owner_exited(self, ready: list[int]) -> bool:
+        """True when a watched owner's pidfd is readable (its process exited); that fd is closed and not watched again."""
+        gone = False
+        for run, fd in self.owners.items():
+            if fd >= 0 and fd in ready:
+                os.close(fd)
+                self.owners[run] = -1
+                gone = True
+        return gone
 
     def classify(self, events: list[tuple[Path, int]]) -> tuple[bool, bool]:
         """(a run appeared, went or was marked, anything the page shows moved): what the events were."""
@@ -1086,7 +1120,10 @@ class Live:
                     if event and not self.running:
                         self.server.settle()
                 event = False
-            ready = select.select([watcher.fd, self.wake_r, gap.fd, idle.fd], [], [])[0]
+            watching = [fd for fd in self.owners.values() if fd >= 0]
+            ready = select.select([watcher.fd, self.wake_r, gap.fd, idle.fd, *watching], [], [])[0]
+            if self.owner_exited(ready):
+                dirty = event = True
             if gap.fd in ready and gap.expired():
                 held = False
             if idle.fd in ready and idle.expired():
@@ -1122,7 +1159,7 @@ class RunReach:
         self.records: deque[tuple[int, bytes]] = deque()
         self.size = 0
         self.done = False
-        self.idle = 0  # reads that timed out with nothing to receive
+        self.recheck_r, self.recheck_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)  # `recheck` -> the reader
         self.listening = threading.Event()  # set once the socket is bound: the port's datagrams are no longer dropped
         self.ends: dict[int, int] = {}  # read end -> write end of each wake pipe
         self.pipes: set[int] = set()  # write ends of the viewers' wake pipes (`listen`)
@@ -1133,6 +1170,12 @@ class RunReach:
         for fd in self.pipes:
             with contextlib.suppress(OSError):
                 os.write(fd, b"x")
+
+    def recheck(self) -> None:
+        """Tell the reader to ask whether the run is still going (Live saw the run's folder change)."""
+        with self.lock:
+            if not self.done:  # the pipe is closed once the reader is over
+                os.write(self.recheck_w, b"x")
 
     def listen(self) -> int:
         """A pipe's read end that turns readable whenever a record arrives or the reader ends (one per viewer)."""
@@ -1201,27 +1244,31 @@ class RunReach:
                 with self.changed:
                     self.done = True
                     self.announce()
+                os.close(self.recheck_r)
+                os.close(self.recheck_w)
                 return
-            sock.settimeout(REACH_READ_TIMEOUT)
             self.listening.set()
             while True:
-                try:
-                    self.feed(sock.recv(tas_reach.MAX_RECORD + 1))
-                    continue
-                except TimeoutError:
-                    self.idle += 1
-                    if tas.running(self.run) or self.pending():
-                        continue
-                except OSError:
-                    pass
-                break
-            sock.settimeout(0)
+                ready = select.select([sock, self.recheck_r], [], [])[0]
+                if self.recheck_r in ready:
+                    inotify.drain(self.recheck_r)
+                    if not (tas.running(self.run) or self.pending()):
+                        break
+                if sock in ready:
+                    try:
+                        self.feed(sock.recv(tas_reach.MAX_RECORD + 1, socket.MSG_DONTWAIT))
+                    except BlockingIOError:
+                        pass
+                    except OSError:
+                        break
             while True:  # whatever the port sent before it exited
                 try:
-                    self.feed(sock.recv(tas_reach.MAX_RECORD + 1))
+                    self.feed(sock.recv(tas_reach.MAX_RECORD + 1, socket.MSG_DONTWAIT))
                 except OSError:
                     break
         self.finish()
+        os.close(self.recheck_r)
+        os.close(self.recheck_w)
 
 
 class ReachFeed:
@@ -1266,6 +1313,10 @@ class Reach:
                 if run.name not in self.runs:
                     relay = self.runs[run.name] = RunReach(run)
                     threading.Thread(target=relay.serve, daemon=True, name=f"reach-{run.name}").start()
+            going = {run.name for run in running}
+            for name, relay in self.runs.items():
+                if name not in going and not relay.done:
+                    relay.recheck()  # a run that left the running set, or left the queue, ends its reader
             while len(self.runs) > REACH_RUNS_KEPT:
                 oldest = next(iter(self.runs))
                 if not self.runs[oldest].done:
@@ -1320,8 +1371,8 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
         if not 8000 <= rate <= 192000:
             return req.missing()
         req.stream_head("audio/wav", {"Connection": "close"})
-        req.connection.settimeout(5)
-        req.wfile.write(wav_header(rate))
+        if not wake.send(wav_header(rate)):
+            return
         end = pcm.stat().st_size
         with pcm.open("rb") as handle:
             handle.seek(max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4)
@@ -1332,8 +1383,8 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
                     chunk = chunk[: len(chunk) // 4 * 4]
                     if not chunk:
                         break
-                    req.wfile.write(chunk)
-                    req.wfile.flush()
+                    if not wake.send(chunk) or not wake.flush():
+                        return
                 if not alive or not wake.wait():
                     return
 
@@ -1344,7 +1395,6 @@ def video(req: Any, server: Any, run: Path, query: str = "") -> None:
     req.stream_head("application/x-tas-frames", {"X-Video-Fps": str(VIDEO_FPS), "Connection": "close"})
     # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
     req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
-    req.connection.settimeout(5)
     stamp, sent_seq = 0, 0
     feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
     first = feed.first() if feed else None
@@ -1366,12 +1416,8 @@ def video(req: Any, server: Any, run: Path, query: str = "") -> None:
                 out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
                 if changed:
                     out += VIDEO_HEADER.pack(len(body), current, seq) + body
-                if out:
-                    try:
-                        req.wfile.write(out)
-                        req.wfile.flush()
-                    except OSError:
-                        return  # disconnect/backpressure timeout: release this viewer immediately
+                if out and not wake.send(out):
+                    return
                 if changed:
                     stamp, sent_seq = current, seq
                 if not tas.running(run) or not wake.wait():
@@ -1391,7 +1437,6 @@ def wall(req: Any, server: Any, query: str = "") -> None:
     Browsers allow six connections per host, so twelve per-tile streams would stall."""
     req.stream_head("application/x-tas-wall", {"X-Wall-Fps": str(WALL_FPS), "Connection": "close"})
     req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-    req.connection.settimeout(5)
     index: dict[str, int] = {}
     stamps: dict[str, int] = {}
     feeds: dict[str, Any] = {}
@@ -1446,12 +1491,8 @@ def wall_loop(
                 if stamps.get(run.name) != stamp:
                     stamps[run.name] = stamp
                     out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
-            if out:
-                try:
-                    req.wfile.write(out)
-                    req.wfile.flush()
-                except OSError:
-                    return
+            if out and not wake.send(out):
+                return
             if not wake.wait():
                 return
 

@@ -10,9 +10,11 @@ in REGIONS; a region not built yet answers 501 with the card that builds it.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib
 import json
+import os
 import re
 import threading
 from http import HTTPStatus
@@ -183,6 +185,7 @@ class Feed:
         self.runs: dict[str, dict[str, Any]] = {}  # run id -> Run record, the wall's tiles
         self.exact: set[str] = set()  # functions whose newest run matched every case
         self.cond = threading.Condition()
+        self.pipes: dict[int, int] = {}  # read end -> write end of each stream's wake pipe (`listen`)
 
     def publish(self, items: list[dict[str, Any]]) -> int:
         """Merge events; wake every stream when one is new or changed. Returns the number that changed."""
@@ -197,6 +200,9 @@ class Feed:
             for old in self.newest()[FEED_KEPT:]:
                 del self.events[old["id"]], self.changed[old["id"]]
             self.cond.notify_all()
+            for write in self.pipes.values():
+                with contextlib.suppress(OSError):
+                    os.write(write, b"x")
             return len(moved)
 
     def publish_runs(self, rows: list[dict[str, Any]]) -> int:
@@ -218,10 +224,28 @@ class Feed:
         with self.cond:
             return self.version, self.newest()
 
-    def since(self, version: int, wait: float) -> tuple[int, list[dict[str, Any]]]:
-        """Events changed after `version`, blocking until one changes or `wait` (the stream's keepalive) passes."""
+    def listen(self) -> int:
+        """A pipe's read end that turns readable whenever the feed changes (one per stream; `unlisten` it)."""
+        read, write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
         with self.cond:
-            self.cond.wait_for(lambda: self.version > version, timeout=wait)
+            self.pipes[read] = write
+        return read
+
+    def unlisten(self, read: int) -> None:
+        with self.cond:
+            write = self.pipes.pop(read)
+        os.close(write)
+        os.close(read)
+
+    def changes(self, version: int) -> tuple[int, list[dict[str, Any]]]:
+        """The version and the events changed after `version`, at once."""
+        with self.cond:
+            return self.version, [item for item in self.newest() if self.changed[item["id"]] > version]
+
+    def since(self, version: int) -> tuple[int, list[dict[str, Any]]]:
+        """Events changed after `version`, blocking until one changes."""
+        with self.cond:
+            self.cond.wait_for(lambda: self.version > version)
             return self.version, [item for item in self.newest() if self.changed[item["id"]] > version]
 
 
@@ -258,7 +282,7 @@ class Snapshots:
         while True:
             version = self.feed.version
             self.refresh(name)
-            self.feed.since(version, None)
+            self.feed.since(version)
 
 
 def sse(name: str, data: Any) -> bytes:

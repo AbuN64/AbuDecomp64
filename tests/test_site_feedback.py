@@ -166,7 +166,7 @@ class FileTest(Fixture):
     def test_filing_publishes_one_feedback_filed_event_that_wakes_the_stream(self):
         version, _ = self.server.feed.snapshot()
         record = self.file()
-        after, changed = self.server.feed.since(version, 0)
+        after, changed = self.server.feed.since(version)
         self.assertEqual(after, version + 1)
         self.assertEqual([e["kind"] for e in changed], ["feedback.filed"])
         self.assertEqual(changed[0]["subject"], record["id"])

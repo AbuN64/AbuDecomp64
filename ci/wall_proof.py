@@ -106,7 +106,7 @@ try:
         print("play:", movie, ids[-1], flush=True)
     stream = urllib.request.urlopen(base + "/api/feed/stream", timeout=PLAYS_SECONDS)
     framed = set()
-    for _ in stream:  # every feed change and keepalive is a moment to read the four tiles
+    for _ in stream:  # every feed change is a moment to read the four tiles
         tiles = {t["id"]: t for t in api(f"/api/wall?offset=0&limit={4 * PLAYS + 8}")["tiles"] if t["id"] in ids}
         framed |= {i for i, t in tiles.items() if t["poll"] > 0}
         # queued is serve's placeholder until a run writes its record; a run is dead when its own end (the signal, no

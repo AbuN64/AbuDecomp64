@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import tempfile
 import threading
 import time
@@ -777,9 +778,22 @@ class HttpTests(Base):
         h.connection, h.wfile = server_end, io.BytesIO()
         return h, client_end
 
+    @staticmethod
+    def received(client):
+        """Everything the handler sent on the connection (it has returned: nothing more comes)."""
+        data = b""
+        while True:
+            try:
+                chunk = client.recv(1 << 20, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                return data
+            if not chunk:
+                return data
+            data += chunk
+
     def test_stream_sends_each_new_picture_when_the_producer_replaces_it_and_ends_with_the_run(self):
         run = self.make_run("v", status="running", speed=1, pid=os.getpid())
-        h, _client = self.stream_handler()
+        h, client = self.stream_handler()
         png = tas_serve.picture(capture_bmp()[0])[0]
         pictures = iter([(1, png, 7), (1, png, 7), (3, png, 9)])
 
@@ -792,7 +806,7 @@ class HttpTests(Base):
             mock.patch.object(tas, "running", side_effect=[True, True, False]),
         ):
             tas_serve.video(h, self.server, run)
-        data = h.wfile.getvalue()
+        data = self.received(client)
         n = len(png)
         self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
         self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[n + 16 : n + 32]), (n, 3, 9))
@@ -800,9 +814,8 @@ class HttpTests(Base):
 
     def test_stream_disconnect_releases_the_viewer(self):
         run = self.make_run("v", status="running", speed=1, pid=os.getpid())
-        h, _client = self.stream_handler()
-        h.wfile = mock.Mock()
-        h.wfile.write.side_effect = BrokenPipeError
+        h, client = self.stream_handler()
+        client.close()
         with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
             tas_serve.video(h, self.server, run)
         grab.assert_called_once()
@@ -835,7 +848,7 @@ class HttpTests(Base):
         run = self.make_run("a", status="running", speed=1, pid=os.getpid())
         (run / tas.AUDIO).write_bytes(b"")
         (run / (tas.AUDIO + ".rate")).write_text("32000")
-        h, _client = self.stream_handler()
+        h, client = self.stream_handler()
 
         calls = []
 
@@ -848,7 +861,7 @@ class HttpTests(Base):
 
         with mock.patch.object(tas, "running", side_effect=running):
             tas_serve.audio(h, self.server, run)
-        self.assertEqual(h.wfile.getvalue()[44:], b"\x01\x00\x02\x00")
+        self.assertEqual(self.received(client)[44:], b"\x01\x00\x02\x00")
 
 
 class SettleTests(Base):
@@ -930,6 +943,54 @@ class LiveTests(Base):
         server.keep("a", True)  # the pin route: it nudges the writer, the finished run is no longer watched
         self.wait(lambda: self.runs()["a"]["pinned"])
         self.assertLess(time.monotonic() - began, 0.5)
+
+    def owned(self, child, status_seen):
+        """A Live whose every write is reported to `status_seen(run statuses)`; the run is renamed into plays whole."""
+        server = tas_serve.Server(self.profile())
+        publish = server.feed.publish_runs
+
+        def seen(runs):
+            publish(runs)
+            status_seen({r["id"]: r["status"] for r in runs})
+
+        server.feed.publish_runs = seen
+        made = self.root / "owned-run"
+        made.mkdir()
+        record = {"id": "own", "movie": "boot-idle", "status": "running", "speed": 0, "started": 1.0, "pid": child.pid}
+        (made / "run.json").write_text(json.dumps(record))
+        return server, made
+
+    def test_a_dead_run_owner_is_noticed_by_its_pidfd_not_the_idle_refresh(self):
+        child = subprocess.Popen(["sleep", "infinity"])
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        going, gone = threading.Event(), threading.Event()
+
+        def seen(statuses):
+            if statuses.get("own") == "running":
+                going.set()
+            elif "own" in statuses:
+                gone.set()
+
+        server, made = self.owned(child, seen)
+        server.live.start()
+        made.rename(self.plays / "own")
+        self.assertTrue(going.wait(30))  # live.json shows the owner running, so the loop holds its pidfd
+        self.assertEqual(len(server.live.owners), 1)
+        child.kill()
+        child.wait()  # the process exits: no record write, no file event
+        self.assertTrue(gone.wait(30))  # only the pidfd can wake the loop; the idle refresh is 60 s away
+        self.assertEqual(server.live.owners[self.plays / "own"], -1)  # reported once, not watched again
+
+    def test_an_owner_already_gone_when_first_watched_is_noticed_at_once(self):
+        child = subprocess.Popen(["sleep", "infinity"])
+        child.kill()
+        child.wait()
+        gone = threading.Event()
+        server, made = self.owned(child, lambda statuses: statuses.get("own") not in (None, "running") and gone.set())
+        server.live.start()
+        made.rename(self.plays / "own")
+        self.assertTrue(gone.wait(30))
 
     def test_poll_ticks_follow_a_running_run_and_a_queued_run_shows(self):
         self.start()
@@ -1062,6 +1123,7 @@ class ReachTests(Base):
         final = bitset([0, 1, 9, 17, 18, 30], 8)
         record = run / tas.RECORD
         record.write_text(json.dumps({"id": "x", "status": "done"}))
+        self.server.reach.sync([])  # Live saw the run's folder change and the run is no longer running
         self.reached(relay, lambda: relay.done)
         self.assertEqual(relay.snapshot()[0], tas_reach.full(14, final))
         self.assertFalse((run / "reach.bin").exists())  # the play is the writer, never serve
@@ -1080,9 +1142,6 @@ class ReachTests(Base):
 
     def test_a_queued_run_is_listened_for_before_its_port_starts_and_until_it_leaves_the_queue(self):
         run = self.server.cfg["runs"] / "plays" / "q1"
-        patch = mock.patch.object(tas_serve, "REACH_READ_TIMEOUT", 0.01)
-        patch.start()
-        self.addCleanup(patch.stop)
         self.server._placeholder("q1", "boot-idle", 0, self.server.cfg["port"], None)
         relay = self.server.reach.runs["q1"]
         self.assertTrue(relay.listening.wait(5))
@@ -1090,9 +1149,12 @@ class ReachTests(Base):
         self.sender(run)(reach_record(1, 5, bitset([2], 8)))  # the port's first record, before the run folder exists
         self.until(lambda: relay.count == 1)
         self.assertEqual(relay.snapshot()[0], reach_record(1, 5, bitset([2], 8)))
-        self.until(lambda: relay.idle >= 3)  # it asked whether the run is alive, and a queued run keeps its socket
+        self.server.reach.sync([])  # Live's sync while the run is queued: it keeps its socket
+        self.sender(run)(reach_record(2, 6, [3], []))
+        self.until(lambda: relay.count == 2)
         self.assertFalse(relay.done)
         self.server._ended("q1")
+        self.server.reach.sync([])  # Live's sync after the queue let it go
         self.until(lambda: relay.done)
         self.assertFalse((run / "reach.bin").exists())  # no folder was made for it
 

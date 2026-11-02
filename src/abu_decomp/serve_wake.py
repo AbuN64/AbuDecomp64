@@ -1,5 +1,6 @@
-"""What a stream handler blocks on: a producer's file changes (inotify), the peer closing the connection, and at most
-one wake per `gap` seconds (a kernel timer, so a fast producer is sampled, never followed frame by frame)."""
+"""What a stream handler blocks on: a producer's file changes (inotify), the peer closing the connection, the peer's
+socket taking more bytes (POLLOUT; a hangup or error ends the wait) and at most one wake per `gap` seconds (a kernel
+timer, so a fast producer is sampled, never followed frame by frame)."""
 
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ class Wake:
         self.timer = inotify.Timer() if gap else None
         self.names: dict[Path, frozenset[str] | None] = {}
         self.signals: list[int] = []  # pipes (another thread's "something arrived"): readable wakes, drained here
+        self.out = bytearray()  # bytes the peer's socket has not taken yet (`send`)
         self.seen, self.held = True, False  # the first wait returns at once: look before waiting
 
     def __enter__(self) -> Wake:
@@ -55,8 +57,43 @@ class Wake:
     def watching(self) -> set[Path]:
         return set(self.names)
 
+    def send(self, data: bytes) -> bool:
+        """Queue `data` and push what the socket takes now; False when the peer is gone. Never blocks: `flush` (and
+        `wait`) block until the socket has taken everything, on the socket's own signals."""
+        self.out += data
+        try:
+            self.push()
+        except OSError:
+            return False
+        return True
+
+    def push(self) -> None:
+        while self.out:
+            try:
+                sent = self.peer.send(self.out, socket.MSG_DONTWAIT)
+            except BlockingIOError:
+                return
+            del self.out[:sent]
+
+    def flush(self) -> bool:
+        """Block until the socket has taken every queued byte; False when the peer hung up or its socket failed.
+        A stalled phone is a socket that stays unwritable: the kernel ends it with an error, never a clock here."""
+        try:
+            self.push()
+            while self.out:
+                readable, writable, _ = select.select([self.peer], [self.peer], [self.peer])
+                if self.peer in readable and closed(self.peer):
+                    return False
+                if writable or not readable:
+                    self.push()
+        except OSError:
+            return False
+        return True
+
     def wait(self) -> bool:
         """True when a watched file changed and `gap` passed since the last return; False when the peer closed."""
+        if not self.flush():
+            return False
         while True:
             if self.seen and not self.held:
                 self.seen = False

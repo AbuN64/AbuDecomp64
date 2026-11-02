@@ -26,6 +26,31 @@ class WakeTests(unittest.TestCase):
             threading.Timer(0, lambda: (self.dir / "view.bmp").write_text("x")).start()
             self.assertTrue(wake.wait())
 
+    def test_send_never_blocks_and_flush_waits_for_the_socket_to_take_the_bytes(self):
+        self.server_end.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        data = b"x" * (1 << 22)
+        with serve_wake.Wake(self.server_end) as wake:
+            self.assertTrue(wake.send(data))
+            self.assertTrue(wake.out)  # the socket took part; the rest waits, nothing blocked
+            got = []
+
+            def drain():
+                while sum(map(len, got)) < len(data):
+                    got.append(self.client.recv(1 << 16))
+
+            reader = threading.Thread(target=drain)
+            reader.start()
+            self.assertTrue(wake.flush())
+            reader.join(5)
+            self.assertEqual((sum(map(len, got)), bool(wake.out)), (len(data), False))
+
+    def test_flush_ends_when_the_peer_hangs_up_with_bytes_unsent(self):
+        self.server_end.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        with serve_wake.Wake(self.server_end) as wake:
+            wake.send(b"x" * (1 << 22))
+            threading.Timer(0, self.client.close).start()
+            self.assertFalse(wake.flush())
+
     def test_a_signal_pipe_wakes_the_wait_with_no_file_change(self):
         import os
 

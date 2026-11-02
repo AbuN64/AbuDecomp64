@@ -5,7 +5,7 @@
   --s-asm: #555555; --s-exact: #3b7ddd; --s-named: #1aa7a1; --b-ok: #3fc35a; --b-diff: #ff6b5c;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --radius: 10px; --gutter: 16px;
+  --radius: 10px; --gutter: 16px; --side: 340px; --sq: 8px;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) { :root {
@@ -41,8 +41,8 @@ header { position: sticky; top: 0; z-index: 20; display: flex; align-items: cent
 .live.on i { background: var(--good); box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent); }
 
 /* layout */
-.frame { height: calc(100% - 56px); }
-main { overflow: auto; padding: var(--gutter) calc(var(--gutter) * 1.5); }
+.frame { height: calc(100% - 56px); display: grid; grid-template-columns: var(--side) minmax(0, 1fr); }
+main { overflow: auto; padding: var(--gutter) calc(var(--gutter) * 1.5); min-width: 0; }
 h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
   display: flex; align-items: center; gap: 10px; }
 .enh-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 8px 0 18px; }
@@ -63,8 +63,7 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
 .enh-nav { display: flex; align-items: center; gap: 12px; }
 .enh-pill { justify-self: start; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: color-mix(in srgb, currentColor 16%, transparent); }
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface), var(--raised), var(--surface)); background-size: 200% 100%;
-  animation: shimmer 1.4s linear infinite; min-height: 64px; margin-bottom: 10px; }
-@keyframes shimmer { to { background-position: -200% 0; } }
+  min-height: 64px; margin-bottom: 10px; }
 .overview { display: grid; gap: var(--gutter); margin-bottom: 28px; max-width: 980px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
 .card h3 { margin: 0 0 12px; font: 600 15px var(--sans); }
@@ -99,3 +98,44 @@ body.page iframe { width: 100%; border: 0; background: #000; border-radius: var(
 body.viewer { background: #111; height: 100%; }
 body.viewer canvas { display: block; max-width: 100%; max-height: 100vh; margin: auto; outline: none; }
 body.page .nav { display: flex; gap: 12px; margin-left: auto; }
+
+/* The map sidebar (map.js): region groups of still squares, one per function, about half a cursor; the view's
+   three-step legend stays pinned above the grid. On a phone the sidebar sits above the content, capped in height. */
+.sitemap { overflow: auto; border-right: 1px solid var(--line); background: var(--surface); padding: 0 12px 16px; }
+.sitemap .key { position: sticky; top: 0; z-index: 2; background: var(--surface); padding: 12px 0 10px; border-bottom: 1px solid var(--line); }
+.sitemap .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-bottom: 10px; }
+.sitemap .seg[hidden] { display: none; }
+.sitemap .seg button { flex: 1; padding: 5px 0; font-size: 12px; color: var(--dim); }
+.sitemap .seg button[aria-selected="true"] { background: var(--raised); color: var(--text); font-weight: 600; }
+.sitemap .legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 12px; }
+.sitemap .legend li { display: grid; grid-template-columns: var(--sq) 1fr auto; gap: 8px; align-items: center; }
+.sitemap .legend b { font: 500 11px var(--mono); color: var(--dim); }
+.sitemap .groups { display: grid; gap: 12px; padding-top: 12px; }
+.sitemap .grp h3 { display: flex; justify-content: space-between; margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+.sitemap .grp h3 small { font: 11px var(--mono); color: var(--faint); text-transform: none; }
+.sitemap .sqs { display: grid; grid-template-columns: repeat(auto-fill, var(--sq)); gap: 1px; }
+.sitemap .sq, .sitemap .sqs i { display: block; width: var(--sq); height: var(--sq); border-radius: 1px; cursor: pointer; }
+.sitemap .sq.s0 { background: var(--s-asm); opacity: .55; }
+.sitemap .sq.s1 { background: var(--warn); }
+.sitemap .sq.s2 { background: var(--s-exact); }
+.sitemap[data-view="behaviour"] .sq.s1 { background: var(--b-diff); }
+.sitemap[data-view="behaviour"] .sq.s2 { background: var(--b-ok); }
+.sitemap .sqs i:hover { outline: 1px solid var(--text); outline-offset: 0; }
+.sitemap .tip { position: fixed; z-index: 30; max-width: 250px; display: grid; gap: 2px; padding: 6px 8px; font-size: 12px;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 6px; pointer-events: none; }
+.sitemap .tip[hidden] { display: none; }
+.sitemap .tip b { font: 600 12px var(--mono); word-break: break-all; }
+.sitemap .dim { color: var(--dim); }
+dialog.fnmodal { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0;
+  background: var(--bg); color: var(--text); }
+dialog.fnmodal::backdrop { background: var(--bg); }
+dialog.fnmodal .bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; height: 52px; padding: 0 var(--gutter); background: var(--surface); border-bottom: 1px solid var(--line); }
+dialog.fnmodal .body { padding: var(--gutter); max-width: 1280px; margin: 0 auto; }
+body.page .frame { min-height: calc(100vh - 56px); height: auto; }
+@media (max-width: 760px) {
+  .frame, body.page .frame { display: block; height: auto; }
+  html, body { height: auto; }
+  .sitemap { max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  main { padding: var(--gutter); }
+}

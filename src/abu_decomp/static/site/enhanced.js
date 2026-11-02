@@ -37,7 +37,7 @@ export function render(rec) {
   const bar = node("div", { class: "enh-bar" }, ...shares(rec.plan).map(p => node("span", { class: `enh-${p.state}`, style: `width:${p.percent}%`, title: `${p.count} ${LABEL[p.state].toLowerCase()}` })));
   const split = node("p", {}, ...STATES.map(s => node("span", { class: `enh-tag enh-${s}` }, node("b", {}, String(rec.plan[s])), LABEL[s])));
   const b = rec.build, built = b.built ? new Date(b.built * 1000).toLocaleString("en-GB", { hour12: false }) : "never";
-  const nav = node("p", { class: "enh-nav" }, node("a", { class: "btn", href: "#/map" }, "Map"), node("a", { class: "btn", href: b.play }, "Play"),
+  const nav = node("p", { class: "enh-nav" }, node("a", { class: "btn", href: b.play }, "Play"),
     node("span", { class: "dim" }, `port build ${b.pin ? b.pin.slice(0, 12) : "unpinned"}, built ${built}`));
   const path = node("ol", { class: "enh-path" }, ...rec.critical.rows.map(r => node("li", { class: `enh-${r.state}` }, cardLink(rec, r, r.key), node("span", { class: "dim" }, ` ${r.minutes} min`))));
   const finish = node("section", { class: "card enh-finish" }, node("h3", {}, "Finish line"),

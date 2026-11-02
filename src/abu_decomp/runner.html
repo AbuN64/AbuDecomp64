@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="deployed-sha" content="__DEPLOYED_SHA__">
 <title>Runner</title>
-<!-- The Runner site shell (lanes/RUNNER-REDO/PLAN.md): header, routes enhanced / map / fn / stream / play.
+<!-- The Runner site shell (lanes/RUNNER-REDO/PLAN.md): header, the map sidebar on the left (map.js, every route), routes
+     enhanced / stream / play; a function opens as a full-page modal over any route (the hash query `fn`).
      Every feed line is one typed event from /api/feed rendered by its kind's template from /api/contract; new and
      changed events arrive on /api/feed/stream (Server-Sent Events). Regions are modules under /static/site. -->
 <link rel="stylesheet" href="/static/site/site.css">
@@ -16,14 +17,15 @@
   <label class="search"><svg class="i"><use href="/static/icons.svg#i-search"/></svg><input id="q" placeholder="Filter the feed" autocomplete="off"></label>
   <nav class="chips" id="chips" aria-label="live runs"></nav>
   <span class="live" id="live"><i></i>offline</span>
-  <a class="btn" href="#/map"><svg class="i"><use href="/static/icons.svg#i-map"/></svg>Map</a>
   <a class="btn" href="/live" target="_blank">Live</a>
   <a class="btn" href="#/play"><svg class="i"><use href="/static/icons.svg#i-gamepad-2"/></svg>New run</a>
 </header>
 <div class="frame">
+  <aside id="sitemap" aria-label="map"></aside>
   <main id="view"></main>
 </div>
 <script type="module">
+import { mount as mountMap, withFn, routeKey } from "/static/site/map.js";
 // The shell's first paint, read back by the load measurement (LOAD.md): data-fcp is milliseconds from navigation start.
 new PerformanceObserver(list => { for (const e of list.getEntries()) if (e.name === "first-contentful-paint") { document.documentElement.dataset.fcp = Math.round(e.startTime); console.info("first-contentful-paint " + Math.round(e.startTime) + " ms"); } }).observe({ type: "paint", buffered: true });
 const $ = s => document.querySelector(s);
@@ -55,7 +57,7 @@ function line(ev) {
     const name = m[1], v = name === "lane" ? ev.lane : f[name];
     if (name === "lane") out.push(el("b", {}, v));
     else if (name === "movie" && f.run) out.push(el("a", { href: `#/stream/${encodeURIComponent(f.run)}` }, fmt(v)));
-    else if (name === "target") out.push(el("a", { href: `#/fn/${encodeURIComponent(v)}` }, fmt(v)));
+    else if (name === "target") out.push(el("a", { href: withFn(location.hash, v) }, fmt(v)));
     else out.push(typeof v === "number" ? el("span", { class: "n" }, fmt(v)) : fmt(v));
   }
   out.push(t.slice(last));
@@ -91,14 +93,17 @@ const ctx = {
   stub: (what, card) => el("div", { class: "stub" }, `The ${what} is not built yet: card `, el("b", {}, card), " fills this region."),
   route: null,
 };
-const REGION = { fn: "fn", stream: "stream", play: "play", map: "map" };
+const REGION = { stream: "stream", play: "play" }; // the map is the sidebar, a function the modal: neither is a route
 function parse() {
   const [path, query = ""] = location.hash.replace(/^#\/?/, "").split("?");
   const [name = "", ...rest] = path.split("/");
   return { name, arg: decodeURIComponent(rest.join("/")), query: Object.fromEntries(new URLSearchParams(query)) };
 }
+let mounted = null; // the route key on screen: a hash change that only opens or closes the modal keeps the page
 async function show() {
   const r = ctx.route = parse(), view = $("#view");
+  if (routeKey(location.hash) === mounted) return;
+  mounted = routeKey(location.hash);
   document.body.dataset.route = REGION[r.name] ? r.name : "enhanced";
   if (!REGION[r.name]) {
     const status = el("div", { class: "overview", id: "overview" }, el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
@@ -127,6 +132,7 @@ function boot() {
   addEventListener("hashchange", show);
   show();
   connect();
+  contract().then(() => mountMap($("#sitemap"), ctx), () => mountMap($("#sitemap"), ctx));
   api("/api/feed").then(first => { for (const ev of first.events) S.events.set(ev.id, ev); renderFeed(); });
   contract().then(renderFeed, error => $("#feed")?.replaceChildren(el("li", { class: "empty" }, error.message)));
 }

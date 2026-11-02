@@ -1,10 +1,16 @@
-"""The Runner site's one page frame: every page links /static/site/site.css and shares the head and header."""
+"""The Runner site's one page frame: every page links /static/site/site.css and shares the head, header and the map
+sidebar (static/site/map.js, booted on its own since these pages have no runner shell)."""
 
 from html import escape
 
 STYLESHEET = "/static/site/site.css"
 LINK = f'<link rel="stylesheet" href="{STYLESHEET}">'
 NAV = (("/", "Runs"), ("/live", "Live"), ("/coverage/", "Coverage"))
+SIDEBAR = (
+    '<aside id="sitemap" aria-label="map"></aside>'
+    '<script type="module">import { boot } from "/static/site/map.js";'
+    ' boot(document.getElementById("sitemap"));</script>'
+)
 META = '<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
 
 
@@ -20,12 +26,12 @@ def header(here: str = "") -> str:
 
 
 def document(title: str, body: str, *, here: str = "", cls: str = "page", chrome: bool = True) -> str:
-    """A complete page: head with the shared stylesheet, the site header (unless `chrome` is False), `body` in main."""
-    top = header(here) if chrome else ""
-    return (
-        f'<!doctype html><html lang="en"><head>{head(title)}</head>'
-        f'<body class="{cls}">{top}<main>{body}</main></body></html>'
+    """A complete page: head with the shared stylesheet; with `chrome`, the site header and the map sidebar left of
+    `body` in main; without it, `body` in main alone."""
+    content = (
+        f'{header(here)}<div class="frame">{SIDEBAR}<main>{body}</main></div>' if chrome else f"<main>{body}</main>"
     )
+    return f'<!doctype html><html lang="en"><head>{head(title)}</head><body class="{cls}">{content}</body></html>'
 
 
 def wrap_report(page: bytes) -> bytes:

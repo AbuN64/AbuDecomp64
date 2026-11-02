@@ -37,20 +37,6 @@ TEMPLATES = {
 }
 FIELD = re.compile(r"\{(\w+)\}")
 
-# Map filters: a box is lit when any checked filter selects it (bit set in its flags); all unchecked = all dark.
-FILTERS = (
-    ("named", "C, clean name"),
-    ("exact", "C matches"),
-    ("asm", "still assembly"),
-    ("exercised", "port ran it"),
-    ("original-only", "only the original ran it"),
-    ("behaves", "calls equal"),
-    ("differs", "a call differs"),
-    ("feedback", "human flag"),
-    ("streamed", "recorded stream hits it"),
-)
-FILTER_BITS = {key: 1 << index for index, (key, _) in enumerate(FILTERS)}
-
 # Regions whose GET answer is a snapshot: built off the request path, refreshed by the feed's run events.
 SNAPSHOTS = ("map", "enhanced")
 
@@ -66,10 +52,9 @@ REGIONS = {
 
 
 def contract() -> dict[str, Any]:
-    """What the page and agents read once: templates, filters with their bits, run kinds, feedback categories."""
+    """What the page and agents read once: templates, run kinds, feedback categories."""
     return {
         "templates": TEMPLATES,
-        "filters": [{"key": key, "bit": FILTER_BITS[key], "label": label} for key, label in FILTERS],
         "run_kinds": list(RUN_KINDS),
         "feedback_categories": list(FEEDBACK_CATEGORIES),
         "regions": {name: card for name, (_, card) in REGIONS.items()},

@@ -43,12 +43,6 @@ class ContractTest(unittest.TestCase):
             self.assertIn(f'"{kind.split(":")[0]}"', page, kind)
             self.assertNotIn("{}", template)
 
-    def test_filters_have_distinct_single_bits_in_contract_order(self):
-        filters = site_core.contract()["filters"]
-        bits = [f["bit"] for f in filters]
-        self.assertEqual(bits, [1 << i for i in range(len(filters))])
-        self.assertEqual([f["key"] for f in filters][:3], ["named", "exact", "asm"])
-
     def test_contract_names_the_three_run_kinds_and_the_card_of_every_region(self):
         got = site_core.contract()
         self.assertEqual(got["run_kinds"], ["unit", "set", "tas"])
@@ -173,11 +167,18 @@ class EndpointTest(unittest.TestCase):
 class PageTest(unittest.TestCase):
     def test_the_page_loads_every_region_module_that_ships(self):
         page = (ROOT / "runner.html").read_text()
-        for path in ("/api/contract", "/api/feed", "/api/feed/stream", "/static/site/", "/static/icons.svg", "#/map"):
+        for path in (
+            "/api/contract",
+            "/api/feed",
+            "/api/feed/stream",
+            "/static/site/",
+            "/static/icons.svg",
+            '<aside id="sitemap"',
+        ):
             self.assertIn(path, page)
         # viewer.js is the display viewer's own page script, not a region module: it has no mount()
         shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - {"viewer"}
         self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
-        self.assertIn('map: "map"', page)  # the map is a whole-page route
+        self.assertNotIn('map: "map"', page)  # the map is the sidebar on every route, not a page
         for name in shipped:
             self.assertRegex((ROOT / "static" / "site" / f"{name}.js").read_text(), r"export function mount\(el, ctx\)")

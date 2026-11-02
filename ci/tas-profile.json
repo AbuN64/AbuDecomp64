@@ -28,6 +28,7 @@
     "timeout_seconds": 180,
     "serve": {
       "listen": "0.0.0.0:8099",
+      "live": "1280x720",
       "keep_days": 3,
       "jobs": 4,
       "inbox": "${home}/rig-state/tas/inbox.md",

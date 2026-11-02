@@ -682,6 +682,21 @@ class TemplateTests(unittest.TestCase):
         tas.settings(profile)
         self.assertNotIn("${", text)
 
+    def test_the_template_names_a_live_display_size_so_the_site_keeper_runs_and_watch_redirects(self):
+        # Regression slice (3cShXLNHMCud): the template had no tas.serve.live, so the deployed site's /watch answered
+        # 404 "the profile names no tas.serve.live display size, so no live game".
+        from abu_decomp import config, display
+
+        text = deploy_rig.render_profile(TEMPLATE_FILE.read_text(), "/home/example", {"w": "192.0.2.7"})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "profile.json"
+            path.write_text(text)
+            serve = config.load_profile(path).section("tas")["serve"]
+        self.assertIn("live", serve)
+        width, height = display.parse_size(serve["live"])
+        self.assertGreater(width, 0)
+        self.assertGreater(height, 0)
+
     def test_the_template_names_the_reviewed_ledger_beside_the_seat_executable_so_a_play_passes_tas_ledger(self):
         from abu_decomp import config, tas
 

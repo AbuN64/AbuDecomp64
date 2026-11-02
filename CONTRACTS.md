@@ -128,6 +128,19 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 `first` (null, or the first divergence with its `class`), `divergences` {`input`, `vi`, `calls`, `memory`}: per class
 the persistent divergences in poll order, each with its `poll`.
 
+Census: `lockstep.py check RUN` refuses a run whose reach.bin has no run.json `census`, whose census names a fnrows
+file the site (`<tas.runs>/site`) no longer has with that sha256 and row count, whose reach.bin is not ceil(rows/8)
+bytes, or whose pad bits past the last row are set. A run with neither reach.bin nor census has no reach to check.
+`tas.play` records the census when it names the port its fnrows file (`N64C_REACH_ROWS`): the census is the file the
+port loaded, not one a later bake wrote.
+
+`coverage.tsv` columns: `reached` is the function's reach.bin bit (`yes`/`no`); `calls` the count of
+`lockstep/port/calls.jsonl` `call` lines (with `o`) whose `fn` names it; `diverged` the count of match.json
+`divergences.calls` entries whose `fn` names it; `equal` is `yes` only when reached, calls > 0 and diverged = 0, else
+`no`. Memory, vi and input divergences are movie-level in match.json and are attributed to no function. The tool exits
+2 when match.json, calls.jsonl or the census is missing (never an empty join); its last stdout line is
+`census <sha256> rows=<n> reached=<r> equal=<e>`.
+
 Every `tas` play writes `lockstep/port/` (poll and call lines); `decomp tas play MOVIE --oracle --lockstep` also writes
 `lockstep/oracle/` and, once both ended, `lockstep/match.json` (output in `lockstep/lockstep.txt`; the run's `oracle.lockstep` keeps the exit, 0 matched,
 1 diverged, 2 refused, the matched-through poll and the first divergence). The site names the oracle's side `oracle`

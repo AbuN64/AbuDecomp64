@@ -17,7 +17,6 @@ from typing import Any
 from abu_decomp import DecompError, tas, tas_stream
 
 
-
 def refusal(code: str, run: str, side: str | None = None, poll: str | None = None) -> tuple[int, dict[str, Any]]:
     return HTTPStatus.NOT_FOUND, {"kind": "error", "code": code, "run": run, "side": side, "poll": poll}
 

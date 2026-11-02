@@ -1,5 +1,6 @@
 """The run-folder routes of `decomp tas serve`: `/shot/RUN` and `/diff/RUN` (the oracle's compared polls), `/still/RUN`
-(the lockstep stream's recorded frames) and `/log/RUN` (the run's output text). A run that is not there is refused 404 before any of them is called."""
+(the lockstep stream's recorded frames) and `/log/RUN` (the run's output text). A run that is not there is refused 404
+before any of them is called."""
 
 from __future__ import annotations
 

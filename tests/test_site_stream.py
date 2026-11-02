@@ -158,7 +158,7 @@ class StreamTests(unittest.TestCase):
         assert site_stream.answer(server, "POST", "bare", "", b"")[0] == HTTPStatus.METHOD_NOT_ALLOWED
 
     def test_a_still_is_served_and_a_bad_side_or_poll_refuses_typed(self):
-        server, tmp_path = self.server, self.tmp
+        tmp_path = self.tmp
         run = make_run(tmp_path)
         tas_stream.pack(run)
         status, body, kind = still(run, "side=original&poll=25")

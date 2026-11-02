@@ -60,7 +60,7 @@ out.after = map.sessionRows(rows, seen).map(r => r[3]);
 out.tally = map.tally(map.sessionRows(rows, seen), "behaviour");
 out.scoped = map.SESSION;
 out.controls = play.controls();
-// the painter: frames between two animation frames collapse to the newest stamp; an older stamp never repaints
+// the painter: frames between two display refreshes collapse to the newest stamp; an older stamp never repaints
 const ticks = [], painted = [];
 const show = play.painter(b => { painted.push(b); }, fn => ticks.push(fn));
 const tick = async () => { ticks.shift()(); await Promise.resolve(); await Promise.resolve(); };
@@ -94,7 +94,7 @@ class SessionGridTest(unittest.TestCase):
         self.assertEqual(self.got["frames"], [[8, 7], [8, 2**40]])  # each picture with its capture stamp
         self.assertEqual(self.got["reaches"], [[3, 40, 1, 200]])
 
-    def test_painter_paints_the_newest_stamp_once_per_animation_frame(self) -> None:
+    def test_painter_paints_the_newest_stamp_once_per_display_refresh(self) -> None:
         self.assertEqual(self.got["painted"], ["b", "c"])
         self.assertEqual(self.got["shown"], 30)
 

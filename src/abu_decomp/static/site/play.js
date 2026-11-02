@@ -217,8 +217,8 @@ function flagDialog(ctx, S, live) {
   return { el: dialog, open: (run, at) => { if (!live() || !run) return; poll.value = String(at); text.value = ""; status.textContent = ""; dialog.showModal(); } };
 }
 
-/** The painter of one canvas: `offer` keeps the newest frame by its capture stamp, and each animation frame decodes and
- * paints it if its stamp is newer than the one shown; frames that arrive between two animation frames are dropped, never
+/** The painter of one canvas: `offer` keeps the newest frame by its capture stamp, and each display refresh (rAF) decodes and
+ * paints it if its stamp is newer than the one shown; frames that arrive between two refreshes are dropped, never
  * replayed as a burst, and an older stamp never repaints over a newer one. */
 export function painter(paint, raf = requestAnimationFrame) {
   let pending = null, shown = -1, busy = false, live = true;

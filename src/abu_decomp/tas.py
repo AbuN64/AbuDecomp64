@@ -44,7 +44,7 @@ the point. `point list` shows which game areas have a point.
 A replay runs under the supervisor's gdb bridge with the port's stop function as the breakpoint, so a stop or a
 host fault leaves the failing stack and every thread's stack in the run folder. The outcome is one of `ok`,
 `stop` (the port's own boot stop, with its subject), `crash` (a host fault or signal), `hang` (no exit within
-`timeout_seconds`) or `exit` (any other exit code).
+`timeout_seconds`, at turbo no new poll within it) or `exit` (any other exit code).
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ import json
 import os
 import re
 import resource
+import select
 import shutil
 import signal
 import socket
@@ -72,6 +73,7 @@ from typing import Any
 
 from abu_decomp import (
     DecompError,
+    inotify,
     procguard,
     tas_coverage,
     tas_fault,
@@ -778,34 +780,52 @@ def archive(cfg: dict[str, Any], keep_days: float, now: float | None = None) -> 
     return gone
 
 
-def _wait(process: subprocess.Popen, timeout: float, run: Path | None = None) -> tuple[int | None, float]:
-    """(exit code or None after a kill at the timeout, CPU seconds of the run's whole process tree).
+def _reap(process: subprocess.Popen, *, hung: bool = False) -> tuple[int | None, float]:
+    """Reap only this child, retaining its process-tree CPU accounting."""
+    if hung:
+        os.killpg(process.pid, signal.SIGKILL)
+    _, status, usage = os.wait4(process.pid, 0)
+    process.returncode = os.waitstatus_to_exitcode(status)
+    return None if hung else process.returncode, round(usage.ru_utime + usage.ru_stime, 1)
 
-    Once live input drives the run (`run/taken`), the timeout no longer applies: it is a hang after STALL_SECONDS
-    without a poll. wait4 returns the rusage of the child and every descendant it reaped, so one replay's CPU is its
-    own even while other replays run in this process."""
-    end = time.monotonic() + timeout
-    last, moved = -1, time.monotonic()
-    while True:
-        if run is not None:
-            _check_play_signal()
-        pid, status, usage = os.wait4(process.pid, os.WNOHANG)
-        if pid:
-            process.returncode = os.waitstatus_to_exitcode(status)
-            return process.returncode, round(usage.ru_utime + usage.ru_stime, 1)
-        if run is not None and (run / GATED).exists():
-            end = time.monotonic() + timeout  # held by the gate on a signal: neither the timeout nor a stall applies
-        elif run is not None and (run / TAKEN).exists():
-            poll = last_poll(run / HASH)
-            if poll != last:
-                last, moved = poll, time.monotonic()
-            end = moved + STALL_SECONDS
-        if time.monotonic() > end:
-            os.killpg(process.pid, signal.SIGKILL)
-            _, status, usage = os.wait4(process.pid, 0)
-            process.returncode = os.waitstatus_to_exitcode(status)
-            return None, round(usage.ru_utime + usage.ru_stime, 1)
-        time.sleep(0.05)
+
+def _wait(
+    process: subprocess.Popen, timeout: float, run: Path | None = None, until: int | None = None
+) -> tuple[int | None, float]:
+    """Wait for this child's exit; file events renew a progressing replay's configured failure bound.
+
+    The oracle has its own waiter. Its exit cannot complete or cancel the port.
+    A held gate suspends the bound; releasing it grants the configured allowance.
+    """
+    with contextlib.ExitStack() as stack:
+        pidfd = os.pidfd_open(process.pid)
+        stack.callback(os.close, pidfd)
+        watcher = inotify.Watcher() if run is not None else None
+        if watcher:
+            stack.callback(watcher.close)
+            watcher.add(run, inotify.CREATE | inotify.MODIFY | inotify.MOVED_TO | inotify.DELETE)
+        inputs = [pidfd] + ([watcher.fd] if watcher else [])
+        end = time.monotonic() + timeout
+        last, was_held = -1, False
+        while True:
+            if run is not None:
+                _check_play_signal()
+                held = (run / GATED).exists()
+                taken = (run / TAKEN).exists()
+                poll = last_poll(run / HASH) if taken or until is not None else -1
+                progress = poll > last and (taken or poll <= until)
+                if progress or (was_held and not held):
+                    end = time.monotonic() + timeout
+                if progress:
+                    last = poll
+                was_held = held
+            remaining = None if was_held else max(0, end - time.monotonic())
+            ready, _, _ = select.select(inputs, [], [], remaining)
+            if pidfd in ready:
+                return _reap(process)
+            if not ready:
+                return _reap(process, hung=True)
+            watcher.read()
 
 
 VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
@@ -815,7 +835,6 @@ GATE_VERBS = ("hold", "step", "seek", "run")  # the gate's datagrams; step and s
 _HELD = re.compile(r"n64c-tas: (held at|running from) poll (\d+)")
 ORACLE_HOLD = "oracle-hold.raw"  # the movie prefix the original replays for a run held at a poll
 HUMAN_LABEL = "owner"
-STALL_SECONDS = 20.0  # a run driven by live input is a hang after this long without a poll
 _builds: dict[tuple[str, int, int], str] = {}
 
 
@@ -1667,8 +1686,10 @@ def play(
     if sanitize:  # recoverable reports: one run lists many (tas_sanitize)
         env.update({k: v for k, v in tas_sanitize.options_env().items() if k not in os.environ})
     build = build_id(cfg["port"])
-    # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
+    # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that. At turbo its
+    # wall is the port's own rate, so the timeout counts from the last new poll up to the movie's end (_wait until).
     timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
+    until = None if speed or human else len(polls) + cfg["exit_after"]
     timeout *= tas_sanitize.TIMEOUT_FACTOR if sanitize else 1
     record = {
         "id": run.name,
@@ -1777,7 +1798,7 @@ def play(
                 # stacks.
                 if supervise:
                     process.stdin.close()
-                code, cpu = _wait(process, timeout, run)
+                code, cpu = _wait(process, timeout, run, until)
         finally:
             if collector:
                 collector.finish()  # RUN/reach.bin: the play is the one writer, whether or not a server listens

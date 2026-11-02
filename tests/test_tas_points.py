@@ -16,7 +16,7 @@ T0 = datetime(2026, 10, 22, 22, 0, tzinfo=UTC)
 SHA = hashlib.sha1(b"rom").hexdigest()
 
 
-def _fake_wait(process, timeout, run=None):
+def _fake_wait(process, timeout, run=None, until=None):
     return process.wait(timeout), 1.0
 
 

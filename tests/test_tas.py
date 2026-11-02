@@ -75,7 +75,7 @@ class CodecTests(unittest.TestCase):
         self.assertEqual(tas.classify(1, "boom"), {"outcome": "exit", "subject": "exit 1"})
 
 
-def _fake_wait(process, timeout, run=None):
+def _fake_wait(process, timeout, run=None, until=None):
     """tas._wait over a mocked Popen: its wait() stands in for wait4; the CPU reads 1.5 s."""
     try:
         return process.wait(timeout), 1.5
@@ -711,7 +711,7 @@ class MovieTests(unittest.TestCase):
         self.movie("A *600\n")
         seen, waited = [], []
 
-        def wait(process, timeout, run=None):
+        def wait(process, timeout, run=None, until=None):
             waited.append(timeout)
             return process.wait(), 1.0
 
@@ -902,7 +902,7 @@ class MovieTests(unittest.TestCase):
         (cfg["movies"] / "n.tas").write_bytes((cfg["movies"] / "m.tas").read_bytes())
         barrier = threading.Barrier(2)
 
-        def interrupt(process, timeout, run=None):
+        def interrupt(process, timeout, run=None, until=None):
             barrier.wait(timeout=5)
             with tas._starting_play_process():
                 tas._cancel_play(signal.SIGTERM, None)
@@ -959,35 +959,77 @@ class MovieTests(unittest.TestCase):
         self.assertIn(" yes ", text)
 
 
-class StallTests(unittest.TestCase):
-    def test_a_taken_run_is_a_hang_only_after_its_polls_stop(self):
+class TurboWaitTests(unittest.TestCase):
+    """Regression slice: 055254Z port stopped at 29779 while oracle reached 59874."""
+
+    def wait_events(self, events, *, until=59874, taken=False):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
-            (run / "taken").write_text("page\n")
-            clock = [0.0]
-
-            def monotonic():
-                clock[0] += 1.0
-                return clock[0]
-
-            def wait4(pid, flags):
-                if flags == 0:  # the kill's reap
-                    return pid, 9, mock.Mock(ru_utime=1.0, ru_stime=0.0)
-                return 0, 0, None
-
+            if taken:
+                (run / tas.TAKEN).touch()
             process = mock.Mock(pid=4242)
+            watcher = mock.Mock(fd=101)
+            observed = []
+
+            def ready(inputs, _writes, _errors, bound):
+                event = events.pop(0)
+                observed.append(event)
+                if event == "exit":
+                    return [100], [], []
+                if event == "stall":
+                    return [], [], []
+                if event == "hold":
+                    (run / tas.GATED).touch()
+                elif event == "release":
+                    (run / tas.GATED).unlink()
+                else:
+                    (run / tas.HASH).write_text(f"{event} aa\n")
+                return [watcher.fd], [], []
+
             with (
-                mock.patch.object(tas.os, "wait4", wait4),
-                mock.patch.object(tas.time, "sleep"),
-                mock.patch.object(tas.time, "monotonic", monotonic),
+                mock.patch.object(tas.os, "pidfd_open", return_value=100),
+                mock.patch.object(tas.os, "close"),
+                mock.patch.object(tas.inotify, "Watcher", return_value=watcher),
+                mock.patch.object(tas.select, "select", side_effect=ready) as select,
+                mock.patch.object(tas.os, "wait4", return_value=(4242, 0, mock.Mock(ru_utime=2, ru_stime=1))),
                 mock.patch.object(tas.os, "killpg") as kill,
-                mock.patch.object(tas, "last_poll", lambda path: int(min(clock[0], 100))),  # polls stop at t=100
-                mock.patch.object(tas.os, "waitstatus_to_exitcode", return_value=-9),
             ):
-                code, _ = tas._wait(process, timeout=5.0, run=run)
-            self.assertIsNone(code)
-            kill.assert_called_once()
-            self.assertGreater(clock[0], 100 + tas.STALL_SECONDS - 2)  # not at the 5 s timeout: after the stall
+                result = tas._wait(process, 180, run, until)
+            watcher.close.assert_called_once()
+            return result, kill, observed, select
+
+    def test_port_outlives_oracle_and_reaches_last_poll(self):
+        # Oracle's own exit is reaped first; it is absent from the port's descriptors.
+        oracle = mock.Mock(pid=4241)
+        with mock.patch.object(tas.os, "wait4", return_value=(4241, 0, mock.Mock(ru_utime=1, ru_stime=0))):
+            self.assertEqual(tas._reap(oracle), (0, 1))
+        result, kill, observed, select = self.wait_events([29779, 59873, 59874, "exit"])
+        self.assertEqual(result, (0, 3))
+        self.assertEqual(observed, [29779, 59873, 59874, "exit"])
+        kill.assert_not_called()
+        self.assertTrue(all(call.args[0] == [100, 101] for call in select.call_args_list))
+
+    def test_stalled_port_is_killed_and_reaped(self):
+        result, kill, _, _ = self.wait_events([29779, "stall"])
+        self.assertIsNone(result[0])
+        kill.assert_called_once_with(4242, signal.SIGKILL)
+
+    def test_movie_end_does_not_replace_exit(self):
+        result, kill, _, _ = self.wait_events([59874, 59875, "stall"])
+        self.assertIsNone(result[0])
+        kill.assert_called_once()
+
+    def test_held_gate_waits_for_release_signal(self):
+        result, kill, _, select = self.wait_events(["hold", "release", "exit"])
+        self.assertEqual(result[0], 0)
+        self.assertIsNone(select.call_args_list[1].args[3])
+        self.assertIsNotNone(select.call_args_list[2].args[3])
+        kill.assert_not_called()
+
+    def test_taken_run_uses_progress_and_exit_signals(self):
+        result, kill, _, _ = self.wait_events([29779, 59874, "exit"], until=None, taken=True)
+        self.assertEqual(result[0], 0)
+        kill.assert_not_called()
 
 
 class LockstepPollsTests(unittest.TestCase):

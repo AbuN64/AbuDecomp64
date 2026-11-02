@@ -336,7 +336,7 @@ class PlayTests(unittest.TestCase):
                 write_polls(env, "8000 0 0\n" * 50)
                 stdout.write("n64c-tas: done polls=57\n")
 
-        def fake_wait(process, timeout, run=None):
+        def fake_wait(process, timeout, run=None, until=None):
             return 0, 0.5
 
         with mock.patch.object(tas.subprocess, "Popen", Process), mock.patch.object(tas, "_wait", fake_wait):

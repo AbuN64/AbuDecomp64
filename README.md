@@ -57,7 +57,11 @@ cd <repo> && bin/test
 
 `bin/test` is the one entry point and brings its own environment: it makes (or reuses) the repo-local `.venv` (git-ignored)
 from `pyproject.toml`'s dependencies and dev extra (Cake Taste, unbake, Recipe Maker, gcovr, ruff, pytest and the rest), keyed
-on a hash of `pyproject.toml`, so an unchanged tree reuses it at once and a changed one installs again. It needs only a
+on a hash of `pyproject.toml` and of the commit each of our tools has landed at. `pyproject.toml` names our tools bare
+(`unbake`, `recipemaker`, `cake-taste-64`) and pins no commit, so nothing drifts when a tool lands: the entry resolves each
+name to its source repository's landed commit (`abu_decomp.deploy.PACKAGES`, `landed_tools`), the same read the rig deploy's
+`readback` prints. An unchanged tree whose tools have not moved reuses the environment at once; a change in either installs
+again. It needs only a
 `python3` of the version `pyproject.toml` asks for and reads no environment variable to find an interpreter.
 
 - `bin/test` runs the full check (lint, format, every test, the shim build and its tests).

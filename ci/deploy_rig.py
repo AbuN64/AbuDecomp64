@@ -18,8 +18,11 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              abu_decomp path must lie inside the tree. A failing suite exits non-zero, the live and previous links stay;
              on exit 0 the close switches the live link to BUILD and keeps the replaced venv as <toolkit>.previous;
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
-             commit of AbuDecomp64 and of every direct git pin its pyproject has equals the pinned one. Any mismatch
-             refuses (fix forward, no rollback). Then `decomp` is linked by name into the one command directory
+             commit of AbuDecomp64 is the landed one. The tools are pinned by nobody: each is read as installed from its
+             source repository and printed beside the commit that source has landed at (`deploy.landed_tools`, the same
+             read bin/test's clean environment resolves), `current` or `behind`; a tool that is missing or not a git
+             install refuses, a tool behind does not (its own deploy moves it). Any mismatch refuses (fix forward, no
+             rollback). Then `decomp` is linked by name into the one command directory
              `commands` beside the toolkit link, through the live link, and read back: it resolves into the live
              toolkit. The toolkit holds the unbake library but none of its commands (the deploy removes them), and
              nothing but `decomp` is published from here, so a consumer's `unbake` and
@@ -145,29 +148,34 @@ echo "readback-readonly: a write into the live toolkit was refused"
 "$toolkit/bin/python" - "$sha" <<'PY'
 import importlib.metadata
 import json
-import re
 import sys
-import tomllib
+
+from abu_decomp import deploy, tools
 
 sha = sys.argv[1]
-PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)\s*@\s*git\+(?P<url>https://[^@\s]+)@(?P<commit>[0-9a-f]{40})$")
-with open("pyproject.toml", "rb") as handle:
-    project = tomllib.load(handle)["project"]
-pins = {project["name"]: sha}
-for row in project.get("dependencies", []):
-    match = PIN.match(row.strip())
-    if match:
-        pins[match["name"]] = match["commit"]
-bad = []
-for name, commit in sorted(pins.items()):
+
+
+def installed(name):
     try:
         direct = json.loads(importlib.metadata.distribution(name).read_text("direct_url.json") or "{}")
-        installed = direct.get("vcs_info", {}).get("commit_id", "none")
     except importlib.metadata.PackageNotFoundError:
-        installed = "not installed"
-    print(f"readback-pin: {name} {installed}", flush=True)
-    if installed != commit:
-        bad.append(f"{name} is {installed}, the pin is {commit}")
+        return "not installed"
+    return direct.get("vcs_info", {}).get("commit_id", "none")
+
+
+bad = []
+here = installed(tools.DISTRIBUTION)
+print(f"readback-pin: {tools.DISTRIBUTION} {here}", flush=True)
+if here != sha:
+    bad.append(f"{tools.DISTRIBUTION} is {here}, the landed commit is {sha}")
+# A tool installs itself at its landed commit; this deploy carries it as installed and pins none. The landed commit is
+# the one bin/test's clean environment resolves (deploy.landed_tools): a tool behind it is reported, not refused.
+for name, landed in sorted(deploy.landed_tools().items()):
+    have = installed(name)
+    state = "current" if have == landed else "behind"
+    print(f"readback-tool: {name} installed {have} landed {landed} {state}", flush=True)
+    if len(have) != 40:
+        bad.append(f"{name} is {have}, it must be installed from its source {deploy.PACKAGES[name]}")
 if bad:
     sys.exit("readback: " + "; ".join(bad))
 PY

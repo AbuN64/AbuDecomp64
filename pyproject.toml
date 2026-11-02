@@ -10,15 +10,16 @@ readme = "README.md"
 license = {file = "LICENSE"}
 classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
 requires-python = ">=3.13"
-# Our own tools are pinned to the commit they landed at, so a clean install (bin/test makes .venv from this list) fetches them.
+# Our own tools are bare names: each installs itself into the toolkit at its landed commit, and a clean install (bin/test
+# makes .venv from this list) resolves each name to the commit its source repository has landed at (abu_decomp.deploy.PACKAGES).
 dependencies = [
   "textual==8.2.8",
   "pycparser==3.0",
   "gcovr==8.3",
   "pillow==13.0.0",  # shared capture decoder + bounded JPEG video for the TAS viewer
-  "unbake @ git+https://github.com/AbuN64/cake-unbake-64@b7675b8d9a8c81595677361883a79e172a753021",
-  "recipemaker @ git+https://github.com/AbuN64/recipe-maker-64@d144464c4f1e983e250167b6959621eb8e7cf010",
-  "cake-taste-64 @ git+https://github.com/AbuN64/cake-taste-64@4be53819b92a61198f774554e1038b4921a7c708",
+  "unbake",
+  "recipemaker",
+  "cake-taste-64",
 ]
 
 [project.optional-dependencies]

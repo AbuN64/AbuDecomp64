@@ -74,6 +74,7 @@ PACKAGES = {
     "cake-taste-64": "https://github.com/AbuN64/cake-taste-64",
 }
 SHA = re.compile(r"[0-9a-f]{40}")
+_HEAD = re.compile(r"^([0-9a-f]{40})\tHEAD$", re.MULTILINE)
 _EXACT = re.compile(r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_*-]+$")
 
 
@@ -107,6 +108,36 @@ def requirements_at(project: Path, remote: str, branch: str, sha: str | None) ->
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
     done = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, check=False)
     return done.returncode, (done.stdout + done.stderr)[-200_000:]
+
+
+def landed_commit(url: str, run: Run = run_command) -> str:
+    """The commit a tool's source repository is at now (its HEAD), the one place that says where a tool has landed."""
+    code, output = run(["git", "ls-remote", url, "HEAD"], None)
+    found = _HEAD.search(output)
+    if code or not found:
+        raise DeployError("deploy.landed", f"{url}: git ls-remote HEAD failed: {output.strip()[-300:] or 'no HEAD'}")
+    return found[1]
+
+
+def landed_tools(run: Run = run_command) -> dict[str, str]:
+    """Distribution name -> landed commit for every tool of ours but this package (the same read for a clean
+    environment and for the deploy's readback, so the two can never name different commits)."""
+    return {name: landed_commit(url, run) for name, url in PACKAGES.items() if name != tools.DISTRIBUTION}
+
+
+def clean_requirements(dependencies: Sequence[str], run: Run = run_command) -> list[str]:
+    """`dependencies` for a clean install: each bare name of our tools becomes `name @ git+URL@landed commit`, so pip
+    can fetch it; every other row stays as written. The repository pins no tool by commit (a pin drifts each time a
+    tool lands and strands the next deploy), so a tool is only ever named."""
+    rows: list[str] = []
+    landed: dict[str, str] = {}
+    for row in dependencies:
+        name = row.strip()
+        if name in PACKAGES and name != tools.DISTRIBUTION:
+            landed = landed or landed_tools(run)
+            row = f"{name} @ git+{PACKAGES[name]}@{landed[name]}"
+        rows.append(row)
+    return rows
 
 
 def check_sha(label: str, value: str) -> str:

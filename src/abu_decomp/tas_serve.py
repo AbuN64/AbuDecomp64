@@ -1020,6 +1020,8 @@ class Live:
         self.watched: set[Path] = set()
         self.watcher: inotify.Watcher | None = None
         self.owners: dict[Path, int] = {}  # run -> pidfd of its owner; -1 once gone
+        self.halted = threading.Event()
+        self.thread: threading.Thread | None = None
 
     def touch(self) -> None:
         """Something the watch cannot see changed (a queued run, a pin): rewrite soon."""
@@ -1113,7 +1115,7 @@ class Live:
         self.sync()
         dirty = event = True  # event: something happened, not just the idle clock
         held = False  # the gap timer runs: no write before it goes off
-        while True:
+        while not self.halted.is_set():
             if dirty and not held:
                 dirty, held = False, True
                 gap.arm(LIVE_GAP_SECONDS)
@@ -1138,15 +1140,28 @@ class Live:
             if self.wake_r in ready:
                 inotify.drain(self.wake_r)
                 dirty = event = True
+            if self.halted.is_set():
+                break
             if watcher.fd in ready:
                 structural, moved = self.classify(watcher.read())
                 if structural:
                     self.sync()  # a new run's reader must listen before its port sends its first record
                 dirty = dirty or moved
                 event = event or moved
+        watcher.close()
+        gap.close()
+        idle.close()
 
     def start(self) -> None:
-        threading.Thread(target=self.loop, daemon=True, name="live").start()
+        self.thread = threading.Thread(target=self.loop, daemon=True, name="live")
+        self.thread.start()
+
+    def stop(self) -> None:
+        """End the loop and return once its thread has exited: it writes nothing after this returns."""
+        self.halted.set()
+        self.touch()
+        if self.thread is not None:
+            self.thread.join()
 
 
 class RunReach:

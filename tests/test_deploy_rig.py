@@ -404,25 +404,44 @@ class BuildNameTests(unittest.TestCase):
 
 
 class ReadbackScriptTests(ScriptCase):
-    """The READBACK script against a stand-in venv: a link check, then the installed commit of each pin."""
+    """The READBACK script against a stand-in venv: a link check, the installed commit of this package, then each tool
+    as installed beside the commit its source repository has landed at (local repositories stand in for the sources)."""
 
-    PIN = "c" * 40
+    REPO = Path(__file__).parent.parent
 
     def setUp(self):
         super().setUp()
+        from abu_decomp import deploy
+
+        self.deploy = deploy
+        self.name = deploy.tools.DISTRIBUTION
         self.repo = self.root / "worktree"
         self.repo.mkdir()
-        (self.repo / "pyproject.toml").write_text(
-            '[project]\nname = "tiny-decomp"\n'
-            f'dependencies = ["textual==8.2.8", "tool-one @ git+https://example.lan/tool-one@{self.PIN}"]\n'
-        )
+        self.landed = {}
+        for tool, url in deploy.PACKAGES.items():
+            if tool != self.name:
+                remote = self.root / "sources" / url.rsplit("/", 1)[-1]
+                remote.mkdir(parents=True)
+                git("init", "-q", "-b", "main", cwd=remote)
+                git("commit", "-q", "--allow-empty", "-m", tool, cwd=remote)
+                head = subprocess.run(
+                    ["git", "rev-parse", "HEAD"], cwd=remote, capture_output=True, text=True, check=True
+                )
+                self.landed[tool] = head.stdout.strip()
+        # git's own url rewriting points every github source at the local repositories
+        self.git_env = {
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": f"url.file://{self.root}/sources/.insteadOf",
+            "GIT_CONFIG_VALUE_0": "https://github.com/AbuN64/",
+        }
         self.site = self.root / "site"
         self.venv = self.root / "venv.build"
-        wrapper(self.venv / "bin/python", f'PYTHONPATH="{self.site}" exec "{sys.executable}" "$@"')
+        wrapper(self.venv / "bin/python", f'PYTHONPATH="{self.site}:{self.REPO / "src"}" exec "{sys.executable}" "$@"')
         self.toolkit = self.root / "venv-live"
         self.toolkit.symlink_to(self.venv)
-        self.dist("tiny-decomp", SHA)
-        self.dist("tool-one", self.PIN)
+        self.dist(self.name, SHA)
+        for tool, commit in self.landed.items():
+            self.dist(tool, commit)
         self.seal()
         self.addCleanup(subprocess.run, ["chmod", "-R", "u+w", str(self.venv)], check=False)
 
@@ -437,13 +456,31 @@ class ReadbackScriptTests(ScriptCase):
         (info / "direct_url.json").write_text(json.dumps(direct))
 
     def readback(self, build=None):
-        return self.bash(deploy_rig.READBACK, SHA, str(self.toolkit), str(build or self.venv), cwd=self.repo)
+        env = sh_env(**self.git_env)
+        return self.bash(deploy_rig.READBACK, SHA, str(self.toolkit), str(build or self.venv), cwd=self.repo, env=env)
 
-    def test_matching_pins_and_link_exit_0_and_print_each_installed_commit(self):
+    def test_current_tools_and_link_exit_0_and_print_each_installed_and_landed_commit(self):
         done = self.readback()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
-        self.assertIn(f"readback-pin: tiny-decomp {SHA}", done.stdout)
-        self.assertIn(f"readback-pin: tool-one {self.PIN}", done.stdout)
+        self.assertIn(f"readback-pin: {self.name} {SHA}", done.stdout)
+        for tool, commit in self.landed.items():
+            self.assertIn(f"readback-tool: {tool} installed {commit} landed {commit} current", done.stdout)
+
+    def test_readback_and_the_clean_environment_resolve_the_same_commit_for_each_tool(self):
+        done = self.readback()
+        with mock.patch.dict(os.environ, self.git_env):
+            specs = self.deploy.clean_requirements(["textual==8.2.8", *self.landed])
+        for tool, commit in self.landed.items():
+            (spec_row,) = [row for row in specs if row.startswith(tool + " @ ")]
+            self.assertTrue(spec_row.endswith(f"@{commit}"), spec_row)
+            self.assertIn(f"readback-tool: {tool} installed {commit} landed {commit} current", done.stdout)
+        self.assertIn("textual==8.2.8", specs)
+
+    def test_a_tool_behind_its_source_is_reported_not_refused(self):
+        self.dist("unbake", "9" * 40)
+        done = self.readback()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"readback-tool: unbake installed {'9' * 40} landed {self.landed['unbake']} behind", done.stdout)
 
     def test_a_read_only_live_tree_prints_the_refused_write_and_a_writable_one_exits_1(self):
         done = self.readback()
@@ -455,16 +492,16 @@ class ReadbackScriptTests(ScriptCase):
         self.assertIn("must be read-only", done.stderr)
         self.assertFalse((self.venv / ".readonly-probe").exists())
 
-    def test_a_pin_installed_at_another_commit_or_missing_exits_1_naming_it(self):
-        self.dist("tool-one", "9" * 40)
+    def test_this_package_at_another_commit_or_a_tool_not_from_its_source_exits_1_naming_it(self):
+        self.dist(self.name, "9" * 40)
         done = self.readback()
         self.assertEqual(done.returncode, 1)
-        self.assertIn(f"tool-one is {'9' * 40}, the pin is {self.PIN}", done.stderr)
-        for path in (self.site / "tiny_decomp-1.0.dist-info").iterdir():
-            path.unlink()
-        (self.site / "tiny_decomp-1.0.dist-info").rmdir()
+        self.assertIn(f"{self.name} is {'9' * 40}, the landed commit is {SHA}", done.stderr)
+        self.dist(self.name, SHA)
+        self.dist("unbake", "not-a-commit")
         done = self.readback()
-        self.assertIn("tiny-decomp is not installed", done.stderr)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("unbake is not-a-commit, it must be installed from its source", done.stderr)
 
     def test_a_live_link_that_does_not_resolve_to_the_build_exits_1(self):
         other = self.root / "other"

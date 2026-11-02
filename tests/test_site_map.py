@@ -79,7 +79,7 @@ class ColourTest(unittest.TestCase):
         self.assertEqual(site_map.colour_key("named", bits("behaves", "differs")), "differs")
 
     def test_every_colour_key_has_a_shell_variable(self) -> None:
-        html = (ROOT / "runner.html").read_text()
+        html = (ROOT / "static" / "site" / "site.css").read_text()
         for variable in site_map.COLOURS.values():
             self.assertIn(f"{variable}:", html)
 

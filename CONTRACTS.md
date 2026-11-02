@@ -100,6 +100,8 @@ included: `{"error": "<text>"}` with the status below, and the text names the ru
 named (`no run r9`, `no display 'd-none'`, `no function f`). A request that names nothing is refused with "the body names
 no run" (400), never with an empty id. A refusal always answers; it never hangs the connection.
 
+Every HTML page the site answers (`/`, `/live`, `/viewer/<display>`, `/coverage/...`) links the one stylesheet `/static/site/site.css` and carries no inline `<style>`; module `site_frame` builds the shared head and header, and wraps the generated coverage report with them. Regions of the `/` shell (`#/fn`, `#/stream`, `#/play`, `#/map`) are routes of that page, so they share its stylesheet.
+
 | Route | Answer | Refusal |
 |---|---|---|
 | `GET /`, `/live`, `/coverage/...`, `/static/...` | `text/html`, `text/css`, `text/javascript` | 404 `{"error"}` for a file that is not there |

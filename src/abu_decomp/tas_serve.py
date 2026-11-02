@@ -62,6 +62,7 @@ from abu_decomp import (
     inotify,
     site_core,
     site_enhanced,
+    site_frame,
     site_map,
     site_stream,
     tas,
@@ -1439,7 +1440,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 elif head == "static" and run_id:
                     self.static(STATIC, run_id)
                 elif head == "coverage":
-                    self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html")
+                    self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html", report=True)
                 elif head == "stream" and run_id:
                     status, payload, kind = site_stream.frame(server, run_id)
                     self.reply(payload if isinstance(payload, bytes) else json.dumps(payload).encode(), kind, status)
@@ -1500,7 +1501,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             else:
                 self.reply(image, "image/png")
 
-        def static(self, root: Path, name: str) -> None:
+        def static(self, root: Path, name: str, report: bool = False) -> None:
             """A file below `root` (the gcovr HTML report, the page's static files); a name that leaves it is a 404."""
             path = (root / name).resolve()
             if root.resolve() not in path.parents or not path.is_file():
@@ -1511,7 +1512,10 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 ".js": "text/javascript",
                 ".svg": "image/svg+xml",
             }
-            self.reply(path.read_bytes(), kind.get(path.suffix, "application/octet-stream"))
+            body = path.read_bytes()
+            if report and path.suffix == ".html":
+                body = site_frame.wrap_report(body)  # the generated report links the site stylesheet too
+            self.reply(body, kind.get(path.suffix, "application/octet-stream"))
 
         def frame(self, run: Path | None, name: str = tas.VIEW) -> None:
             path = run / name if run else None

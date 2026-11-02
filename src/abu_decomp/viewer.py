@@ -15,6 +15,7 @@ import struct
 from collections.abc import Callable
 from html import escape
 
+from abu_decomp import site_frame
 from abu_decomp.display import Record
 
 GUID = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -114,30 +115,21 @@ def serve_socket(client: socket.socket, key: str, record: Record, connect: Calla
 def viewer_page(record: Record) -> str:
     """The full-window page of one display: the canvas and the client script, which dials /viewer/<id>/ws."""
     ident = escape(record.identity)
-    return (
-        "<!doctype html><meta charset=utf-8><title>display " + ident + "</title>"
-        "<style>html,body{margin:0;background:#111;height:100%}"
-        "canvas{display:block;max-width:100%;max-height:100vh;margin:auto;"
-        "outline:none}</style>"
+    canvas = (
         f'<canvas id=screen tabindex=0 data-display="{ident}" data-ws="/viewer/{ident}/ws"></canvas>'
         '<script type=module src="/static/site/viewer.js"></script>'
     )
+    return site_frame.document("display " + ident, canvas, cls="viewer", chrome=False)
 
 
 def live_page(records: list[Record]) -> str:
     """The Live view: one embedded viewer per display kept on this site."""
     if not records:
-        return (
-            "<!doctype html><meta charset=utf-8><title>live</title>"
-            "<p>No live display. Start one with <code>decomp display invoke</code>."
-        )
+        empty = "<p>No live display. Start one with <code>decomp display invoke</code>.</p>"
+        return site_frame.document("live", empty, here="/live")
     cells = "".join(
-        f'<figure style="margin:0"><figcaption>{escape(r.identity)} {r.width}x{r.height}</figcaption>'
-        f'<iframe src="/viewer/{escape(r.identity)}"'
-        f' style="width:100%;aspect-ratio:{r.width}/{r.height};border:0"></iframe></figure>'
+        f"<figure><figcaption>{escape(r.identity)} {r.width}x{r.height}</figcaption>"
+        f'<iframe src="/viewer/{escape(r.identity)}" style="aspect-ratio:{r.width}/{r.height}"></iframe></figure>'
         for r in records
     )
-    return (
-        "<!doctype html><meta charset=utf-8><title>live</title>"
-        f"<body style='background:#111;color:#ddd;font:14px sans-serif'>{cells}"
-    )
+    return site_frame.document("live", cells, here="/live")

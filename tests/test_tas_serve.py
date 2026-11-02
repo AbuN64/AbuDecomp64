@@ -693,9 +693,11 @@ class HttpTests(Base):
         self.assertEqual([r["name"] for r in view["neither"]], ["b"])  # sdk rows are not the owner's to record
         self.assertEqual(view["gcovr"], {"line_percent": 1.5})
         with urllib.request.urlopen(self.base + "/coverage/", timeout=10) as reply:
-            self.assertEqual(
-                (reply.headers["Content-Type"], reply.read()), ("text/html; charset=utf-8", b"<html>report</html>")
-            )
+            page = reply.read()
+            self.assertEqual(reply.headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn(b"<html>report</html>", page)  # the generated report, now wearing the site stylesheet and header
+        self.assertIn(b'<link rel="stylesheet" href="/static/site/site.css">', page)
+        self.assertIn(b'<a class="btn" href="/coverage/" aria-current=page>Coverage</a>', page)
         with self.assertRaises(urllib.error.HTTPError) as caught:
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)

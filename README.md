@@ -87,3 +87,8 @@ per slot, and no stamp-specific memory or width. The seat profile's `land.slots`
 updates these values. TAS, replay, proof and stamp builds share AbuCache64's host
 pool; refusal precedes the workload. Owner, interactive, batch and background
 queue in that order, FIFO within each class. No local slot implementation remains.
+
+For a two-repository development proof, prepare the private test environment with
+`py=$(python3 ci/ensure_venv.py)` and
+`"$py" -m pip install --no-deps --editable /path/to/AbuCache64`, then run `bin/test`
+and AbuCache64's `ci/check`. This tests the shared worktree without a global install.

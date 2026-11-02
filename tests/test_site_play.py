@@ -117,7 +117,7 @@ class PlayPageTest(unittest.TestCase):
 
     def test_phone_width_puts_the_grid_above_the_game_without_animation(self) -> None:
         css = (SITE / "site.css").read_text()
-        phone = css[css.index("@media (max-width: 760px)"):]
+        phone = css[css.index("@media (max-width: 760px)") :]
         self.assertIn(".frame, body.page .frame { display: block;", phone)
         self.assertNotIn("animation", (SITE / "play.js").read_text())
         self.assertNotIn("transition", (SITE / "play.js").read_text())

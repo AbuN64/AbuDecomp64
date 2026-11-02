@@ -5,7 +5,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -53,12 +52,18 @@ class HeadlessSupervisorTests(unittest.TestCase):
         supervisor = Supervisor(seat, "port", seat.role("port", "supervised"))
 
         async def scenario():
+            held = asyncio.Event()
+
+            def changed():
+                if supervisor.phase == "held_until_restart":
+                    held.set()
+
+            supervisor.on_change = changed
             supervisor.runs_root.mkdir(parents=True)
             task = asyncio.create_task(supervisor.run_once())
-            while supervisor.phase != "held_until_restart":
-                await asyncio.sleep(0.02)
+            await held.wait()
             supervisor.restart.set()
-            return await asyncio.wait_for(task, 5)
+            return await task
 
         self.assertFalse(asyncio.run(scenario()))
         status = json.loads((self.root / "status/port.json").read_text())
@@ -85,40 +90,69 @@ class HeadlessSupervisorTests(unittest.TestCase):
             SupervisorProfile(load_profile(self.seat))
         self.assertIn("runtime_root", caught.exception.detail)
 
-    def test_run_is_headless_and_answers_sighup_and_sigterm(self):
-        env = dict(os.environ, PYTHONPATH=SRC + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    def start_supervisor(self, source=SRC):
+        env = dict(os.environ, PYTHONPATH=source + os.pathsep + os.environ.get("PYTHONPATH", ""))
         process = subprocess.Popen(
             [sys.executable, "-m", "abu_decomp", "--profile", str(self.seat), "supervisor", "run", "--role", "port"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
         )  # fmt: skip
-        self.addCleanup(lambda: process.poll() is None and process.kill())
+
+        def cleanup():
+            if process.poll() is None:
+                process.kill()
+            process.communicate()
+
+        self.addCleanup(cleanup)
+        return process
+
+    def wait_for_held(self, process, attempt):
+        errors = []
+        for line in process.stderr:
+            errors.append(line)
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if value["attempt"] == attempt and value["phase"] == "held_until_restart":
+                return value
+        output, remaining = process.communicate()
+        self.fail(
+            f"supervisor exited ({process.returncode}) before attempt {attempt} held:\n"
+            + "".join(errors)
+            + remaining
+            + output
+        )
+
+    def test_run_is_headless_and_answers_sighup_and_sigterm(self):
+        process = self.start_supervisor()
         status = self.root / "status/port.json"
-
-        def wait_for(attempt):
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if status.is_file():
-                    value = json.loads(status.read_text())
-                    if value["attempt"] == attempt and value["phase"] == "held_until_restart":
-                        return value
-                time.sleep(0.05)
-            self.fail(f"attempt {attempt} never held: {status.read_text() if status.is_file() else None}")
-
-        wait_for(1)
+        first = self.wait_for_held(process, 1)
+        self.assertIsNone(first["terminal_rows_columns"])
+        self.assertEqual(json.loads(status.read_text())["phase"], "held_until_restart")
         # the published pidfile names the process; SIGHUP restarts the held run
         from abu_decomp.supervisor.supervisor import pidfile
 
         self.assertEqual(int(pidfile(status).read_text()), process.pid)
         process.send_signal(signal.SIGHUP)
-        wait_for(2)
+        self.wait_for_held(process, 2)
         process.send_signal(signal.SIGTERM)
-        output, errors = process.communicate(timeout=10)
+        output, errors = process.communicate()
         self.assertEqual(process.returncode, 0, errors)
         envelope = json.loads(output)
         self.assertEqual(envelope["result"], {"closed": True, "role": "port", "status_path": str(status)})
         self.assertFalse(pidfile(status).exists())
         # one RUN-FAIL per distinct failure: the same failure twice is announced once
         self.assertEqual(len(self.feed.read_text().splitlines()), 1)
+
+    def test_import_failure_is_reported_on_child_exit(self):
+        source = self.root / "broken-import"
+        package = source / "abu_decomp"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text('raise ImportError("supervisor dependency is missing")\n')
+        process = self.start_supervisor(str(source))
+        with self.assertRaisesRegex(AssertionError, "ImportError: supervisor dependency is missing"):
+            self.wait_for_held(process, 1)
+        self.assertNotEqual(process.returncode, 0)
 
 
 if __name__ == "__main__":

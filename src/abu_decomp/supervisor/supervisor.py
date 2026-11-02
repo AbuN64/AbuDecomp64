@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shlex
 import signal
@@ -377,9 +378,11 @@ def run_supervisor(profile: Any, role_id: str, config: dict[str, Any]) -> dict[s
     """Run the role headless until SIGTERM or SIGINT. SIGHUP restarts the run now; SIGUSR1 toggles the retry pause.
 
     This process draws nothing; the status file is `status_path`. Its pid is in
-    `pidfile(status_path)` while it runs.
+    `pidfile(status_path)` while it runs. Each persisted status is also published
+    as a flushed JSON line on stderr so callers can wait for lifecycle changes.
     """
     supervisor = Supervisor(profile, role_id, config)
+    supervisor.on_change = lambda: print(json.dumps(supervisor.status()), file=sys.stderr, flush=True)
     published = pidfile(supervisor.status_path)
     published.parent.mkdir(parents=True, exist_ok=True)
     temporary = published.with_name(published.name + ".new")

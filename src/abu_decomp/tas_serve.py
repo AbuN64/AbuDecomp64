@@ -29,8 +29,8 @@ hour runs older than `keep_days` (default 3) that are neither pinned nor their m
 the decomp source the port was built from. Serve gates the regression corpus (module tas_corpus) whenever the port
 binary is a build it has not been gated on and nothing runs. Function state (exact / fuzzy / none) is read from the
 decomp source, as the progress states define it. A run played with the oracle (module tas_oracle) also shows the
-original game: its latest picture (/oracle/<id>), both sides' pictures at each compared poll (/shot/<id>) and the
-scores (/diff/<id>).
+original game: its latest picture (/still/<id>?side=oracle), both sides' pictures at each compared poll
+(/shot/<id>) and the scores (/diff/<id>).
 """
 
 from __future__ import annotations
@@ -70,7 +70,6 @@ from abu_decomp import (
     serve_pages,
     serve_phase,
     serve_run,
-    serve_video,
     serve_wake,
     site_core,
     site_enhanced,
@@ -1544,7 +1543,6 @@ PREFIX = {
 }
 RUN_ROUTES = {
     "video": video,
-    "oracle": serve_video.oracle,
     "shot": serve_run.shot,
     "still": serve_run.still,
     "diff": serve_run.diff,

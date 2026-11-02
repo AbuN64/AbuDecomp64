@@ -191,7 +191,7 @@ class CompareTests(unittest.TestCase):
         (self.run_dir / "oracle-trace.txt").write_text("49 70\n50 71\n")
         record = {"oracle": {**FULL, "status": "done", "every": 25, "polls_reached": 50, "outcome": "ok", "fps": 900.0}}
         got = tas_oracle.summary(self.run_dir, record)
-        self.assertEqual(got["frame"], f"/oracle/{self.run_dir.name}")
+        self.assertEqual(got["frame"], f"/still/{self.run_dir.name}?side=oracle")
         self.assertEqual((got["status"], got["poll"], got["outcome"], got["every"]), ("done", 50, "ok", 25))
         self.assertEqual((got["max_diff"], got["max_poll"], got["diff"], got["diff_poll"]), (1.0, 50, 1.0, 50))
         running = tas_oracle.summary(
@@ -661,10 +661,10 @@ class ServeTests(unittest.TestCase):
     def test_state_oracle_picture_shots_and_scores(self):
         row = self.server.state()["runs"][0]["oracle"]
         self.assertEqual(
-            (row["frame"], row["status"], row["max_diff"], row["max_poll"]), ("/oracle/r1", "done", 1.0, 25)
+            (row["frame"], row["status"], row["max_diff"], row["max_poll"]), ("/still/r1?side=oracle", "done", 1.0, 25)
         )
         self.assertEqual(
-            self.get("/oracle/r1")[1:], ("image/png", tas_serve.picture(tas_oracle.bmp(bytes(W * H * 3)))[0])
+            self.get("/still/r1?side=oracle")[1:], ("image/png", tas_serve.picture(tas_oracle.bmp(bytes(W * H * 3)))[0])
         )
         status, kind, body = self.get("/shot/r1?side=port&poll=25")
         self.assertEqual((status, kind), (200, "image/png"))

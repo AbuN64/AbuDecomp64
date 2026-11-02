@@ -1,6 +1,6 @@
 """The run-folder routes of `decomp tas serve`: `/shot/RUN` and `/diff/RUN` (the oracle's compared polls), `/still/RUN`
-(the lockstep stream's recorded frames) and `/log/RUN` (the run's output text). A run that is not there is refused 404
-before any of them is called."""
+(the lockstep stream's recorded frames and the oracle's latest picture) and `/log/RUN` (the run's output text). A run
+that is not there is refused 404 before any of them is called."""
 
 from __future__ import annotations
 
@@ -58,9 +58,16 @@ def log(req: Any, server: Any, run: Path, query: str = "") -> None:
 
 def still(req: Any, server: Any, run: Path, query: str = "") -> None:
     """`/still/RUN?side=SIDE&poll=N`: one recorded frame of the lockstep stream (module tas_stream). A record the
-    stream page seeks to any poll, not a picture path: the run's one picture path is /video/RUN."""
+    stream page seeks to any poll, not a picture path: the run's one picture path is /video/RUN. The one still
+    without a poll is `?side=oracle`: the original game's latest picture (the port's rides /video/RUN), as a PNG."""
     args = query_args(query)
     side, poll = args.get("side", ""), args.get("poll", "")
+    if side == "oracle" and "poll" not in args:
+        try:
+            stamp, body, seq = server.capture(run / tas_oracle.VIEW)
+        except (OSError, ValueError):
+            return req.missing()
+        return req.reply(body, "image/png", extra={"X-Frame": str(stamp), "X-Input-Seq": str(seq)})
     code = "stream.side" if side not in tas_stream.SIDES else "stream.poll"
     path = tas_stream.frame_path(run, side, int(poll)) if code == "stream.poll" and poll.isdigit() else None
     if path is None or not path.is_file():

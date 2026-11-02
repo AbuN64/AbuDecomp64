@@ -9,7 +9,7 @@ names, and the run folder gets the same files for both sides:
 - the movie: `N64R_TAS_PLAY` = the run's movie.raw (poll-keyed, as the port's `N64C_TAS_PLAY`), `N64R_TAS_EXIT_AFTER`,
   and the run's Expansion Pak (`N64R_PAK` on|off, as the port's `--pak`) and Controller Pak (`N64R_CPAK` = the card
   file, its own copy; unset = no card, as the port's `--cpak`);
-- the latest picture: `N64R_VIEW` = oracle.bmp (the port's `N64C_VIEW` = view.bmp), served as /oracle/<id>;
+- the latest picture: `N64R_VIEW` = oracle.bmp (the port's `N64C_VIEW` = view.bmp), served as /still/<id>?side=oracle;
 - pictures at chosen polls, only when asked (`tas play --oracle-pictures`, the page, or `pictures = true` in this
   section; default off so batch and monkey runs never fill the disk): every `shot_every` polls both write
   shots/<side>/poll-NNNNNN.ppm (`N64C_TAS_SHOT_EVERY` / `N64C_TAS_SHOT_DIR` and the N64R_ twins);
@@ -598,7 +598,7 @@ def summary(run: Path, record: dict[str, Any]) -> dict[str, Any] | None:
     worst = max(rows, key=lambda r: r["diff"]) if rows else None
     latest = rows[-1] if rows else None
     return {
-        "frame": f"/oracle/{run.name}",
+        "frame": f"/still/{run.name}?side=oracle",
         "status": "done" if done else "running",
         "poll": int(meta["polls_reached"]) if "polls_reached" in meta else reached(run),
         "outcome": meta.get("outcome") if done else None,

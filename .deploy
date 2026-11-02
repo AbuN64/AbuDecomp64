@@ -1,6 +1,6 @@
-deploy-env TOOLKIT=/home/abu/venv-decomp
+deploy-input TOOLKIT
 rig run ci/deploy_rig.py name
-rig activate ci/deploy_rig.py /home/abu/venv-decomp build
+rig activate ci/deploy_rig.py $TOOLKIT build
 rig run ci/deploy_rig.py readback
 rig run ci/deploy_rig.py profile
 rig run ci/deploy_rig.py serve

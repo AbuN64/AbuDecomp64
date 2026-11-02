@@ -2,6 +2,7 @@
 """lockstep.py on synthetic oracle/port recordings, and the port recorder (trace.c, N64C_LOCKSTEP=1) on a fixture."""
 
 import argparse
+import collections
 import contextlib
 import importlib.util
 import io
@@ -12,6 +13,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
@@ -529,7 +531,8 @@ int main(void) { memcpy(ram + 0x2000, "\x78\x56\x34\x12", 4); n64c_trace_init();
 """
 
 
-ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381), its 3-poll driver,
+ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381; its meta `frame`
+# `poll` and the call's poll-index stamp 1 as lockstep.cpp writes them since rw1-rec), its 3-poll driver,
 # hashes only, and its dump replay (N64R_LOCKSTEP_DUMP=2:1,2): dump/2/dump.bin holds pages 1 and 2 at poll 2
 PORT_PADS = ["80000000", "1000b050", "040005fb"]  # the port row's n64c_tas_lockstep movie, polls 1..3
 
@@ -781,12 +784,12 @@ class MatchTests(unittest.TestCase):
 
     def test_call_in_another_poll_is_a_calls_divergence(self):
         port = port_from_oracle(args.work / "match-call")
-        text = (port / "lockstep.jsonl").read_text().replace('"frame":7', '"frame":8')
+        text = (port / "lockstep.jsonl").read_text().replace('"frame":1', '"frame":2')
         (port / "lockstep.jsonl").write_text(text)
         code, report, _ = self.run_match(port)
         self.assertEqual(code, 1)
         self.assertEqual([(x["fn"], x["field"], x["oracle"], x["port"]) for x in report["divergences"]["calls"]],
-                         [("f", "poll", 7, 8)])  # fmt: skip
+                         [("f", "poll", 1, 2)])  # fmt: skip
 
     def test_side_without_polls_is_bad_input(self):
         port = port_from_oracle(args.work / "match-nopoll")
@@ -824,6 +827,44 @@ class MatchSliceTests(unittest.TestCase):
             pages = {pg for pg, _ in oracle_pages[poll] + port_pages[poll]}
             listed += sum(oh.get(pg) != ph.get(pg) for pg in pages)
         self.assertEqual(len(reads), 2 * listed)  # each listed page once, never every differing page at every poll
+
+
+# boot-idle on rig 11-02 (measure m-580e: RageWarsEnhanced 580ef0a against the live oracle), both sides cut to polls 0
+# and 1: meta, poll lines (pages emptied), whole-movie call lines. The oracle there stamped its calls with the retrace
+# count, kept 8 calls per caller where the port kept 16, and recorded 4 o32 register words where the port records 8
+# i386 stack words; keyed by (fn, caller, o) the old match listed 4342 poll, 4349 args and 3038 missing rows for this
+# slice (the whole record: 8074, 8081, 7148), every one a recorder artifact. The five calls left really do fall in
+# another poll.
+BOOT_SLICE = ROOT / "fixtures" / "lockstep-boot-idle-580e.tar.xz"
+
+
+class MatchRecordSliceTests(unittest.TestCase):
+    def test_real_boot_idle_slice_lists_only_the_calls_that_fall_in_another_poll(self):
+        work = args.work / "boot-slice"
+        shutil.rmtree(work, ignore_errors=True)
+        with tarfile.open(BOOT_SLICE) as archive:
+            archive.extractall(work, filter="data")
+        sides = work / "lockstep-boot-idle-580e"
+        report = args.work / "boot-slice.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = ls.main(["match", "--oracle", str(sides / "oracle"), "--port", str(sides / "port"),
+                            "--json", str(report)])  # fmt: skip
+        self.assertEqual(code, 1)
+        data = json.loads(report.read_text())
+        calls = data["divergences"]["calls"]
+        self.assertEqual(collections.Counter(x["field"] for x in calls), {"poll": 5})  # no args, no missing
+        self.assertEqual([(x["fn"], x["i"], x["oracle"], x["port"]) for x in calls],
+                         [("Cinema_IsSequenceActive", 3, 0, 1)] +
+                         [("Node_FindWidgetByResourceId", i, 0, 1) for i in range(4, 8)])  # fmt: skip
+        self.assertEqual(data["keep"], {"oracle": 8, "port": 16})
+        # the oracle's native-on-the-port calls are listed, never counted: shim-bound, unlinked or unframed there
+        self.assertEqual(len(data["unrecorded_on_port"]), 114)
+        self.assertIn("Audiomgr_RenderAudioFrame", data["unrecorded_on_port"])
+        oracle = ls.Side(sides / "oracle", lambda r: None)
+        poll_of = {key: r["poll"] for key, r in oracle.movie_calls.items()}
+        self.assertNotIn("frame", oracle.meta)  # the old oracle: retrace stamps, so the poll is its stream position
+        self.assertEqual(poll_of[("Cinema_IsSequenceActive", 3)], 0)
+        self.assertGreater(oracle.movie_calls[("Cinema_IsSequenceActive", 3)]["frame"], 1)  # a retrace, not a poll
 
 
 @unittest.skipUnless(args.m32, "the argument words and the return trampoline are i386")
@@ -990,7 +1031,9 @@ class PortRecorderTests(unittest.TestCase):
             self.assertTrue(all({"fn", "caller", "o", "m"} <= set(x) for x in calls if x["k"] == "ret"))
             movie = ls.Side(both, lambda r: None)
             self.assertEqual(sorted(movie.polls), [1, 2, 3])
-            self.assertEqual(set(movie.movie_calls), {(x["fn"], x["caller"], x["o"]) for x in made})
+            self.assertEqual(set(movie.movie_calls), {(x["fn"], x["i"]) for x in made})  # keyed by (fn, call index)
+            self.assertEqual(movie.keep_limit(), 16)  # the calls meta's `first`
+            self.assertEqual({r["poll"] for r in movie.movie_calls.values()}, {1})  # the port's stamp is its poll
             self.assertTrue(movie.movie_rets and set(movie.movie_rets) <= set(movie.movie_calls))
             plain = subprocess.run(
                 [str(exe)],

@@ -104,7 +104,7 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 |---|---|---|---|
 | `movie.raw` | the inputs played, one row of pads per poll | `tas` play | `tas.read_raw` |
 | `lockstep/<side>/lockstep.jsonl` | side `port` (trace.c, `N64C_LOCKSTEP=1`, `N64C_LOCKSTEP_DIR`, set by every `tas` play) and `oracle` (lockstep.cpp, `N64R_LOCKSTEP_DIR`); its `poll` lines are also the pads the guest read: a pad word is buttons (high 16 bits), stick x, stick y (signed bytes) | the side | `lockstep.Side`; `tas.read_polls` for the pads (retry, take, start points, site_feedback) |
-| `lockstep/port/calls.jsonl` | the whole-movie `call`/`ret` lines keyed by (`fn`, `caller`, `o`), `frame` the poll (trace.c, `N64C_CALLS=` the same directory, set by every `tas` play beside `N64C_LOCKSTEP=1`; the oracle's calls for per-call behaviour are `lockstep/oracle/lockstep.jsonl`) | port | `Side.movie_lines` (class `calls`) |
+| `lockstep/port/calls.jsonl` | the whole-movie `call`/`ret` lines with `fn`, call index `i`, `caller`, `o`, `frame` the poll (trace.c, `N64C_CALLS=` the same directory, set by every `tas` play beside `N64C_LOCKSTEP=1`; the oracle's calls for per-call behaviour are `lockstep/oracle/lockstep.jsonl`) | port | `Side.movie_lines` (class `calls`) |
 | `lockstep/<side>/dump/<poll>/dump.bin` | the bytes of the pages `match` names at that poll, nothing else (the record itself is hashes only): `<u32 page><u32 0><u64 hash>` + 4096 bytes per page, port native, oracle canonical; written by the dump replay `decomp tas lockstep-dump RUN [--poll P]` (both sides replay `movie.raw` with `N64C_LOCKSTEP_DUMP` / `N64R_LOCKSTEP_DUMP` = `POLL:PAGE,...`, write at that poll and exit; done on process exit) | the side | `Side.bytes` (`Matcher.page_diff`) |
 | `lockstep/replay/<poll>/` | a dump replay's own files: output, user dir, card copies | `tas lockstep-dump` | a person |
 | `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | `tas_oracle.read_match` (`/api/stream/RUN` `match`: counts per class, matched-through poll, first; null until it exists), play cycle |
@@ -119,15 +119,24 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 
 - `meta` (first line): `side` (`port`|`oracle`), `ram` (bytes, a multiple of 4096), `page` 4096, `bytes`
   (`native` for the port, `canonical-be` for the oracle), `hash` `fnv1a64-le64` (over the canonical big-endian page, the
-  port's swapped word by word first).
+  port's swapped word by word first). The oracle's adds `calls` (calls kept per caller and function, then every power
+  of two; both recorders are handed the one value `tas.oracle.lockstep_calls`, default 16, as `N64R_LOCKSTEP_CALLS`
+  and the port's `N64C_CALLS_FIRST`) and `frame` `poll` (its `call` stamps are poll indices; an oracle record without it stamped the retrace count,
+  and `match` takes such a call's poll from the poll line before it).
 - `poll`: `poll` (contiguous indices), `vi` (integer), `pad` (pad words, 8 hex digits each), `pages` (`[page, hash]`
   for the pages changed since the previous poll: the page baseline is the previous poll's; hashes only, no page bytes).
-- `call` / `ret` with `o`: one whole-movie call, keyed by `fn`, `caller`, ordinal `o`; `a` the argument words.
+- `call` / `ret` with `o`: one whole-movie call: `fn`, `i` the function's own call index (every call counted), `caller`,
+  ordinal `o` among that caller's calls (what the keep ring counts); `a` the argument words.
 - `hit`, `call`/`ret` with `i`, `watch`: the boot `compare` points (first hits of the boot trace).
 
-`match.json`: `polls` {`oracle`, `port`, `common`}, `matched_through_poll` (the last poll before the first divergence),
+`match.json`: `polls` {`oracle`, `port`, `common`}, `keep` {`oracle`, `port`} (each side's calls kept per caller and
+function: the oracle meta's `calls`, the port calls meta's `first`), `matched_through_poll` (the last poll before the first divergence),
 `first` (null, or the first divergence with its `class`), `divergences` {`input`, `vi`, `calls`, `memory`}: per class
-the persistent divergences in poll order, each with its `poll`; a `memory` row is a word (`class` `value`, 8-hex
+the persistent divergences in poll order, each with its `poll`. A `calls` row is keyed by (`fn`, `i`): `missing` a
+function the port calls by the last common poll and the oracle (which hooks every recompiled function) never does, `poll` a call both sides kept in another poll, and `args` /
+`return` (with `why`) only for a function `--types` gives a prototype; a call one side kept and the other did not
+(other callers, other keep limits) is no divergence. `unrecorded_on_port` lists the functions the oracle calls that the
+port's record holds no call of (shim-bound, unlinked, or entered outside its own frame): listed, never a divergence. A `memory` row is a word (`class` `value`, 8-hex
 `oracle`/`port`) when both sides hold the page's bytes (a dump), else the page (`class` `page`, its two 16-hex hashes).
 `dump` (null, or {`poll`, `pages`}): the poll of the first `page` row and every page there whose hashes differ without
 bytes: the request `tas lockstep-dump RUN` replays (`lockstep.py pages --run RUN [--poll P]` prints it). Each dump
@@ -152,9 +161,9 @@ port loaded, not one a later bake wrote.
   `run.json` an object.
 - Both sides' `lockstep.jsonl` (meta, contiguous polls, pages, dumps as above).
 - `lockstep/port/calls.jsonl`: the port's calls meta (`mode` `calls`) first, then `call` lines with `fn`, `caller`,
-  `o`, `frame` and `a`, `ret` lines with `fn`, `caller`, `o` and `r`, and `unframed` lines (trace.c: a function's first
+  `o`, `frame` and `a`, `ret` lines with `fn`, `caller`, `o` and `r` (and `i` on both), and `unframed` lines (trace.c: a function's first
   call outside its own frame) with an integer `order` and an 8-hex `pc`.
-- `match.json`: as above, each divergence row at an integer `poll`; a `calls` row with `fn`, `caller`, `o` and `field`
+- `match.json`: as above, each divergence row at an integer `poll`; a `calls` row with `fn`, `i` and `field`
   (`missing`, `poll`, `args`, `return`); a `memory` row `value` (8-hex) or `page` (16-hex). `first` is null exactly
   when every class is empty.
 - `run.json` `oracle.lockstep`: `exit` 0, 1 or 2; for 0 and 1 its `matched_through_poll` and `first` are

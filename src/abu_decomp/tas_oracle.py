@@ -66,14 +66,15 @@ _KEYS = frozenset(
         "lock",
         "pins",
         "pins_repo",
+        "lockstep_calls",
     }
 )
 REMOVED_KEYS = {"cpu_profile": "the oracle's CPU profile is no longer read; delete the key"}
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
-CALLS_FIRST = (
-    16  # calls per (caller, function) each side records for the per-call behaviour (RUN/lockstep/port/calls.jsonl)
-)
+# Calls per (caller, function) each side records for the per-call behaviour before the power-of-two ring: the default of
+# tas.oracle.lockstep_calls, the one value both sides are handed (keep_env); neither recorder's own default is used.
+CALLS_FIRST = 16
 SHOTS = "shots"
 SIDES = ("port", "oracle")
 LOCKSTEP = "lockstep"  # RUN/lockstep/{port,oracle}/ and RUN/lockstep/match.json (CONTRACTS.md "Run record")
@@ -107,6 +108,9 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     every = int(table.get("shot_every", 25))
     if every < 1:
         raise DecompError("tas.oracle", f"shot_every is a poll count >= 1, not {every}")
+    calls = int(table.get("lockstep_calls", CALLS_FIRST))
+    if calls < 1:
+        raise DecompError("tas.oracle", f"lockstep_calls is a call count >= 1, not {calls}")
     lead = int(table.get("render_lead", 2))
     if lead < 0:
         raise DecompError("tas.oracle", f"render_lead is a poll count >= 0, not {lead}")
@@ -125,7 +129,15 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "render_lead": lead,
         "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
+        "lockstep_calls": calls,
     }
+
+
+def keep_env(oracle: dict[str, Any] | None) -> dict[str, str]:
+    """The calls kept per (caller, function), handed to both recorders from the one value (tas.oracle.lockstep_calls,
+    else CALLS_FIRST): the port's N64C_CALLS_FIRST and the oracle's N64R_LOCKSTEP_CALLS."""
+    calls = str(oracle["lockstep_calls"] if oracle else CALLS_FIRST)
+    return {"N64C_CALLS_FIRST": calls, "N64R_LOCKSTEP_CALLS": calls}
 
 
 def effective_lead(oracle: dict[str, Any]) -> int:
@@ -259,11 +271,14 @@ def read_match(run: Path) -> dict[str, Any] | None:
 
 
 def lockstep_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
-    """The oracle half of the lockstep: N64R_LOCKSTEP_DIR (RUN/lockstep/oracle of the run it records into) and, for a
-    dump replay, N64R_LOCKSTEP_DUMP; nothing without --lockstep."""
+    """The oracle half of the lockstep: N64R_LOCKSTEP_DIR (RUN/lockstep/oracle of the run it records into), the calls it
+    keeps (keep_env) and, for a dump replay, N64R_LOCKSTEP_DUMP; nothing without --lockstep."""
     if not oracle.get("lockstep"):
         return {}
-    env = {"N64R_LOCKSTEP_DIR": str(lockstep_side(oracle.get("lockstep_into", run), "oracle"))}
+    env = {
+        "N64R_LOCKSTEP_DIR": str(lockstep_side(oracle.get("lockstep_into", run), "oracle")),
+        "N64R_LOCKSTEP_CALLS": keep_env(oracle)["N64R_LOCKSTEP_CALLS"],
+    }
     if oracle.get("lockstep_dump"):  # the dump replay: those pages at that poll, then the host exits
         env["N64R_LOCKSTEP_DUMP"] = oracle["lockstep_dump"]
     return env

@@ -8,7 +8,8 @@ sides replay the movie to one poll (N64C_LOCKSTEP_DUMP / N64R_LOCKSTEP_DUMP = PO
 to <side>/dump/POLL/dump.bin; every dump a side holds gives the bytes of the hashes it names (Side.bytes).
 
     lockstep.py types --build BUILD --trace boot-trace.tsv --out types.tsv
-    lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--json out]
+    lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--types T]
+                      [--json out]
     lockstep.py match --run RUN [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N]
     lockstep.py check RUN
     lockstep.py coverage --run RUN
@@ -37,7 +38,8 @@ are shim-owned state, and floats within 4 ulp are rounding (MIPS single vs x87):
 match takes a whole TAS movie played on both sides (`poll` lines: poll, vi, pad, pages since the previous poll; the
 port's and the oracle's are the same line when the poll matches) and lists per class, in poll order, the persistent
 divergences: input (pad words or a poll one side lacks), vi (the poll where the VI offset changes), calls (whole-movie
-call/ret lines keyed by fn, caller, ordinal: missing, other poll, args, return) and memory (a word that differs at a
+call/ret lines keyed by fn and its call index i, which neither side's caller attribution changes: a function one side never
+calls, a call in another poll, and, for a function --types gives a prototype, other args or return) and memory (a word that differs at a
 poll and the next --persist polls); matched_through_poll is the last poll before the first divergence of any class.
 match --run RUN reads the run record (CONTRACTS.md "Run record"): RUN/lockstep/{oracle,port}/ in, RUN/lockstep/match.json
 out. check RUN validates a run record field by field against that contract; exit 0 when it holds, 1 when a field breaks it.
@@ -196,7 +198,7 @@ class Side:
         self.dir = pathlib.Path(directory)
         self.points, self.calls, self.rets, self.sps, self.watch = {}, {}, {}, {}, []
         self.polls, self.movie_calls, self.movie_rets = {}, {}, {}
-        self.meta = None
+        self.meta, self.calls_first = None, None
         with open(self.dir / "lockstep.jsonl") as stream:
             lines = itertools.chain(stream, self.movie_lines(self.dir / "calls.jsonl"))
             self.read_lines(lines, key_of)
@@ -206,7 +208,10 @@ class Side:
         self.read_dumps()
 
     def read_lines(self, lines, key_of):
-        current = None
+        # A whole-movie call's poll: its stamp when the side declares the stamp a poll index (the port's calls.jsonl
+        # `frame` is its poll; an oracle meta `"frame":"poll"`), else the poll line before it in this stream (an older
+        # oracle stamped the retrace count, never a poll).
+        current, poll, stamped = None, 0, True
         for number, line in enumerate(lines):
             if not line.strip():
                 continue
@@ -220,6 +225,7 @@ class Side:
             if kind == "meta":
                 self.meta = r
                 current = array.array("Q", [0]) * (r["ram"] // PAGE)
+                stamped = r.get("bytes") != "canonical-be" or r.get("frame") == "poll"
                 continue
             if current is None:
                 raise ValueError(f"{self.dir}: no meta line")
@@ -234,13 +240,18 @@ class Side:
             elif kind == "poll":
                 r.pop("pages", None)
                 self.polls[r["poll"]] = r
-            elif kind in ("call", "ret") and "o" in r:  # a whole-movie call, keyed by (fn, caller, ordinal)
+                poll = r["poll"]
+            elif kind in ("call", "ret") and "o" in r:  # a whole-movie call, keyed by (fn, the function's call index)
+                if kind == "call":
+                    r["poll"] = r.get("frame", 0) if stamped else poll
                 movie = self.movie_calls if kind == "call" else self.movie_rets
-                movie[(r["fn"], r.get("caller", ""), r["o"])] = r
+                movie[(r.get("fn"), r.get("i"))] = r  # check_side names a line without them
             elif kind in ("call", "ret"):
                 key = key_of(r)
                 if key is not None:
                     (self.calls if kind == "call" else self.rets).setdefault(key, {})[r["i"]] = r
+                elif kind == "ret" and "fn" in r and "i" in r:  # the oracle's ret has no o: its call's (fn, i) keys it
+                    self.movie_rets[(r["fn"], r["i"])] = r
             elif kind == "watch":
                 self.watch.append(r)
 
@@ -272,11 +283,11 @@ class Side:
                 if r.get("k") == "poll":
                     yield r["poll"], r.get("pages", [])
 
-    @staticmethod
-    def movie_lines(path):
-        """The whole-movie call and ret lines (keyed by fn, caller, o) of the calls.jsonl a port run with both
-        N64C_LOCKSTEP and N64C_CALLS writes beside lockstep.jsonl; none when the run had no N64C_CALLS. Its meta and
-        unframed lines are not the lockstep stream's, and a line cut by a killed run is dropped."""
+    def movie_lines(self, path):
+        """The whole-movie call and ret lines (keyed by fn, i) of the calls.jsonl a port run with both N64C_LOCKSTEP
+        and N64C_CALLS writes beside lockstep.jsonl; none when the run had no N64C_CALLS. Its meta gives the calls kept
+        per (caller, function) (calls_first) and is not the lockstep stream's; unframed lines are not either, and a
+        line cut by a killed run is dropped."""
         if not path.exists():
             return []
         kept = []
@@ -285,9 +296,16 @@ class Side:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if r.get("k") in ("call", "ret") and "o" in r:
+            if r.get("k") == "meta":
+                self.calls_first = r.get("first")
+            elif r.get("k") in ("call", "ret") and "o" in r:
                 kept.append(line)
         return kept
+
+    def keep_limit(self):
+        """Calls kept per (caller, function) before the power-of-two ring: the port's calls.jsonl `first`, the
+        oracle's meta `calls`."""
+        return self.calls_first if self.calls_first is not None else self.meta.get("calls")
 
     def bytes(self, h):
         """The page bytes of hash h (the zero page, or a dump's), None when no dump holds them."""
@@ -1176,27 +1194,53 @@ def same_words(matcher, ow, pw):
     )
 
 
-def match_calls(matcher, oracle, port, last_poll):
-    """Whole-movie calls by (fn, caller, ordinal): missing on one side, in another poll, other args or return."""
+def unrecorded_on_port(oracle, port, last_poll):
+    """The functions the oracle calls by last_poll that the port's record holds no call of. The oracle hooks every
+    recompiled function, but the port records only the trace table's instrumented bodies: a shim-bound or unlinked
+    function, or one entered outside its own frame (an `unframed` line), never shows there, so its absence proves
+    nothing and is listed, not counted."""
+    recorded = {fn for fn, _ in port.movie_calls}
+    return sorted({fn for (fn, _), r in oracle.movie_calls.items() if fn not in recorded and r["poll"] <= last_poll})
+
+
+def match_calls(matcher, oracle, port, last_poll, types=None):
+    """Whole-movie calls keyed by (fn, i), i the function's own call index (every call counted, whoever the caller):
+    a function the port calls by last_poll and the oracle, which hooks every recompiled function, never does
+    (`missing`), a call both kept in another poll (`poll`) and, for a function types gives a prototype, the arguments
+    and return in its ABI slots (`args`, `return`). A call one side kept and the other did not (other callers, other
+    keep limits) proves nothing; neither does a call without a prototype, whose arity and float slots are unknown, nor
+    a function the port's record cannot show (unrecorded_on_port)."""
+    types = types or {}
     out = []
-    for key in sorted(set(oracle.movie_calls) | set(port.movie_calls), key=lambda k: (k[0], k[1], k[2])):
-        oc, pc = oracle.movie_calls.get(key), port.movie_calls.get(key)
-        fn, caller, o = key
-        row = {"fn": fn, "caller": caller, "o": o}
-        if oc is None or pc is None:
-            frame = (oc or pc).get("frame", 0)
-            if frame <= last_poll:
-                out.append(dict(row, poll=frame, field="missing", oracle=oc is not None, port=pc is not None))
+    first_call = {}
+    for side, calls in (("oracle", oracle.movie_calls), ("port", port.movie_calls)):
+        for (fn, _), r in calls.items():
+            at = first_call.setdefault(fn, {}).get(side)
+            if at is None or r["poll"] < at:
+                first_call[fn][side] = r["poll"]
+    for fn, seen in sorted(first_call.items()):
+        if set(seen) == {"port"} and seen["port"] <= last_poll:
+            out.append({"fn": fn, "i": 0, "poll": seen["port"], "field": "missing", "oracle": False, "port": True})
+    for key in sorted(set(oracle.movie_calls) & set(port.movie_calls)):
+        oc, pc = oracle.movie_calls[key], port.movie_calls[key]
+        fn, i = key
+        row = {"fn": fn, "i": i, "caller": oc.get("caller", "?")}
+        poll = min(oc["poll"], pc["poll"])
+        if poll > last_poll:
             continue
-        frame = min(oc.get("frame", 0), pc.get("frame", 0))
-        if oc.get("frame") != pc.get("frame"):
-            out.append(dict(row, poll=frame, field="poll", oracle=oc.get("frame"), port=pc.get("frame")))
-        if not same_words(matcher, oc.get("a", []), pc.get("a", [])):
-            out.append(dict(row, poll=frame, field="args", oracle=oc.get("a"), port=pc.get("a")))
+        if oc["poll"] != pc["poll"]:
+            out.append(dict(row, poll=poll, field="poll", oracle=oc["poll"], port=pc["poll"]))
+        if fn not in types:
+            continue
+        ret_kind, kinds = types[fn]
+        for why in compare_call(matcher, kinds, False, oc, pc):
+            out.append(dict(row, poll=poll, field="args", why=why, oracle=oc.get("a"), port=pc.get("a")))
         orr, prr = oracle.movie_rets.get(key), port.movie_rets.get(key)
-        if orr and prr and not same_words(matcher, orr.get("r", [])[:1], prr.get("r", [])[:1]):
-            out.append(dict(row, poll=frame, field="return", oracle=orr.get("r"), port=prr.get("r")))
-    return sorted(out, key=lambda r: (r["poll"], r["fn"], r["caller"], r["o"]))
+        if orr and prr:
+            why = compare_return(matcher, ret_kind, orr, prr, int(oc["sp"], 16), int(pc["sp"], 16))
+            if why:
+                out.append(dict(row, poll=poll, field="return", why=why, oracle=orr.get("r"), port=prr.get("r")))
+    return sorted(out, key=lambda r: (r["poll"], r["fn"], r["i"]))
 
 
 def match_memory(matcher, oracle, port, polls, persist):
@@ -1302,7 +1346,7 @@ def match(args):
     divergences = {
         "input": match_input(oracle.polls, port.polls, every),
         "vi": match_vi(oracle.polls, port.polls, common),
-        "calls": match_calls(matcher, oracle, port, common[-1]),
+        "calls": match_calls(matcher, oracle, port, common[-1], read_types(args.types)),
         "memory": match_memory(matcher, oracle, port, common, args.persist),
     }
     first = None
@@ -1313,6 +1357,8 @@ def match(args):
     pending = [r for r in divergences["memory"] if r["class"] == "page"]
     return {
         "polls": {"oracle": len(oracle.polls), "port": len(port.polls), "common": len(common)},
+        "keep": {"oracle": oracle.keep_limit(), "port": port.keep_limit()},
+        "unrecorded_on_port": unrecorded_on_port(oracle, port, common[-1]),
         "matched_through_poll": first["poll"] - 1 if first else last,
         "first": first,
         "divergences": divergences,
@@ -1382,15 +1428,18 @@ def check_side(side_dir, name):
             if current.get(page) != h:
                 problems.append(f"lockstep/{name} dump {poll} page {page}: {h:016x}, the record holds "
                                 f"{current.get(page, 0):016x} (the replay is not the recorded run)")  # fmt: skip
-    for (fn, caller, o), r in {**side.movie_calls, **side.movie_rets}.items():
-        if not isinstance(fn, str) or not isinstance(caller, str) or not isinstance(o, int):
-            problems.append(f"lockstep/{name} {r['k']}: {fn!r}/{caller!r}/{o!r}, expected fn, caller, ordinal")
+    for r in [*side.movie_calls.values(), *side.movie_rets.values()]:
+        fn, i, caller, o = r.get("fn"), r.get("i"), r.get("caller", ""), r.get("o", 0 if r["k"] == "ret" else None)
+        if not isinstance(fn, str) or type(i) is not int or not isinstance(caller, str) or type(o) is not int:
+            problems.append(
+                f"lockstep/{name} {r['k']}: {fn!r}/{i!r}/{caller!r}/{o!r}, expected fn, call index i, caller, ordinal"
+            )
     return problems
 
 
 def check_match(path):
     """(problems, report) of RUN/lockstep/match.json, the `match` report: every field well-formed, every divergence row
-    a dict at an integer poll (a calls row names fn, caller, ordinal and field; a memory row is a word or a page with
+    a dict at an integer poll (a calls row names fn, call index i and field; a memory row is a word or a page with
     its two hex values), and `first` null exactly when no class holds a divergence. report is None when unreadable."""
     name = f"lockstep/{RUN_MATCH}"
     try:
@@ -1441,10 +1490,9 @@ def divergence_problem(cls, row):
     if not isinstance(row, dict) or type(row.get("poll")) is not int:
         return "a row with its integer poll"
     if cls == "calls" and not (
-        isinstance(row.get("fn"), str) and isinstance(row.get("caller"), str) and type(row.get("o")) is int
-        and row.get("field") in CALL_FIELDS
+        isinstance(row.get("fn"), str) and type(row.get("i")) is int and row.get("field") in CALL_FIELDS
     ):  # fmt: skip
-        return f"fn, caller, ordinal o and field ({', '.join(CALL_FIELDS)})"
+        return f"fn, call index i and field ({', '.join(CALL_FIELDS)})"
     if cls == "memory":
         digits = {"value": HEX8, "page": HEX16}.get(row.get("class"))
         if digits is None or not all(isinstance(row.get(s), str) and digits.fullmatch(row[s]) for s in RUN_SIDES):
@@ -1858,6 +1906,7 @@ def build_parser():
     m.add_argument("--symbols")
     m.add_argument("--port-exe")
     m.add_argument("--persist", type=int, default=2)
+    m.add_argument("--types", help="types.tsv (lockstep.py types): calls of the functions it types compare their args")
     m.add_argument("--json")
     k = sub.add_parser("check", help="a run record validated field by field (CONTRACTS.md Run record)")
     k.add_argument("run")

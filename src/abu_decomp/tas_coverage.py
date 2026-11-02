@@ -400,7 +400,7 @@ def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[st
         extra={
             "N64R_GOLDEN_DIR": str(run / ORACLE_DIR),
             "N64R_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "oracle")),
-            "N64R_LOCKSTEP_CALLS": str(tas_oracle.CALLS_FIRST),
+            "N64R_LOCKSTEP_CALLS": tas_oracle.keep_env(oracle)["N64R_LOCKSTEP_CALLS"],
         },
         card=card,
         pads=int(record.get("pads", 1)),

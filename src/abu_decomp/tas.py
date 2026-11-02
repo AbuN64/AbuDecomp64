@@ -1634,7 +1634,7 @@ def play(
         "N64C_LOCKSTEP": "1",
         "N64C_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "port")),
         "N64C_CALLS": str(tas_oracle.lockstep_side(run, "port")),
-        "N64C_CALLS_FIRST": str(tas_oracle.CALLS_FIRST),
+        "N64C_CALLS_FIRST": tas_oracle.keep_env(original)["N64C_CALLS_FIRST"],
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
         # Keep readbacks within the realtime frame budget, including human input and takeovers.

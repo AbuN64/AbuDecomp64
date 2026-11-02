@@ -76,7 +76,7 @@ def stream(index=True, jpgs=True):
     return apply
 
 
-FIRST = {"fn": NAMES[1], "caller": "c", "o": 0, "poll": 0, "field": "args", "class": "calls"}  # make_run's first
+FIRST = {"fn": NAMES[1], "i": 0, "caller": "c", "poll": 0, "field": "args", "class": "calls"}  # make_run's first
 
 
 def first_call(divergences):
@@ -111,11 +111,11 @@ CORRUPTIONS = {
         "lockstep/port/calls.jsonl line 2: expected fn, caller and ordinal o",
     ),
     "calls-call-no-frame": (
-        calls(lambda ls: ls.insert(1, '{"k": "call", "fn": "f", "caller": "c", "o": 9, "a": []}')),
+        calls(lambda ls: ls.insert(1, '{"k": "call", "fn": "f", "i": 9, "caller": "c", "o": 9, "a": []}')),
         "lockstep/port/calls.jsonl line 2: a call without its poll frame",
     ),
     "calls-ret-no-words": (
-        calls(lambda ls: ls.insert(1, '{"k": "ret", "fn": "f", "caller": "c", "o": 9}')),
+        calls(lambda ls: ls.insert(1, '{"k": "ret", "fn": "f", "i": 9, "caller": "c", "o": 9}')),
         "lockstep/port/calls.jsonl line 2: a ret without its return words",
     ),
     "match-missing": (lambda run: (run / "lockstep/match.json").unlink(), "lockstep/match.json: "),

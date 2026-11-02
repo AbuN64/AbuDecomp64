@@ -1012,7 +1012,7 @@ class Live:
         self.running: list[Path] = []
         self.watched: set[Path] = set()
         self.watcher: inotify.Watcher | None = None
-        self.owners: dict[Path, int] = {}  # run -> pidfd of its owner; -1 once the owner is gone (reported, not watched)
+        self.owners: dict[Path, int] = {}  # run -> pidfd of its owner; -1 once gone
 
     def touch(self) -> None:
         """Something the watch cannot see changed (a queued run, a pin): rewrite soon."""
@@ -1075,7 +1075,7 @@ class Live:
             os.close(fd)
 
     def owner_exited(self, ready: list[int]) -> bool:
-        """True when a watched owner's pidfd is readable (its process exited); that fd is closed and not watched again."""
+        """True when a watched owner's pidfd is readable (it exited); that fd is closed and not watched again."""
         gone = False
         for run, fd in self.owners.items():
             if fd >= 0 and fd in ready:

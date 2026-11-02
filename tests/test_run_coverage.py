@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import pathlib
+import sys
 
 import pytest
 
@@ -121,3 +122,11 @@ def test_the_plays_reach_bin_is_zero_filled_to_the_census_rows_never_cut(tmp_pat
         collector.feed(tas_reach.full(1, sent))  # the port's bitset ends at the highest row it entered
         collector.finish()
         assert (run / "reach.bin").read_bytes() == want  # ceil(70/8) = 9 bytes; a longer one stays for check to refuse
+
+
+def test_loading_lockstep_leaves_sys_path_unchanged():
+    # A shim/boot entry on sys.path shadowed tests/test_sweep with shim/boot/test_sweep for the rest of discovery.
+    before = list(sys.path)
+    spec = importlib.util.spec_from_file_location("lockstep_path_probe", LOCKSTEP)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert sys.path == before

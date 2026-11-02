@@ -48,6 +48,7 @@ import bisect
 import concurrent.futures
 import csv
 import hashlib
+import importlib.util
 import json
 import mmap
 import os
@@ -57,8 +58,11 @@ import struct
 import subprocess
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import portdir
+# The sibling portdir.py is loaded by its path: importing lockstep (a test exec-loading it) never touches sys.path,
+# which would shadow tests/ modules with shim/boot ones of the same name for the rest of the process.
+_PORTDIR = importlib.util.spec_from_file_location("portdir", pathlib.Path(__file__).resolve().parent / "portdir.py")
+portdir = importlib.util.module_from_spec(_PORTDIR)
+_PORTDIR.loader.exec_module(portdir)
 
 sys.dont_write_bytecode = True
 PAGE = 4096

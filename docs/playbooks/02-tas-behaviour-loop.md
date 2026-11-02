@@ -11,12 +11,19 @@ This loop turns each one into named, behaving C in the decomp.
    recording on. Every controller poll is logged (buttons and stick), so a run
    is a replay from reset, not a video. Save the run under a short name that
    says what it does (`pak-continue-no-save`, `options-sound`).
-2. **Replay it against the port only.** `decomp tas play NAME` boots the port
+2. **Validate, replay and measure.** Before any reader trusts a run record,
+   run `shim/boot/lockstep.py check RUN`, where `RUN` is its completed run folder;
+   stop the cycle if validation fails. `decomp tas play NAME` boots the port
    with the movie as its only input and reports one outcome: `ok`, `crash`
    (with the fault subject and the guest backtrace), `hang` (no poll for the
    watchdog window), or `stop` (the port's own boot stop). Replays are
    deterministic because input is keyed to the poll index, not wall time. The
-   oracle is not involved here; the port runs at full speed.
+   oracle is not involved here; the port runs at full speed. Validate each replay's
+   record before reading it, then run `shim/boot/lockstep.py match --run RUN` to
+   list divergences in `RUN/lockstep/match.json`, followed by `decomp tas coverage`
+   to measure covered/total functions in `runs/coverage-table.json`. If the run
+   lacks lockstep evidence, capture it as described below; never report missing
+   evidence as zero divergences left.
 3. **Crash or weird: take the functions.** From the outcome take the guest
    frames of the faulting thread, plus the function that wrote the bad value
    when a watch names it. Those, and their direct callees on the path, are the
@@ -39,7 +46,9 @@ This loop turns each one into named, behaving C in the decomp.
    the file's non-matching body, so the port and the decomp share one body.
 7. **Replay again.** The same movie must now pass or fail later. A movie that
    passes becomes a regression test: it stays in the TAS folder and runs after
-   every port build.
+   every port build. Repeat step 2's check, match and coverage sequence on the
+   final replays. Report `covered/total functions` and `divergences left` as
+   measured integer counts from the coverage table and match reports.
 
 ## Determinism comes first
 

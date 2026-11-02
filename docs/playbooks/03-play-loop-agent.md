@@ -46,8 +46,13 @@ not sleeps: `/video/RUN` and `/wall` send when the run's picture file is replace
 **Triage.** Every `stop`, `crash`, `hang` or `mark` is one cycle of [02](02-tas-behaviour-loop.md), with
 `tas watch --next` available to block for the page's next event when you wait on a person instead of playing:
 
-1. **Reproduce.** The marked or crashing run is already a movie (mark saves one; otherwise `save NAME`). `play NAME`
-   must reach the same stop at the same poll.
+1. **Validate, reproduce and measure.** Before any reader trusts a run record, run
+   `shim/boot/lockstep.py check RUN`, where `RUN` is its completed run folder; stop the cycle if validation fails.
+   The marked or crashing run is already a movie (mark saves one; otherwise `save NAME`). `play NAME`
+   must reach the same stop at the same poll. Validate each replay's record before reading it, then run
+   `shim/boot/lockstep.py match --run RUN` to list divergences in `RUN/lockstep/match.json`, followed by
+   `decomp tas coverage` to measure covered/total functions in `runs/coverage-table.json`. If lockstep evidence
+   is missing, capture it through playbook 02's lockstep replay before measuring; missing evidence is never zero.
 2. **Root cause, cheapest first** (playbook 02): read the stacks; describe the suspects with `behave`; compare
    the decomp's C with `--candidate` (a `same` counts only with enough compared cases); for a wrong value,
    replay under gdb, watch the address, and let the watchpoint name the writer; compare that writer with the
@@ -72,7 +77,8 @@ not sleeps: `/video/RUN` and `/wall` send when the run's picture file is replace
 4. **Make it a class.** Name the defect's class, find every other site across the whole ROM with a detector,
    fix the cheap ones, and make the detector a gate that refuses new sites.
 5. **Prove and land.** Rebuild the port, replay the movie past the old stop, replay the other movies (they
-   must stay ok), then commit each repo on the card branch with one line naming the defect. A decomp repo takes commits only
+   must stay ok), repeat step 1's check, match and coverage sequence on the final replays, then commit each repo
+   on the card branch with one line naming the defect. A decomp repo takes commits only
    through the evidence gate: leave the change in the tree (never restore or revert) and
    run `decomp ship --tree REPO --worktree LANE[:MESSAGE]` (the tree's own tracked changes are the input; a refusal leaves
    them untouched; or `--patch LANE=PATH.patch`, or `land`). For each function the patch touches the gate
@@ -88,7 +94,9 @@ not sleeps: `/video/RUN` and `/wall` send when the run's picture file is replace
    with its line and `recipe style FILE`. Leftovers the parent already held do not block.
    A PreToolUse hook (`~/.claude-local/hooks/guard-git.py`, repo list in `guard-git.json`) refuses raw `git commit` and
    `git push` in those repos and names this command. End the card in Testing: Land is the only pusher.
-6. **Report in three lines**: what you saw, why it happened, what changed. Then play the next section.
+6. **Report in three lines**: what you saw; why it happened; what changed, including
+   `covered/total functions: C/T; divergences left: D`. Replace C, T and D with measured integer counts from
+   `runs/coverage-table.json` and the final `RUN/lockstep/match.json` reports. Then play the next section.
 
 **Guardrails.** One cycle at a time. Work on the card branch; commits under the owner's identity, no attribution
 lines. Never revert, reset or stash work you did not write. Nothing runs longer than five minutes of CPU

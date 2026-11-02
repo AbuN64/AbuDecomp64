@@ -104,7 +104,7 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 | `movie.raw` | the inputs played, one row of pads per poll | `tas` play | `tas.read_raw` |
 | `polls.raw` | the pads the guest read, one row per poll | port host | `tas.read_raw` (site_feedback) |
 | `lockstep/<side>/lockstep.jsonl` | side `port` (trace.c, `N64C_LOCKSTEP=1`, `N64C_LOCKSTEP_DIR`) and `oracle` (lockstep.cpp, `N64R_LOCKSTEP_DIR`) | the side | `lockstep.Side` |
-| `lockstep/<side>/pages.bin` | the changed pages by hash: `<u32 page><u32 0><u64 hash>` + 4096 bytes | the side | `Side.page` |
+| `lockstep/<side>/pages.bin` | each distinct page content once (both writers dedup by hash): `<u32 page><u32 0><u64 hash>` + 4096 bytes; read mapped, never whole | the side | `Side.page` |
 | `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | site, play cycle |
 | `stream/<side>/<poll>.jpg`, `stream/index.json` | the pictures, sides `port` and `oracle` | `tas_stream.pack` | site_stream |
 | `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | the side | tas_serve |

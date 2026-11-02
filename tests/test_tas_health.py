@@ -171,7 +171,9 @@ class HealthTests(unittest.TestCase):
         self.assertIn("unresolved deltas left after unpacking", said)
         self.assertEqual(subprocess.run(["git", "-C", str(mirror), "fsck"], capture_output=True).returncode, 0)
         self.assertFalse(mirror.with_name(mirror.name + ".fresh").exists())
-        listed = subprocess.run(["git", "-C", str(mirror), "rev-list", "refs/mirror/head"], capture_output=True, text=True)
+        listed = subprocess.run(
+            ["git", "-C", str(mirror), "rev-list", "refs/mirror/head"], capture_output=True, text=True
+        )
         self.assertIn(history.old, listed.stdout)
 
     def test_mirror_that_cannot_be_refetched_stays_and_the_refusal_names_both_causes(self):

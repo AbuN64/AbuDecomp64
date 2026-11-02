@@ -13,7 +13,7 @@ export function merge(order, tiles) {
 /** The frame a tile shows: the newest recorded poll of its stream index, else null (no picture yet). */
 export function frameUrl(run, index) {
   const polls = (index && index.polls) || [];
-  return polls.length ? `/stream/${encodeURIComponent(run)}/port/${polls[polls.length - 1]}.jpg` : null;
+  return polls.length ? `/still/${encodeURIComponent(run)}?side=port&poll=${polls[polls.length - 1]}` : null;
 }
 
 export function mount(el, ctx) {

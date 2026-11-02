@@ -389,17 +389,19 @@ class HttpTests(Base):
         self.assertIn(b"<html", body.lower())
         self.assertEqual(self.live()["runs"], [])
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
-        self.assertEqual(self.status("/frame/r1"), 404)  # no picture yet
+        self.assertEqual(self.status("/oracle/r1"), 404)  # no picture yet
         bmp, rgb = capture_bmp()
         (run / "view.bmp").write_bytes(bmp)
-        _, kind, body = self.get("/frame/r1")
+        self.assertEqual(self.status("/frame/r1"), 404)  # /video/RUN is the one picture path: no still of the latest
+        (run / "oracle.bmp").write_bytes(bmp)
+        _, kind, body = self.get("/oracle/r1")
         self.assertEqual(kind, "image/png")
         self.assertEqual(png_rgb(body), (3, 2, rgb))
         (run / "output.txt").write_bytes(b"line one\nline two\n")
         self.assertEqual(self.get("/log/r1?from=0")[2], b"line one\nline two\n")
         self.assertEqual(self.get("/log/r1?from=9")[2], b"line two\n")
         self.assertEqual(self.status("/log/nope"), 404)
-        self.assertEqual(self.status("/frame/..%2Fx"), 404)
+        self.assertEqual(self.status("/oracle/..%2Fx"), 404)
         self.assertEqual(self.status("/audio/r1"), 204)  # turbo is explicitly muted even if PCM exists
 
     def fetch(self, path, **headers):
@@ -427,13 +429,13 @@ class HttpTests(Base):
         self.assertEqual(self.fetch("/api/runs", **{"If-None-Match": tag})[0], 200)  # a changed state is sent again
         status, head, _ = self.fetch("/")
         self.assertEqual(self.fetch("/", **{"If-None-Match": head["ETag"]})[0], 304)
-        self.assertEqual(self.fetch("/frame/r1")[0], 404)
+        self.assertEqual(self.fetch("/oracle/r1")[0], 404)
 
     def test_images_are_never_compressed_or_tagged(self):
         run = self.make_run("r1", movie="boot-idle", status="done", speed=0, started=1.0, outcome="ok")
         bmp, _ = capture_bmp()
-        (run / "view.bmp").write_bytes(bmp)
-        status, head, body = self.fetch("/frame/r1", **{"Accept-Encoding": "gzip"})
+        (run / "oracle.bmp").write_bytes(bmp)
+        status, head, body = self.fetch("/oracle/r1", **{"Accept-Encoding": "gzip"})
         self.assertEqual(
             (status, head.get("Content-Encoding"), head.get("ETag"), len(body)),
             (200, None, None, len(tas_serve.picture(bmp)[0])),
@@ -736,16 +738,16 @@ class HttpTests(Base):
         shot = run / "shots" / "port" / "poll-000025.ppm"
         shot.parent.mkdir(parents=True)
         shot.write_bytes(tas_oracle.PPM_HEAD + rgb)
-        for url in ("/frame/r6", "/oracle/r6", "/shot/r6?side=port&poll=25"):
+        for url in ("/oracle/r6", "/shot/r6?side=port&poll=25"):
             with self.subTest(url=url):
                 self.assertEqual(png_rgb(self.get(url)[2]), (320, 240, rgb))
         # A completed run is still served through exactly the same frame path.
         (run / tas.RECORD).write_text(json.dumps({"status": "done", "speed": 1}))
-        with urllib.request.urlopen(self.base + "/frame/r6", timeout=10) as reply:
+        with urllib.request.urlopen(self.base + "/oracle/r6", timeout=10) as reply:
             self.assertEqual(reply.headers["X-Input-Seq"], "42")
             self.assertEqual(png_rgb(reply.read()), (320, 240, rgb))
         with mock.patch.object(tas_serve, "picture", side_effect=AssertionError("decoded twice")):
-            self.server.capture(run / "view.bmp")
+            self.server.capture(run / "oracle.bmp")
 
     def test_turbo_audio_is_muted_with_pcm_present(self):
         for speed in (0, 2):

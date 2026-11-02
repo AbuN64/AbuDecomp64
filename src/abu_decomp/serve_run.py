@@ -1,5 +1,5 @@
-"""The run-folder routes of `decomp tas serve`: `/shot/RUN` and `/diff/RUN` (the oracle's compared polls) and `/log/RUN`
-(the run's output text). A run that is not there is refused 404 before any of them is called."""
+"""The run-folder routes of `decomp tas serve`: `/shot/RUN` and `/diff/RUN` (the oracle's compared polls), `/still/RUN`
+(the lockstep stream's recorded frames) and `/log/RUN` (the run's output text). A run that is not there is refused 404 before any of them is called."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, site_stream, tas, tas_oracle
+from abu_decomp import DecompError, site_stream, tas, tas_oracle, tas_stream
 from abu_decomp.serve_http import query_args
 
 
@@ -55,7 +55,14 @@ def log(req: Any, server: Any, run: Path, query: str = "") -> None:
     req.reply(body, "text/plain; charset=utf-8")
 
 
-def stream(req: Any, server: Any, rest: str, query: str = "") -> None:
-    """`/stream/RUN/SIDE/POLL.jpg`: one recorded frame of the lockstep stream (module site_stream)."""
-    status, payload, kind = site_stream.frame(server, rest)
-    req.reply(payload if isinstance(payload, bytes) else json.dumps(payload).encode(), kind, status)
+def still(req: Any, server: Any, run: Path, query: str = "") -> None:
+    """`/still/RUN?side=SIDE&poll=N`: one recorded frame of the lockstep stream (module tas_stream). A record the
+    stream page seeks to any poll, not a picture path: the run's one picture path is /video/RUN."""
+    args = query_args(query)
+    side, poll = args.get("side", ""), args.get("poll", "")
+    code = "stream.side" if side not in tas_stream.SIDES else "stream.poll"
+    path = tas_stream.frame_path(run, side, int(poll)) if code == "stream.poll" and poll.isdigit() else None
+    if path is None or not path.is_file():
+        status, body = site_stream.refusal(code, run.name, side, poll)
+        return req.reply(json.dumps(body).encode(), "application/json", status)
+    return req.reply(path.read_bytes(), "image/jpeg")

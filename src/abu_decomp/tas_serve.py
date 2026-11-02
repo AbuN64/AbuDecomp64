@@ -13,7 +13,8 @@ a client that accepts gzip, hashed names are immutable). The one file serve writ
 queued and newest finished runs, rewritten from an inotify watch on the run folders (class Live), never per request.
 (Each route is a module `serve_*`: pages, files, api, phase, run, video, audio, feed, actions; this module holds
 the Server, Live and Reach they read, the route tables and `serve`.)
-`/video/RUN` is the run's sampled JPEG stream; `/wall` one multiplexed stream of 192 px thumbs of every running run;
+`/video/RUN` is the run's sampled JPEG stream and its one picture path (no still route of the latest picture);
+`/wall` one multiplexed stream of 192 px thumbs of every running run;
 the live reach stream (class Reach, GAME-RUNNER 10a) arrives from the port as datagrams on `<input socket>.reach`, is
 kept as a cumulative bitset, written to RUN/reach.bin at run end, and rides in-band on `/video` (a record whose length
 field has REACH_FLAG set; a new viewer gets one full record first).
@@ -1429,13 +1430,12 @@ EXACT = {
 PREFIX = {
     "data": serve_files.data,
     "static": serve_files.static,
-    "stream": serve_run.stream,
 }
 RUN_ROUTES = {
     "video": video,
-    "frame": serve_video.frame,
     "oracle": serve_video.oracle,
     "shot": serve_run.shot,
+    "still": serve_run.still,
     "diff": serve_run.diff,
     "log": serve_run.log,
     "audio": audio,

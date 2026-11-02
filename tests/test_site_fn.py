@@ -218,7 +218,7 @@ class PageLogicTest(unittest.TestCase):
         self.assertEqual(self.js("fn.countCell([1500, 1, 2])"), {"text": "1,500 1/2", "state": "hit"})
 
     def test_preview_frames_come_from_the_stream_files_of_the_run(self):
-        self.assertEqual(self.js('fn.previewSrc({id: "r1", first: 7}, "original")'), "/stream/r1/original/7.jpg")
+        self.assertEqual(self.js('fn.previewSrc({id: "r1", first: 7}, "original")'), "/still/r1?side=original&poll=7")
 
     def test_an_event_concerns_the_screen_by_target_run_or_movie(self):
         rec = '{name:"F",movies:["menu"],runs:[{id:"r1"}]}'

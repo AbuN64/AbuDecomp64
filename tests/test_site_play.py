@@ -33,8 +33,8 @@ def delta(rows: list[int]) -> bytes:
     return out
 
 
-def frame(body: bytes, reach: bool) -> bytes:
-    return struct.pack(">IQI", len(body) | (REACH_FLAG if reach else 0), 0, 0) + body
+def frame(body: bytes, reach: bool, stamp: int = 0) -> bytes:
+    return struct.pack(">IQI", len(body) | (REACH_FLAG if reach else 0), stamp, 0) + body
 
 
 SCRIPT = """
@@ -48,7 +48,7 @@ const out = {
   decoded: recs.map(r => play.reachRows(hex(r))),
 };
 const frames = [], reaches = [];
-const feed = play.framer(f => frames.push(f.length), r => reaches.push(play.reachRows(r)));
+const feed = play.framer((f, stamp) => frames.push([f.length, stamp]), r => reaches.push(play.reachRows(r)));
 feed(stream.slice(0, 7)); feed(stream.slice(7));
 out.frames = frames; out.reaches = reaches;
 const seen = new Set();
@@ -60,6 +60,15 @@ out.after = map.sessionRows(rows, seen).map(r => r[3]);
 out.tally = map.tally(map.sessionRows(rows, seen), "behaviour");
 out.scoped = map.SESSION;
 out.controls = play.controls();
+// the painter: frames between two animation frames collapse to the newest stamp; an older stamp never repaints
+const ticks = [], painted = [];
+const show = play.painter(b => { painted.push(b); }, fn => ticks.push(fn));
+const tick = async () => { ticks.shift()(); await Promise.resolve(); await Promise.resolve(); };
+show.offer("a", 10); show.offer("b", 20); show.offer("old", 15); await tick();
+show.offer("stale", 5); await tick();
+show.offer("c", 30); await tick(); await tick();
+show.stop(); show.offer("d", 40); await tick();
+out.painted = painted; out.shown = show.shown;
 console.log(JSON.stringify(out));
 """
 
@@ -72,7 +81,7 @@ class SessionGridTest(unittest.TestCase):
         cut = struct.pack("<BI", 2, 10) + leb(2) + leb(3)  # a count of 2 with one row: cut off
         trail = step + b"\x00"
         jpeg = b"\xff\xd8jpeg\xff\xd9"
-        stream = frame(jpeg, False) + frame(step, True) + frame(jpeg, False)
+        stream = frame(jpeg, False, 7) + frame(step, True) + frame(jpeg, False, 2**40)
         recs = json.dumps([r.hex() for r in (full, step, cut, trail, b"\x03abcd")])
         script = SCRIPT % (str(SITE / "play.js"), str(SITE / "map.js"), recs, stream.hex())
         run = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
@@ -82,8 +91,12 @@ class SessionGridTest(unittest.TestCase):
         self.assertEqual(self.got["decoded"], [[0, 2, 15], [3, 40, 1, 200], [], [], []])
 
     def test_framer_splits_pictures_from_reach_records_across_chunks(self) -> None:
-        self.assertEqual(self.got["frames"], [8, 8])
+        self.assertEqual(self.got["frames"], [[8, 7], [8, 2**40]])  # each picture with its capture stamp
         self.assertEqual(self.got["reaches"], [[3, 40, 1, 200]])
+
+    def test_painter_paints_the_newest_stamp_once_per_animation_frame(self) -> None:
+        self.assertEqual(self.got["painted"], ["b", "c"])
+        self.assertEqual(self.got["shown"], 30)
 
     def test_session_grid_starts_empty_and_fills_with_what_the_session_reached(self) -> None:
         self.assertEqual(self.got["empty"], [4, 0, 0])  # every square "Not exercised" before the first record

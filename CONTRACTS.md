@@ -144,8 +144,8 @@ Every HTML page the site answers (`/`, `/coverage/...`) links the one stylesheet
 |---|---|---|
 | `GET /`, `/coverage/...`, `/static/...` | `text/html`, `text/css`, `text/javascript` | 404 `{"error"}` for a file that is not there |
 | `GET /watch` | 302 to `/#/play/<run>`, the play view of the newest running run (its data path: `/video/<run>` picture, `/audio/<run>` sound) | 404 `no run is going` (`watch.notfound`) |
-| `GET /video`, `/frame`, `/oracle`, `/shot`, `/diff`, `/log`, `/audio` `/<run>` | the run's stream, PNG, text or WAV | 404 `no run <run>`; 404 `not found` when the run lacks that file |
-| `GET /stream/<run>/<side>/<poll>.jpg` | `image/jpeg` | the typed refusal `{"kind": "error", "code", "run", "side", "poll"}`, 404 (`stream.run`, `stream.side`, `stream.poll`) |
+| `GET /video` (the run's one picture path), `/oracle`, `/shot`, `/diff`, `/log`, `/audio` `/<run>` | the run's stream, PNG, text or WAV | 404 `no run <run>`; 404 `not found` when the run lacks that file |
+| `GET /still/<run>?side=<side>&poll=<poll>` | `image/jpeg`: one recorded frame of the lockstep stream (a record the stream page seeks, not a picture path) | 404 `no run <run>`; the typed refusal `{"kind": "error", "code", "run", "side", "poll"}`, 404 (`stream.side`, `stream.poll`) |
 | `GET /api/contract`, `/api/feed`, `/api/coverage`, `/api/pool`, `/api/runs`, `/api/phase`, `/api/map`, `/api/enhanced`, `/api/feedback` | `application/json` | 404 or 400 `{"error"}` |
 | `GET /api/fn/<name>` | `application/json` | 404 `no function <name>`; 400 without a name |
 | `POST /api/play` | 200 `{"id", ...}` | 400 `{"error"}` |

@@ -129,7 +129,7 @@ async function open(root, ctx) {
     poll.textContent = `poll ${at}`;
     pad.textContent = input ? `${input.buttons} ${input.x} ${input.y}` : "";
     // Both sides swap together once both decoded, so a viewer never sees two different polls.
-    Promise.all(sides.map(side => { const img = new Image(); img.src = `/stream/${encodeURIComponent(run)}/${side}/${at}.jpg`; return img.decode().then(() => img.src); }))
+    Promise.all(sides.map(side => { const img = new Image(); img.src = `/still/${encodeURIComponent(run)}?side=${side}&poll=${at}`; return img.decode().then(() => img.src); }))
       .then(urls => { if (mine === token) sides.forEach((side, i) => { imgs[side].src = urls[i]; }); }, () => {});
     history.replaceState(null, "", `#/stream/${encodeURIComponent(run)}?poll=${at}`);
   }

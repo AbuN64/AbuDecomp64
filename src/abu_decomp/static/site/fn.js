@@ -87,7 +87,7 @@ function codePanel(rec) {
 
 // The recorded frames of both sides at the run's first poll of the function (the stream's files, contract).
 export function previewSrc(run, side) {
-  return `/stream/${encodeURIComponent(run.id)}/${side}/${run.first}.jpg`;
+  return `/still/${encodeURIComponent(run.id)}?side=${side}&poll=${run.first}`;
 }
 
 function previews(run) {

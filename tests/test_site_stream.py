@@ -10,10 +10,18 @@ from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 
-from abu_decomp import DecompError, site_core, site_stream, tas, tas_oracle, tas_stream
+from abu_decomp import DecompError, serve_run, site_core, site_stream, tas, tas_oracle, tas_stream
 
 JS = Path(__file__).resolve().parents[1] / "src" / "abu_decomp" / "static" / "site" / "stream.js"
 W, H = tas_oracle.WIDTH, tas_oracle.HEIGHT
+
+
+def still(run: Path, query: str) -> tuple[int, bytes, str]:
+    """serve_run.still through a stand-in request: (status, body, content type)."""
+    got: list[tuple[int, bytes, str]] = []
+    req = SimpleNamespace(reply=lambda body, kind, status=HTTPStatus.OK, **_: got.append((status, body, kind)))
+    serve_run.still(req, None, run, query)
+    return got[0]
 
 
 def ppm(shade: int) -> bytes:
@@ -82,7 +90,7 @@ class StreamTests(unittest.TestCase):
         assert out == {"run": "solo", "polls": 3, "added": 3, "every": 25}
         assert index["sides"] == ["port"] and index["polls"] == [0, 25, 50]
         assert not (run / "stream" / "original").exists()
-        status, body, kind = site_stream.frame(self.server, "solo/port/50.jpg")
+        status, body, kind = still(run, "side=port&poll=50")
         assert status == HTTPStatus.OK and kind == "image/jpeg" and body[:2] == b"\xff\xd8"
 
     def test_an_oracle_run_waits_for_the_original_even_while_the_port_has_frames(self):
@@ -149,26 +157,23 @@ class StreamTests(unittest.TestCase):
         assert (status, body["code"]) == (HTTPStatus.NOT_FOUND, "stream.empty")
         assert site_stream.answer(server, "POST", "bare", "", b"")[0] == HTTPStatus.METHOD_NOT_ALLOWED
 
-    def test_a_frame_is_served_and_a_bad_run_side_or_poll_refuses_typed(self):
+    def test_a_still_is_served_and_a_bad_side_or_poll_refuses_typed(self):
         server, tmp_path = self.server, self.tmp
         run = make_run(tmp_path)
         tas_stream.pack(run)
-        status, body, kind = site_stream.frame(server, "r1/original/25.jpg")
+        status, body, kind = still(run, "side=original&poll=25")
         assert (status, kind, body[:2]) == (HTTPStatus.OK, "image/jpeg", b"\xff\xd8")
-        for rest, code in (
-            ("zz/port/0.jpg", "stream.run"),
-            ("r1/oracle/0.jpg", "stream.side"),
-            ("r1/port/26.jpg", "stream.poll"),
-            ("r1/port/x.jpg", "stream.poll"),
-            ("r1/port", "stream.poll"),
+        for query, code in (
+            ("side=oracle&poll=0", "stream.side"),
+            ("side=port&poll=26", "stream.poll"),
+            ("side=port&poll=x", "stream.poll"),
+            ("side=port", "stream.poll"),
         ):
-            status, body, kind = site_stream.frame(server, rest)
-            assert (status, kind, body["code"]) == (HTTPStatus.NOT_FOUND, "application/json", code), rest
+            status, body, kind = still(run, query)
+            assert (status, kind, json.loads(body)["code"]) == (HTTPStatus.NOT_FOUND, "application/json", code), query
 
     def test_a_run_id_cannot_leave_the_runs_folder(self):
-        server = self.server
-        assert site_stream.frame(server, "../x/port/0.jpg")[2] == "application/json"
-        assert site_stream.answer(server, "GET", "..", "", b"")[0] == HTTPStatus.NOT_FOUND
+        assert site_stream.answer(self.server, "GET", "..", "", b"")[0] == HTTPStatus.NOT_FOUND
 
     def test_the_clock_speeds_are_one_eighth_to_sixteen_times_sixty_polls_a_second(self):
         assert clock("return [c.SPEEDS, c.RATE, c.SPEEDS.map(c.speedLabel)];") == [

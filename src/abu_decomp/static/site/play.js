@@ -42,6 +42,7 @@ export function padState(keys, gamepads) {
 }
 
 // Video framing: u32 BE length (top bit = reach record), u64 BE stamp, u32 BE seq, then the JPEG or the reach record.
+// onFrame gets (jpeg, stamp): the stamp (capture microseconds) is what the painter paces by.
 export function framer(onFrame, onReach = () => {}) {
   let buf = new Uint8Array(0);
   return chunk => {
@@ -50,7 +51,9 @@ export function framer(onFrame, onReach = () => {}) {
     while (buf.length - o >= 16) {
       const raw = new DataView(buf.buffer, buf.byteOffset + o, 4).getUint32(0), n = raw & 0x7fffffff;
       if (buf.length - o < 16 + n) break;
-      (raw & 0x80000000 ? onReach : onFrame)(buf.slice(o + 16, o + 16 + n));
+      const body = buf.slice(o + 16, o + 16 + n);
+      if (raw & 0x80000000) onReach(body);
+      else onFrame(body, Number(new DataView(buf.buffer, buf.byteOffset + o + 4, 8).getBigUint64(0)));
       o += 16 + n;
     }
     buf = buf.slice(o);
@@ -214,24 +217,44 @@ function flagDialog(ctx, S, live) {
   return { el: dialog, open: (run, at) => { if (!live() || !run) return; poll.value = String(at); text.value = ""; status.textContent = ""; dialog.showModal(); } };
 }
 
-// Stream the run's pictures: the server pushes JPEG frames; the newest one is painted, none replayed as a burst.
+/** The painter of one canvas: `offer` keeps the newest frame by its capture stamp, and each animation frame decodes and
+ * paints it if its stamp is newer than the one shown; frames that arrive between two animation frames are dropped, never
+ * replayed as a burst, and an older stamp never repaints over a newer one. */
+export function painter(paint, raf = requestAnimationFrame) {
+  let pending = null, shown = -1, busy = false, live = true;
+  const tick = () => {
+    if (!live) return;
+    if (pending && !busy && pending.stamp > shown) {
+      const { bytes, stamp } = pending; pending = null; busy = true; shown = stamp;
+      Promise.resolve(paint(bytes)).finally(() => { busy = false; });
+    }
+    raf(tick);
+  };
+  raf(tick);
+  return {
+    offer(bytes, stamp) { if (stamp > shown && (!pending || stamp >= pending.stamp)) pending = { bytes, stamp }; },
+    stop() { live = false; },
+    get shown() { return shown; },
+  };
+}
+
+// Stream the run's pictures: the server pushes stamped JPEG frames; requestAnimationFrame paints the newest by stamp.
 async function video(id, signal, canvas) {
   const paint = bytes => createImageBitmap(new Blob([bytes], { type: "image/jpeg" })).then(bmp => {
     canvas.width = bmp.width; canvas.height = bmp.height; canvas.getContext("2d").drawImage(bmp, 0, 0); bmp.close();
   });
+  const show = painter(paint);
   try {
     const res = await fetch(`/video/${encodeURIComponent(id)}`, { cache: "no-store", signal });
     if (!res.ok || !res.body) return;
     const reader = res.body.getReader();
-    let newest = null;
-    const feed = framer(frame => { newest = frame; }, rec => sessionReach(reachRows(rec)));
+    const feed = framer((frame, stamp) => show.offer(frame, stamp), rec => sessionReach(reachRows(rec)));
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       feed(value);
-      if (newest) { const n = newest; newest = null; await paint(n); }
     }
-  } catch (error) { if (!signal.aborted) throw error; }
+  } catch (error) { if (!signal.aborted) throw error; } finally { show.stop(); }
 }
 
 function addStyle() {

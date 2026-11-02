@@ -129,12 +129,12 @@ console.log(JSON.stringify(out));
         run = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
         got = json.loads(run.stdout)
         self.assertEqual(got["merge"], ["a", "b", "c"])
-        self.assertEqual((got["frame"], got["none"]), ("/stream/r%201/port/120.jpg", None))
+        self.assertEqual((got["frame"], got["none"]), ("/still/r%201?side=port&poll=120", None))
         self.assertEqual(got["tiles"], 24)  # two pages: the first on mount, the second when the sentinel shows
         self.assertEqual(got["before"], 0)  # a request alone is not a stream
         self.assertEqual((got["visible"], got["streams"]), (4, 3))  # streams: visible tiles whose frame loaded
-        self.assertEqual(got["src"], "/stream/r3/port/60.jpg")
-        self.assertEqual(got["offscreenSrc"], "/stream/r0/port/60.jpg")  # an off-screen tile keeps its still frame
+        self.assertEqual(got["src"], "/still/r3?side=port&poll=60")
+        self.assertEqual(got["offscreenSrc"], "/still/r0?side=port&poll=60")  # an off-screen tile keeps its still frame
 
 
 if __name__ == "__main__":

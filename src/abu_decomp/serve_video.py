@@ -1,5 +1,6 @@
-"""The picture routes of `decomp tas serve`: `/frame/RUN` and `/oracle/RUN`, and the wire format of the `/video/RUN`
-and `/wall` streams (VIDEO_HEADER + body, CONTRACTS.md); those two handlers themselves are in tas_serve."""
+"""`/oracle/RUN` (the original game's latest picture) and the wire format of the `/video/RUN` and `/wall` streams
+(VIDEO_HEADER + body, CONTRACTS.md); those two handlers themselves are in tas_serve. /video/RUN is the run's one
+picture path: the port's latest picture rides it, so there is no still route of its own."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import tas, tas_oracle
+from abu_decomp import tas_oracle
 
 VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of missed pictures
 VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
@@ -18,15 +19,10 @@ WALL_FPS = 4
 WALL_KEEPALIVE_SECONDS = 10.0
 
 
-def frame(req: Any, server: Any, run: Path, query: str = "", name: str = tas.VIEW) -> None:
-    """The run's latest picture as a PNG; `name` is the file in the run folder (the oracle's is tas_oracle.VIEW)."""
+def oracle(req: Any, server: Any, run: Path, query: str = "") -> None:
+    """The original game's latest picture of a run played with the oracle, as a PNG."""
     try:
-        stamp, body, seq = server.capture(run / name)
+        stamp, body, seq = server.capture(run / tas_oracle.VIEW)
     except (OSError, ValueError):
         return req.missing()
     return req.reply(body, "image/png", extra={"X-Frame": str(stamp), "X-Input-Seq": str(seq)})
-
-
-def oracle(req: Any, server: Any, run: Path, query: str = "") -> None:
-    """The original game's latest picture of a run played with the oracle."""
-    frame(req, server, run, query, tas_oracle.VIEW)

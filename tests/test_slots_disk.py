@@ -1,63 +1,36 @@
-"""Disk floor of the host pool: a new heavy job below the floor is refused before it queues; the owner's play is not."""
+"""The caller declares the disk floor; the shared API refuses before workload entry."""
 
-import os
-import tempfile
 import unittest
 from unittest import mock
 
-from abu_decomp import slots
+from abucache.slots import Admission, AdmissionError
+
+from abu_decomp.admission import slots
 
 
 class DiskFloorTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.dir = tempfile.mkdtemp(prefix="slots-disk-")
-        for patcher in (
-            mock.patch.dict(os.environ, {"ABU_SLOTS_DIR": self.dir, "ABU_SLOT_HELD": "", "ABU_SLOTS_OFF": ""}),
-            mock.patch.object(slots, "capacity", return_value=8),
-            mock.patch.object(slots, "DISK_GIB", 40.0),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+    def test_policy_is_owned_by_the_shared_api(self):
+        self.assertIsInstance(slots, Admission)
+        self.assertEqual(slots.policy.disk_gib, 40)
 
-    def free(self, gib: float):
-        return mock.patch.object(slots, "disk_free_gib", return_value=gib)
-
-    def test_configure_reads_the_per_slot_need(self) -> None:
-        slots.configure({"disk_gib": 55})
-        self.assertEqual(slots.DISK_GIB, 55.0)
-
-    def test_the_need_grows_with_the_slots_a_job_holds(self) -> None:
-        with self.free(70.0):
+    def test_disk_need_scales_with_work(self):
+        with mock.patch.object(slots, "disk_free_gib", return_value=70):
             slots.check_disk("batch", 1)
-            with self.assertRaises(slots.DiskFloorError):
+            with self.assertRaises(AdmissionError):
                 slots.check_disk("batch", 2)
 
-    def test_no_declared_need_is_no_floor(self) -> None:
-        with self.free(0.1), mock.patch.object(slots, "DISK_GIB", 0.0):
-            slots.check_disk("batch", 8)
+    def test_no_work_starts_on_refusal(self):
+        work = mock.Mock()
+        with (
+            mock.patch.object(slots, "disk_free_gib", return_value=1),
+            mock.patch.object(slots, "pool_dir") as pool,
+            self.assertRaises(AdmissionError),
+            slots.hold("batch", label="stamp build"),
+        ):
+            work()
+        work.assert_not_called()
+        pool.assert_called_once()
 
-    def test_refused_below_the_floor_without_queueing(self) -> None:
-        with self.free(12.5), self.assertRaises(slots.DiskFloorError) as caught:
-            slots.acquire("batch", 1, "stamp build")
-        self.assertEqual(caught.exception.key, "slots.disk_floor")
-        self.assertIn("12.5 GiB free", caught.exception.detail)
-        self.assertIn("ENOSPC", caught.exception.detail)
-        self.assertEqual(list((slots.pool_dir() / "tickets").iterdir()), [])  # nothing queued
-
-    def test_hold_refuses_every_class_but_owner(self) -> None:
-        with self.free(1.0):
-            for klass in ("interactive", "batch", "background"):
-                with self.assertRaises(slots.DiskFloorError), slots.hold(klass, 1, "x"):
-                    pass
-            with slots.hold("owner", 1, "watched play") as grant:
-                self.assertIsNotNone(grant)
-
-    def test_admitted_above_the_floor(self) -> None:
-        with self.free(60.0), slots.hold("batch", 1, "x") as grant:
-            self.assertIsNotNone(grant)
-
-    def test_run_prints_a_refusal_and_does_not_start_the_child(self) -> None:
-        with self.free(3.0), mock.patch.object(slots.subprocess, "call") as call, mock.patch("sys.stderr") as err:
-            self.assertEqual(slots.main(["run", "--", "true"]), 1)
-        call.assert_not_called()
-        self.assertIn("REFUSE slots.disk_floor", "".join(c.args[0] for c in err.write.call_args_list))
+    def test_owner_has_the_caller_declared_exemption(self):
+        with mock.patch.object(slots, "disk_free_gib", return_value=1):
+            slots.check_disk("owner", 8)

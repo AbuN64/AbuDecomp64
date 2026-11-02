@@ -1,71 +1,45 @@
-"""Memory admission of the host pool: a stamp needs the floor plus its measured need, the rest queue, none fail."""
+"""Profile values reach shared admission and stamp work only starts after a grant."""
 
-import os
-import tempfile
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
-from abu_decomp import slots
+from abucache.slots import Admission, Policy
+
+from abu_decomp import cli
+from abu_decomp.admission import slots
+from abu_decomp.data.trial import Builder
 
 
 class StampMemoryTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.dir = tempfile.mkdtemp(prefix="slots-mem-")
-        for patcher in (
-            mock.patch.dict(os.environ, {"ABU_SLOTS_DIR": self.dir, "ABU_SLOT_HELD": "", "ABU_SLOTS_OFF": ""}),
-            mock.patch.object(slots, "capacity", return_value=8),
-            mock.patch.object(slots, "MEM_FLOOR_GIB", 4.0),
-            mock.patch.object(slots, "STAMP_GIB", 5.0),
-            mock.patch.object(slots, "STAMP_JOBS", 2),
-        ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
+    def test_profile_configuration_is_shared_and_explicit(self):
+        with mock.patch.object(slots, "policy", Policy(2, 0, 40, 0.75, 0, 0)):
+            slots.configure({"floor_gib": 3, "stamp_gib": 6.5, "stamp_jobs": 4, "reserve_cores": 1})
+            self.assertEqual(slots.policy, Policy(1, 3, 40, 0.75, 6.5, 4))
+            slots.configure(None)
+            self.assertEqual(slots.policy.stamp_gib, 6.5)
+        self.assertIs(cli.slots, slots)
+        self.assertIsInstance(cli.slots, Admission)
 
-    def mem(self, total: float, available: float):
-        return mock.patch.object(slots, "_mem_gib", side_effect=lambda f: total if f == "MemTotal" else available)
+    def test_stamp_policy_and_work_order(self):
+        events = []
 
-    def test_configure_reads_the_profile_section(self) -> None:
-        slots.configure({"floor_gib": 3, "stamp_gib": 6.5, "stamp_jobs": 4, "reserve_cores": 1})
-        self.assertEqual((slots.MEM_FLOOR_GIB, slots.STAMP_GIB, slots.STAMP_JOBS), (3.0, 6.5, 4))
-        slots.configure(None)  # no section: keeps what was set
-        self.assertEqual(slots.STAMP_GIB, 6.5)
-
-    def test_stamp_slots_is_the_smaller_of_cores_and_memory(self) -> None:
-        with self.mem(34.0, 30.0):  # (34 - 4) / 5 = 6 by memory, 8 / 2 = 4 by cores
-            self.assertEqual(slots.stamp_slots(), 4)
-        with self.mem(19.0, 15.0):  # (19 - 4) / 5 = 3 by memory
-            self.assertEqual(slots.stamp_slots(), 3)
-            self.assertEqual(slots.stamp_weight(), 2)  # 8 // 3
-        with self.mem(2.0, 1.0):  # less than one stamp: still one
-            self.assertEqual(slots.stamp_slots(), 1)
-
-    def test_an_interactive_stamp_takes_the_whole_capacity_and_batch_stamps_share(self) -> None:
-        with self.mem(34.0, 30.0):  # 4 stamps fit by cores: stamp_jobs 2 caps batch only
-            self.assertEqual(slots.stamp_weight("batch"), 2)
-            self.assertEqual(slots.stamp_weight("background"), 2)
-            self.assertEqual(slots.stamp_weight("interactive"), 8)
-            self.assertEqual(slots.stamp_weight("owner"), 8)
-
-    def test_a_stamp_waits_for_floor_plus_its_need_then_runs(self) -> None:
-        with self.mem(34.0, 8.0), self.assertRaises(TimeoutError):  # 8 < 4 + 5 + nothing promised? 8 < 9
-            slots.acquire("batch", 2, "stamp", timeout=0.2, mem_gib=5.0)
-        with self.mem(34.0, 9.5):
-            grant = slots.acquire("batch", 2, "stamp", timeout=2, mem_gib=5.0)
-            grant.release()
-
-    def test_a_fresh_holder_promises_memory_it_has_not_used_yet(self) -> None:
-        with self.mem(34.0, 14.0):  # room for two stamps by the figure alone: 4 + 5 <= 14 < 4 + 5 + 5 + 5
-            first = slots.acquire("batch", 2, "stamp one", timeout=2, mem_gib=5.0)
+        @contextmanager
+        def hold(klass, **kwargs):
+            self.assertEqual((klass, kwargs["weight"], kwargs["mem_gib"]), ("batch", 2, 5))
+            events.append("grant")
             try:
-                with self.assertRaises(TimeoutError):  # needs 4 + 5 + 5 promised = 14 + > 14? 14 < 14 is false
-                    slots.acquire("batch", 2, "stamp two", timeout=0.2, mem_gib=5.5)
+                yield mock.Mock(weight=2, waited=0)
             finally:
-                first.release()
+                events.append("release")
 
-    def test_the_default_need_is_per_slot_rss_without_a_stamp_figure(self) -> None:
-        with self.mem(34.0, 5.0), self.assertRaises(TimeoutError):  # 4 + 0.75 * 4 = 7 > 5
-            slots.acquire("batch", 4, "play", timeout=0.2)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        builder = object.__new__(Builder)
+        with (
+            mock.patch.object(slots, "policy", Policy(2, 4, 40, 0.75, 5, 2)),
+            mock.patch.object(slots, "stamp_weight", return_value=2),
+            mock.patch.object(slots, "hold", side_effect=hold),
+            mock.patch.object(Builder, "held", False),
+            builder.holding(),
+        ):
+            events.append("work")
+        self.assertEqual(events, ["grant", "work", "release"])

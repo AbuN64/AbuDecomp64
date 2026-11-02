@@ -28,7 +28,6 @@ src/abu_decomp/preflight.py
 src/abu_decomp/proof.py
 src/abu_decomp/ship.py
 src/abu_decomp/shipproof.py
-src/abu_decomp/slots.py
 src/abu_decomp/sweep.py
 src/abu_decomp/tas.py
 src/abu_decomp/tas_bake.py

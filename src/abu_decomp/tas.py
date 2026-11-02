@@ -73,7 +73,6 @@ from typing import Any
 from abu_decomp import (
     DecompError,
     procguard,
-    slots,
     tas_coverage,
     tas_fault,
     tas_findings,
@@ -88,6 +87,7 @@ from abu_decomp import (
     tas_statediff,
     tas_symbolize,
 )
+from abu_decomp.admission import slots
 from abu_decomp.config import Profile, check_keys
 
 SCHEMA = 1
@@ -1429,7 +1429,7 @@ def _admitted(fn):
     """Hold the host slot pool while a play runs (module slots): the owner's watched play (no movie, a retry or a
     take) is class owner and always gets a slot; a play a person watches (real time or k times, `speed` != 0) is
     interactive; every other play is automated (a corpus or lane batch, a turbo replay) and takes class background;
-    `slot_class` (play_all passes background) or ABU_SLOT_CLASS overrides; the oracle beside the port takes a second
+    `slot_class` (play_all passes background) overrides; the oracle beside the port takes a second
     slot. The weight is also the cap: the port and the oracle run pinned to the cores of the slots held, however many
     threads they start (module slots)."""
 

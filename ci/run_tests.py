@@ -84,7 +84,7 @@ def hermetic_slots():
     tempfile.tempdir = scratch
     os.environ["TMPDIR"] = scratch
     pool = tempfile.mkdtemp(prefix="abu-slots-")
-    os.environ["ABU_SLOTS_DIR"] = pool
+    os.environ["XDG_RUNTIME_DIR"] = pool
 
 
 def main(start="tests", *names):

@@ -482,7 +482,7 @@ def test_a_diff_renameproof_proves_is_stamped_without_a_build(tmp_path, monkeypa
 def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path, monkeypatch):
     from dataclasses import replace
 
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
     from abu_decomp.data import trial
 
     held = []
@@ -499,8 +499,8 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
 
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 14)
-    monkeypatch.setattr(slots, "STAMP_GIB", 5.0)
-    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
+    monkeypatch.setattr(slots.policy, "stamp_gib", 5.0)
+    monkeypatch.setattr(slots.policy, "stamp_jobs", 0)
     ran = []
     run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")  # noqa: E731
     cfg = replace(CFG, make=("make",), jobs=())
@@ -790,7 +790,7 @@ def test_copiers_share_the_setup_lock_but_an_extraction_waits_for_them_and_they_
 
 
 def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeypatch):
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
 
     held = []
 
@@ -807,7 +807,7 @@ def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeyp
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 14)
     monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
-    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
+    monkeypatch.setattr(slots.policy, "stamp_jobs", 0)
     ran = []
     run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "1", "")  # noqa: E731
     b = trial.Builder(replace(CFG, make=("make",), jobs=("n",)), tmp_path, run=run)
@@ -878,7 +878,7 @@ def test_a_rewarm_copies_its_synced_names_side_by_side_and_reports_a_failed_one(
 
 
 def test_a_stamp_queues_for_the_slots_once_from_the_settle_to_the_link(tmp_path, monkeypatch):
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
 
     held, depth = [], []
 
@@ -957,7 +957,7 @@ def test_a_short_at_hash_is_resolved_to_the_full_commit_before_the_tree_is_made(
 
 
 def test_a_held_stamp_runs_at_the_pools_grant_and_never_asks_the_admit_command(tmp_path, monkeypatch):
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
     from abu_decomp.data import check as check_mod
 
     """10-27 names pass: the pool admitted a stamp on measured busy cores, then admit (idle cores again) said 3 and five
@@ -977,7 +977,7 @@ def test_a_held_stamp_runs_at_the_pools_grant_and_never_asks_the_admit_command(t
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 10)
     monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
-    monkeypatch.setattr(slots, "STAMP_JOBS", 0)
+    monkeypatch.setattr(slots.policy, "stamp_jobs", 0)
     monkeypatch.setattr(slots, "stamp_slots", lambda: 1)  # a lone batch stamp: the whole pool
     admit = lambda cmd, **k: asked.append(cmd) or subprocess.CompletedProcess(cmd, 0, "3", "")  # noqa: E731
     b = trial.Builder(replace(CFG, make=("make",), jobs=("admit", "1.5")), tmp_path, run=admit)
@@ -990,7 +990,7 @@ def test_a_held_stamp_runs_at_the_pools_grant_and_never_asks_the_admit_command(t
 
 
 def test_batch_stamps_still_share_and_an_interactive_stamp_takes_the_pool(tmp_path, monkeypatch):
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
 
     granted = []
 

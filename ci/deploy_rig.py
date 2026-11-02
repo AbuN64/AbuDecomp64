@@ -121,7 +121,7 @@ __RUNNER__
 PY
 mkdir "$work/tmp" || exit 9
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=init.templateDir GIT_CONFIG_VALUE_0=
-export TMPDIR=$work/tmp ABU_SLOTS_DIR=$(mktemp -d "$work/slots.XXXXXX")
+export TMPDIR=$work/tmp XDG_RUNTIME_DIR=$(mktemp -d "$work/slots.XXXXXX")
 export PYTHONPATH=$PWD/src PYTHONDONTWRITEBYTECODE=1
 rc=0
 "$BUILD/bin/python" "$work/runner.py" > "$work/suite.log" 2>&1 || rc=$?

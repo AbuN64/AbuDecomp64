@@ -52,7 +52,8 @@ from typing import Any
 
 from unbake import api
 
-from abu_decomp import DecompError, remap, slots, tas_oracle, tas_symbolize
+from abu_decomp import DecompError, remap, tas_oracle, tas_symbolize
+from abu_decomp.admission import slots
 from abu_decomp.behave import abi, percall, prototype, replay
 from abu_decomp.config import Profile, check_keys
 

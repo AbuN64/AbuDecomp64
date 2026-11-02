@@ -8,15 +8,20 @@ import tempfile
 import unittest
 from unittest import mock
 
-from abu_decomp import slots
+from abucache.slots import AdmissionError
 
-PROBE = "from abu_decomp import slots; slots.configure({'disk_gib': 40}); slots.acquire('batch', 1, 'probe').release()"
+from abu_decomp.admission import slots
+
+PROBE = (
+    "from abu_decomp.admission import slots; slots.configure({'disk_gib': 40}); "
+    "slots.acquire('batch', 1, 'probe').release()"
+)
 
 
 class HostSeam(unittest.TestCase):
     def setUp(self) -> None:
         self.dir = tempfile.mkdtemp(prefix="slots-seam-")
-        patcher = mock.patch.dict(os.environ, {"ABU_SLOTS_DIR": self.dir, "ABU_SLOT_HELD": "", "ABU_SLOTS_OFF": ""})
+        patcher = mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": self.dir, "UNBAKE_CORES": ""})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -32,7 +37,7 @@ class HostSeam(unittest.TestCase):
         statvfs.assert_not_called()
 
     def test_a_job_needing_more_than_the_host_has_free_still_runs_here(self) -> None:
-        with self.starved_host(), mock.patch.object(slots, "DISK_GIB", 40.0):
+        with self.starved_host(), mock.patch.object(slots.policy, "disk_gib", 40.0):
             slots.acquire("batch", 1, "seam").release()
 
     def test_a_python_the_test_starts_gets_the_same_stand_in(self) -> None:
@@ -42,8 +47,8 @@ class HostSeam(unittest.TestCase):
 
     def test_the_floor_itself_is_still_checked_when_a_test_sets_the_free_space(self) -> None:
         with (
-            mock.patch.object(slots, "DISK_GIB", 40.0),
+            mock.patch.object(slots.policy, "disk_gib", 40.0),
             mock.patch.object(slots, "disk_free_gib", return_value=1.0),
-            self.assertRaises(slots.DiskFloorError),
+            self.assertRaises(AdmissionError),
         ):
             slots.acquire("batch", 1, "starved")

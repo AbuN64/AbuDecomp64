@@ -10,7 +10,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import slots, tas_seat
+from abucache.slots import AdmissionError
+
+from abu_decomp import tas_seat
+from abu_decomp.admission import slots
 
 
 class Scratch(unittest.TestCase):
@@ -18,7 +21,7 @@ class Scratch(unittest.TestCase):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
         per_slot = 20.0
         with (
-            mock.patch.object(slots, "DISK_GIB", per_slot),
+            mock.patch.object(slots.policy, "disk_gib", per_slot),
             tempfile.TemporaryDirectory() as workspace,
             mock.patch.dict(os.environ),
             mock.patch.object(tempfile, "tempdir", None),
@@ -30,13 +33,13 @@ class Scratch(unittest.TestCase):
             self.addCleanup(shutil.rmtree, scratch, True)
             self.assertEqual(scratch.parent, Path(workspace))
             self.assertEqual(Path(os.environ["TMPDIR"]), scratch)
-            self.assertEqual(Path(os.environ["ABU_SLOTS_DIR"]).parent, scratch)
+            self.assertEqual(Path(os.environ["XDG_RUNTIME_DIR"]).parent, scratch)
             self.assertEqual(Path(tempfile.mkdtemp(prefix="slots-mem-")).parent, scratch)
             register.assert_called_once_with(shutil.rmtree, str(scratch), ignore_errors=True)
-            self.assertEqual(slots.DISK_GIB, per_slot)
+            self.assertEqual(slots.policy.disk_gib, per_slot)
             with (
                 mock.patch.object(slots, "disk_free_gib", return_value=29.3),
-                self.assertRaises(slots.DiskFloorError),
+                self.assertRaises(AdmissionError),
             ):
                 slots.check_disk("batch", 2)
 

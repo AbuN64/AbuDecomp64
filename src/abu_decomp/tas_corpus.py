@@ -46,7 +46,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, slots, tas, tas_coverage, tas_health, tas_oracle
+from abu_decomp import DecompError, tas, tas_coverage, tas_health, tas_oracle
+from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 

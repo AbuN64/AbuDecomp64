@@ -94,7 +94,7 @@ class PlayAllFastTests(unittest.TestCase):
                 mock.patch.object(tas, "settings", return_value=cfg),
                 mock.patch.object(tas, "play", side_effect=play),
                 mock.patch("abu_decomp.tas_coverage.build", return_value=None),
-                mock.patch("abu_decomp.slots.capacity", return_value=3),
+                mock.patch("abu_decomp.admission.slots.capacity", return_value=3),
             ):
                 out, _ = tas.play_all(None, jobs=1)
                 self.assertEqual(sorted(seen), [("a", False), ("b", False), ("b", True)])

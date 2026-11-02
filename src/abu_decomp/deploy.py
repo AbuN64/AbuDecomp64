@@ -76,6 +76,7 @@ from abu_decomp.config import ConfigError, Profile
 DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
 # Distribution name -> its repository: the packages a deploy can install, each by its own commit.
 PACKAGES = {
+    "abucache": "https://github.com/AbuN64/cache-64",
     tools.DISTRIBUTION: DECOMP_URL,
     "unbake": "https://github.com/AbuN64/cake-unbake-64",
     "recipemaker": "https://github.com/AbuN64/recipe-maker-64",

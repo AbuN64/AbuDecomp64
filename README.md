@@ -80,3 +80,10 @@ Released under [GNU GPL version 3 or later](LICENSE).
 AbuCache64 owns every cache, content store, worker slot, pool, executor and timing path (abucache.compile, store,
 slots, pool, stages). `ci/abucache-audit`, run by the check entry point, refuses a new one here naming that owner; the
 files it still lists move to abucache and leave the list, nothing joins it.
+
+Slot admission belongs solely to `abucache.slots.Admission`. `abu_decomp.admission` declares
+`Policy` values: 2 reserve cores, 0 GiB memory floor, 0.75 GiB per slot, 40 GiB disk
+per slot, and no stamp-specific memory or width. The seat profile's `land.slots`
+updates these values. TAS, replay, proof and stamp builds share AbuCache64's host
+pool; refusal precedes the workload. Owner, interactive, batch and background
+queue in that order, FIFO within each class. No local slot implementation remains.

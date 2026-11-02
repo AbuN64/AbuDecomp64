@@ -18,7 +18,8 @@ from typing import Any
 
 from unbake import treelock
 
-from abu_decomp import DecompError, land, slots, tools
+from abu_decomp import DecompError, land, tools
+from abu_decomp.admission import slots
 from abu_decomp.config import Profile
 
 TAIL_LINES = 12
@@ -53,7 +54,7 @@ def run(
         # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
         # a stamp beyond the free slots or the measured memory queues in the host pool, before it takes the tree lock
         with (
-            slots.hold("batch", slots.stamp_weight(), "decomp make", mem_gib=slots.STAMP_GIB or None) as grant,
+            slots.hold("batch", slots.stamp_weight(), "decomp make", mem_gib=slots.policy.stamp_gib or None) as grant,
             treelock.hold(chosen.project, exclusive=True, who="make"),
         ):
             if grant and grant.waited > 1:

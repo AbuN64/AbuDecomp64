@@ -32,7 +32,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, evidence, slots, tas, tas_coverage, tas_fn, tas_phasemap
+from abu_decomp import DecompError, evidence, tas, tas_coverage, tas_fn, tas_phasemap
+from abu_decomp.admission import slots
 
 WHAT = ("source", "xref", "coverage", "movie")
 SITE, PARTS, LOCK = "site", "site.parts", "site.lock"

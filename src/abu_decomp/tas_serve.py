@@ -334,7 +334,7 @@ class Server:
     def slot_pool(self) -> dict[str, Any]:
         """The host slot pool (module slots): who holds which slots, who waits, and the last landed->live seconds
         (page-port.py's landings.jsonl beside the runs folder)."""
-        from abu_decomp import slots
+        from abu_decomp.admission import slots
 
         out = slots.status()
         rows = []

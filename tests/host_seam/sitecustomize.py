@@ -5,7 +5,7 @@ host is. The one seam is slots.disk_free_gib and slots._mem_gib; a test that che
 STAND_IN_GIB = 1024.0
 
 try:
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
 except ImportError:  # a python that does not import the checkout has no pool to protect
     pass
 else:

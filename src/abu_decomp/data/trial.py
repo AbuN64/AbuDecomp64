@@ -20,7 +20,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import meter, slots
+from abu_decomp import meter
+from abu_decomp.admission import slots
 from abu_decomp.data import literals, source
 from abu_decomp.data.config import DataConfig, expand
 
@@ -75,8 +76,8 @@ class Builder:
         if Builder.held:
             yield int(Builder.make_jobs or 1)
             return
-        want = slots.stamp_weight(slots.klass_from_env(klass))  # the class decides the grant, not the idle-core probe
-        with slots.hold(klass, weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
+        want = slots.stamp_weight(klass)  # the class decides the grant, not the idle-core probe
+        with slots.hold(klass, weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant:
             print(f"stamp slots: held {want} after waiting {getattr(grant, 'waited', 0):.0f}s", flush=True)
             # the slots held here are the stamp's: every make beneath (the check's, the ROM link) takes them through the
             # UNBAKE_CORES protocol and does not queue in unbake's pool again (S9: the link spent 580 s at ~0% CPU)
@@ -97,7 +98,7 @@ class Builder:
         if self.held:
             return self.run(argv, **kw)
         want = self.width()
-        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.STAMP_GIB or None) as grant:
+        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant:
             began, used = time.monotonic(), meter.cpu()
             kw["env"] = {**(kw.get("env") or os.environ), "UNBAKE_CORES": str(want)}  # the make takes this hold's slots
             try:

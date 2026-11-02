@@ -399,7 +399,7 @@ class CompareTests(unittest.TestCase):
 
 
 def test_play_all_default_jobs_are_capped_and_overridable(monkeypatch):
-    from abu_decomp import slots
+    from abu_decomp.admission import slots
 
     monkeypatch.setattr(slots, "capacity", lambda: 40)
     monkeypatch.delenv("ABU_TAS_JOBS", raising=False)

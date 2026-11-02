@@ -48,5 +48,5 @@ def _stand_in_seat(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_rig(tmp_path, monkeypatch):
-    monkeypatch.setenv("ABU_SLOTS_DIR", str(tmp_path / "slots"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     monkeypatch.setattr(subprocess, "run", _run_without_gcovr)

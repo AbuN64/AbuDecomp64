@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import io
 import json
@@ -86,7 +87,7 @@ def _fake_wait(process, timeout, run=None):
 
 class MovieTests(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.dict(os.environ, {"ABU_SLOTS_OFF": "1"})  # plays here never queue on the host's real pool
+        patcher = mock.patch("abu_decomp.tas.slots.hold", return_value=contextlib.nullcontext())
         patcher.start()
         self.addCleanup(patcher.stop)
         directory = tempfile.TemporaryDirectory()

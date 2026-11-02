@@ -31,7 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, procguard, slots, tas, tas_coverage, tas_oracle, tas_seat
+from abu_decomp import DecompError, procguard, tas, tas_coverage, tas_oracle, tas_seat
+from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
 

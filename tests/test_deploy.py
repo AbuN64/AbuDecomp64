@@ -22,7 +22,13 @@ CARRIED = [
 
 
 U3, R3 = "4" * 40, "5" * 40  # where unbake and recipemaker have landed: the live venv holds older commits
-HEADS = {URL["unbake"]: U3, URL["recipemaker"]: R3, URL["cake-taste-64"]: "6" * 40, URL["abu-decomp-64"]: D1}
+HEADS = {
+    URL["abucache"]: "7" * 40,
+    URL["unbake"]: U3,
+    URL["recipemaker"]: R3,
+    URL["cake-taste-64"]: "6" * 40,
+    URL["abu-decomp-64"]: D1,
+}
 MOVED = [f"recipemaker @ git+{URL['recipemaker']}@{R3}", f"unbake @ git+{URL['unbake']}@{U3}"]
 KEPT = ["pycparser==3.0"]  # carried as installed
 NAME1 = deploy.content_name([deploy.requirement("abu-decomp-64", D1), *MOVED], KEPT)  # the default deploy's name

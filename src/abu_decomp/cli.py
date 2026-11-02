@@ -20,7 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, priority, runslice, slots
+from abucache.slots import AdmissionError
+
+from abu_decomp import DecompError, priority, runslice
+from abu_decomp.admission import slots
 from abu_decomp.config import ConfigError, Profile, default_profile_path, load_profile
 
 
@@ -1868,7 +1871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result, code, findings = COMMANDS[command].run(parsed)
     except _Text as exc:
         return exc.code
-    except DecompError as exc:
+    except (DecompError, AdmissionError) as exc:
         code, findings = 1, [exc.finding()]
     except (ValueError, OSError) as exc:
         code, findings = 1, [{"key": "command.failed", "message": str(exc), "blocking": True}]

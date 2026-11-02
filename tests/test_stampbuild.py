@@ -806,7 +806,7 @@ def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeyp
 
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 14)
-    monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
+    monkeypatch.setattr(slots.policy, "stamp_gib", 0.0)
     monkeypatch.setattr(slots.policy, "stamp_jobs", 0)
     ran = []
     run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "1", "")  # noqa: E731
@@ -976,7 +976,7 @@ def test_a_held_stamp_runs_at_the_pools_grant_and_never_asks_the_admit_command(t
 
     monkeypatch.setattr(slots, "hold", Hold)
     monkeypatch.setattr(slots, "capacity", lambda: 10)
-    monkeypatch.setattr(slots, "STAMP_GIB", 0.0)
+    monkeypatch.setattr(slots.policy, "stamp_gib", 0.0)
     monkeypatch.setattr(slots.policy, "stamp_jobs", 0)
     monkeypatch.setattr(slots, "stamp_slots", lambda: 1)  # a lone batch stamp: the whole pool
     admit = lambda cmd, **k: asked.append(cmd) or subprocess.CompletedProcess(cmd, 0, "3", "")  # noqa: E731

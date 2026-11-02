@@ -1,4 +1,4 @@
-"""The sound wire format of `decomp tas serve`: the WAV header of a live stream (`/audio/RUN` itself is in tas_serve)."""
+"""The sound wire format of `decomp tas serve`: the live stream's WAV header (`/audio/RUN` is in tas_serve)."""
 
 from __future__ import annotations
 

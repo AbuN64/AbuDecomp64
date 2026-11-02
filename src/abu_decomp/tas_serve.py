@@ -15,9 +15,11 @@ queued and newest finished runs, rewritten from an inotify watch on the run fold
 the Server, Live and Reach they read, the route tables and `serve`.)
 `/video/RUN` is the run's sampled JPEG stream and its one picture path (no still route of the latest picture);
 `/wall` one multiplexed stream of 192 px thumbs of every running run;
-the live reach stream (class Reach, GAME-RUNNER 10a) arrives from the port as datagrams on `<input socket>.reach`, is
-kept as a cumulative bitset, written to RUN/reach.bin at run end, and rides in-band on `/video` (a record whose length
-field has REACH_FLAG set; a new viewer gets one full record first).
+the live reach stream (class Reach, GAME-RUNNER 10a) is the play's (module tas_reach): `tas play` reads the port's
+datagrams on `<input socket>.reach` and writes RUN/reach.bin, serve never does. Serve is a reader of the play's forward
+on `<input socket>.reach.live` (one reader per socket): it keeps a cumulative bitset and rides it in-band on `/video` (a
+record whose length field has REACH_FLAG set; a new viewer gets one full record first); a finished run's /video sends
+the reach.bin the play left.
 Any running run can be taken over by live input (`/api/take`, `/api/input`: datagrams to the run's input socket,
 tas.input_address), `/api/play` without a movie starts a human run, and `/api/play` with `from` + `at` retries a run
 from a poll (tas.play `source`/`take_at`); one run is driven by live input at a time. `/api/pin` keeps a run; every
@@ -80,6 +82,7 @@ from abu_decomp import (
     tas_oracle,
     tas_phasemap,
     tas_points,
+    tas_reach,
     tas_seat,
     tas_triage,
 )
@@ -120,9 +123,6 @@ WALL_WIDTH = 192
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
 LIVE_IDLE_SECONDS = 60.0  # idle live.json refresh (its clock, a run whose owner vanished)
 REACH_READ_TIMEOUT = 1.0  # how long the reader waits for a datagram before it asks whether the run is still alive
-REACH_FILE = "reach.bin"  # RUN/reach.bin: the run's final reach bitset over fns.json rows
-REACH_MAX_RECORD = 65536
-REACH_MAX_ROW = 1 << 17
 REACH_KEPT_RECORDS = 2048  # records a slow /video client may lag behind before it is given a fresh full record
 REACH_KEPT_BYTES = 1 << 20
 REACH_RUNS_KEPT = 64  # finished runs whose relay stays in memory
@@ -1105,37 +1105,6 @@ class Live:
         threading.Thread(target=self.loop, daemon=True, name="live").start()
 
 
-def varint(data: bytes, pos: int) -> tuple[int, int]:
-    """One LEB128 integer of a reach record at `pos`: (value, next position); ValueError when it is cut off."""
-    value = shift = 0
-    while True:
-        if pos >= len(data) or shift > 28:
-            raise ValueError("bad varint")
-        byte = data[pos]
-        pos += 1
-        value |= (byte & 127) << shift
-        if byte < 128:
-            return value, pos
-        shift += 7
-
-
-def reach_rows(data: bytes, pos: int) -> tuple[list[int], int]:
-    count, pos = varint(data, pos)
-    rows, row = [], 0
-    for _ in range(count):
-        step, pos = varint(data, pos)
-        row += step
-        if row >= REACH_MAX_ROW:
-            raise ValueError("row out of range")
-        rows.append(row)
-    return rows, pos
-
-
-def reach_full(poll: int, bits: bytes) -> bytes:
-    """A full reach record (type 1): the poll and the bitset over fns.json rows."""
-    return struct.pack("<BI", 1, poll) + bytes(bits)
-
-
 class RunReach:
     """One run's reach stream: the cumulative bitset, the poll of the last record and the records not yet forgotten."""
 
@@ -1182,27 +1151,14 @@ class RunReach:
     def feed(self, data: bytes) -> bool:
         """Apply one datagram. A malformed one is dropped (False), never half applied."""
         try:
-            if len(data) < 5 or data[0] not in (1, 2):
-                raise ValueError("not a reach record")
-            poll = struct.unpack_from("<I", data, 1)[0]
-            if data[0] == 2:
-                fresh, pos = reach_rows(data, 5)
-                hot, pos = reach_rows(data, pos)
-                if pos != len(data):
-                    raise ValueError("trailing bytes")
+            poll, entered = tas_reach.parse(data)
         except ValueError:
             with self.changed:
                 self.rejected += 1
                 self.announce()
             return False
         with self.changed:
-            if data[0] == 1:
-                self.bits = bytearray(data[5:])
-            else:
-                for row in fresh + hot:
-                    if row >> 3 >= len(self.bits):
-                        self.bits.extend(bytes((row >> 3) + 1 - len(self.bits)))
-                    self.bits[row >> 3] |= 1 << (row & 7)
+            tas_reach.merge(self.bits, data, entered)
             self.poll, self.count, self.seq = poll, self.count + 1, self.seq + 1
             self.records.append((self.seq, bytes(data)))
             self.size += len(data)
@@ -1214,7 +1170,7 @@ class RunReach:
     def snapshot(self) -> tuple[bytes, int]:
         """(a full record of everything so far, the sequence number it is current to), taken together."""
         with self.lock:
-            return reach_full(self.poll, self.bits), self.seq
+            return tas_reach.full(self.poll, self.bits), self.seq
 
     def since(self, seq: int) -> tuple[list[bytes], int]:
         """(records after `seq` in order, the newest sequence number). A reader that fell behind what is kept gets
@@ -1223,26 +1179,19 @@ class RunReach:
             if self.seq == seq:
                 return [], seq
             if not self.records or self.records[0][0] > seq + 1:
-                return [reach_full(self.poll, self.bits)], self.seq
+                return [tas_reach.full(self.poll, self.bits)], self.seq
             return [r for n, r in self.records if n > seq], self.seq
 
     def finish(self) -> None:
-        """Write RUN/reach.bin: the final bitset, if the run sent any record. Atomic, like run.json."""
-        with self.lock:
-            bits, got = bytes(self.bits), self.count
-        if got:
-            with contextlib.suppress(OSError):  # the run folder was archived under the reader
-                tmp = self.run / (REACH_FILE + ".tmp")
-                tmp.write_bytes(bits)
-                tmp.replace(self.run / REACH_FILE)
-        with self.changed:  # done means reach.bin is written: a waiter on it finds the file
+        """The reader ended: wake the waiters. Serve writes no file (tas.play owns RUN/reach.bin)."""
+        with self.changed:
             self.done = True
             self.announce()
 
     def serve(self) -> None:
-        """The reader: datagrams on the run's reach socket (the input socket's name + `.reach`, abstract namespace;
-        the port sends, non-blocking, and drops when nobody listens) until the run ends, then reach.bin."""
-        address = "\0" + tas.input_address(self.run)[1:] + ".reach"
+        """The reader: the play's forwarded reach records on the run's live socket (tas.reach_live_address, abstract
+        namespace; the play sends non-blocking and drops when nobody listens) until the run ends."""
+        address = tas_reach.abstract(tas.reach_live_address(self.run))
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 20)
@@ -1257,7 +1206,7 @@ class RunReach:
             self.listening.set()
             while True:
                 try:
-                    self.feed(sock.recv(REACH_MAX_RECORD + 1))
+                    self.feed(sock.recv(tas_reach.MAX_RECORD + 1))
                     continue
                 except TimeoutError:
                     self.idle += 1
@@ -1269,7 +1218,7 @@ class RunReach:
             sock.settimeout(0)
             while True:  # whatever the port sent before it exited
                 try:
-                    self.feed(sock.recv(REACH_MAX_RECORD + 1))
+                    self.feed(sock.recv(tas_reach.MAX_RECORD + 1))
                 except OSError:
                     break
         self.finish()
@@ -1339,11 +1288,11 @@ class Reach:
         if relay is not None:
             return ReachFeed(relay)
         try:
-            bits = (run / REACH_FILE).read_bytes()
+            bits = (run / tas_reach.FILE).read_bytes()
         except OSError:
             return None
         record = tas.read_record(run) or {}
-        return ReachFeed(None, reach_full(int(record.get("polls_reached") or 0), bits))
+        return ReachFeed(None, tas_reach.full(int(record.get("polls_reached") or 0), bits))
 
 
 # Routes: an exact path, a first path segment (+ the rest), and a run's folder (video, frame ...). A route module

@@ -22,7 +22,17 @@ from unittest import mock
 from PIL import Image
 from polls_record import write_polls
 
-from abu_decomp import DecompError, serve_audio, serve_files, serve_pages, serve_video, tas, tas_oracle, tas_serve
+from abu_decomp import (
+    DecompError,
+    serve_audio,
+    serve_files,
+    serve_pages,
+    serve_video,
+    tas,
+    tas_oracle,
+    tas_reach,
+    tas_serve,
+)
 from abu_decomp.config import load_profile
 
 
@@ -1002,7 +1012,7 @@ class ReachTests(Base):
     def sender(self, run):
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.addCleanup(sock.close)
-        address = "\0" + tas.input_address(run)[1:] + ".reach"
+        address = "\0" + tas.reach_live_address(run)[1:]  # the play's forward; serve never reads the port's socket
 
         def send(data):
             sock.sendto(data, address)
@@ -1022,7 +1032,7 @@ class ReachTests(Base):
         with relay.changed:
             self.assertTrue(relay.changed.wait_for(check, REACH_BOUND), "the relay never reached the state")
 
-    def test_records_reach_a_video_client_in_order_full_first_and_end_in_reach_bin(self):
+    def test_records_reach_a_video_client_in_order_full_first_and_serve_writes_no_reach_bin(self):
         run = self.make_run("x", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
         bmp, _ = capture_bmp(320, 240)
         (run / "view.bmp").write_bytes(bmp)
@@ -1052,8 +1062,21 @@ class ReachTests(Base):
         final = bitset([0, 1, 9, 17, 18, 30], 8)
         record = run / tas.RECORD
         record.write_text(json.dumps({"id": "x", "status": "done"}))
-        self.reached(relay, lambda: relay.done)  # done is set after reach.bin is written
-        self.assertEqual((run / "reach.bin").read_bytes(), final)
+        self.reached(relay, lambda: relay.done)
+        self.assertEqual(relay.snapshot()[0], tas_reach.full(14, final))
+        self.assertFalse((run / "reach.bin").exists())  # the play is the writer, never serve
+
+    def test_a_finished_plays_reach_bin_is_served_on_video(self):
+        run = self.make_run("p", movie="boot-idle", status="done", started=1.0, outcome="ok", polls_reached=7)
+        bmp, _ = capture_bmp(320, 240)
+        (run / "view.bmp").write_bytes(bmp)
+        (run / "reach.bin").write_bytes(bitset([0, 4], 8))  # what tas.play left
+        self.assertNotIn("p", self.server.reach.runs)
+        video = Stream(self.base, "/video/p", serve_video.VIDEO_HEADER)
+        self.addCleanup(video.close)
+        flagged, _, body = video.record()
+        self.assertTrue(flagged)
+        self.assertEqual(body, reach_record(1, 7, bitset([0, 4], 8)))
 
     def test_a_queued_run_is_listened_for_before_its_port_starts_and_until_it_leaves_the_queue(self):
         run = self.server.cfg["runs"] / "plays" / "q1"

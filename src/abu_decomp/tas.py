@@ -81,6 +81,7 @@ from abu_decomp import (
     tas_oracle,
     tas_points,
     tas_rank,
+    tas_reach,
     tas_sanitize,
     tas_seat,
     tas_select,
@@ -1258,6 +1259,12 @@ def reach_address(run: Path) -> str:
     return input_address(run) + ".reach"
 
 
+def reach_live_address(run: Path) -> str:
+    """The socket the play forwards its reach records to for `tas serve`'s live /video relay (module tas_reach): the
+    reach stream's name + `.live`. Only the play reads reach_address; a server reads this one."""
+    return reach_address(run) + ".live"
+
+
 def reach_rows(cfg: dict[str, Any]) -> Path | None:
     """The baked fnrows file (one function name per fns.json row) the port maps its entered functions to, or None
     before the first bake."""
@@ -1739,23 +1746,31 @@ def play(
         _check_play_signal()
         argv = _argv(cfg, user_dir, pak, card, fps_unlock)
         argv = supervised(cfg, run, argv) if supervise else argv
-        with (run / "output.txt").open("w") as output:
-            with _starting_play_process():
-                process = subprocess.Popen(
-                    argv,
-                    env=env,
-                    stdin=subprocess.PIPE if supervise else subprocess.DEVNULL,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    **procguard.owned(),
-                )
-                children.append(process)
-                record["pgid"] = process.pid
-                _write_record(run, record)
-            # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the stacks.
-            if supervise:
-                process.stdin.close()
-            code, cpu = _wait(process, timeout, run)
+        collector = None  # the play owns the run's reach socket and reach.bin (module tas_reach)
+        if "N64C_REACH_ROWS" in env:
+            collector = tas_reach.Collector(run, reach_address(run), reach_live_address(run))
+        try:
+            with (run / "output.txt").open("w") as output:
+                with _starting_play_process():
+                    process = subprocess.Popen(
+                        argv,
+                        env=env,
+                        stdin=subprocess.PIPE if supervise else subprocess.DEVNULL,
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        **procguard.owned(),
+                    )
+                    children.append(process)
+                    record["pgid"] = process.pid
+                    _write_record(run, record)
+                # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the
+                # stacks.
+                if supervise:
+                    process.stdin.close()
+                code, cpu = _wait(process, timeout, run)
+        finally:
+            if collector:
+                collector.finish()  # RUN/reach.bin: the play is the one writer, whether or not a server listens
         text = (run / "output.txt").read_text(errors="replace")
         reached = 0
         with contextlib.suppress(OSError):  # a port that died before its first poll left no lockstep file

@@ -3,6 +3,8 @@ import io
 import json
 import os
 import signal
+import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -13,7 +15,7 @@ from unittest import mock
 
 from polls_record import write_polls
 
-from abu_decomp import DecompError, tas
+from abu_decomp import DecompError, tas, tas_reach
 from abu_decomp.config import load_profile
 
 T0 = datetime(2026, 10, 20, 19, 0, tzinfo=UTC)
@@ -334,6 +336,62 @@ class MovieTests(unittest.TestCase):
             result = tas.play(self.profile, "m", now=T0)
         self.assertEqual(seen[0]["N64C_REACH_ROWS"], str(site / "fnrows.abc.txt"))
         self.assertEqual(tas.reach_address(Path(result["run"])), seen[0]["N64C_INPUT"] + ".reach")
+
+    def reach_play(self, records):
+        """Plays movie m on a baked site with a port that sends `records` (reach datagrams) and ends; no tas serve."""
+        self.movie()
+        site = self.root / "runs" / "site"
+        site.mkdir(parents=True)
+        (site / "manifest.json").write_text(json.dumps({"fnrows": "fnrows.abc.txt"}))
+        (site / "fnrows.abc.txt").write_text("main\nfoo\n")
+        with self.port("1 aa\n", []):
+            Port = tas.subprocess.Popen
+
+            def popen(argv, env, **kwargs):
+                process = Port(argv, env=env, **kwargs)
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                with sock:
+                    for record in records:
+                        sock.sendto(record, tas_reach.abstract(env["N64C_INPUT"] + ".reach"))
+                return process
+
+            with mock.patch.object(tas.subprocess, "Popen", popen):
+                result = tas.play(self.profile, "m", now=T0)
+        return Path(result["run"])
+
+    def test_a_play_with_no_serve_leaves_reach_bin_with_the_functions_the_port_reported(self):
+        full = struct.pack("<BI", 1, 3) + bytes([0b11])
+        delta = struct.pack("<BI", 2, 4) + bytes([1, 9]) + bytes([1, 0])  # fresh row 9, hot row 0
+        garbage = b"\x07junk"
+        run = self.reach_play([full, garbage, delta])
+        self.assertEqual((run / "reach.bin").read_bytes(), bytes([0b11, 0b10]))
+        self.assertFalse((run / "reach.bin.tmp").exists())
+
+    def test_a_play_whose_port_sent_no_reach_record_leaves_no_reach_bin(self):
+        run = self.reach_play([b"not a record"])
+        self.assertFalse((run / "reach.bin").exists())
+
+    def test_the_collector_forwards_to_a_server_and_catches_a_late_one_up_with_a_full_record(self):
+        run = self.root / "r"
+        run.mkdir()
+        address, live = "@abu-test-reach-" + self.id()[-12:], "@abu-test-reach-live-" + self.id()[-12:]
+        collector = tas_reach.Collector(run, address, live)
+        sender = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(sender.close)
+        first = struct.pack("<BI", 2, 1) + bytes([1, 3]) + bytes([0])  # row 3, nobody listens yet
+        collector.feed(first)  # directly: the reader thread is idle, so the refused send is certain to precede the bind
+        late = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.addCleanup(late.close)
+        late.bind(tas_reach.abstract(live))
+        late.settimeout(5)
+        second = struct.pack("<BI", 2, 2) + bytes([1, 9]) + bytes([0])  # row 9
+        sender.sendto(second, tas_reach.abstract(address))
+        self.assertEqual(late.recv(100), tas_reach.full(2, bytes([0b1000, 0b10])))
+        third = struct.pack("<BI", 2, 3) + bytes([1, 2]) + bytes([0])
+        sender.sendto(third, tas_reach.abstract(address))
+        self.assertEqual(late.recv(100), third)  # listening now: the delta goes as it came
+        collector.finish()
+        self.assertEqual((run / "reach.bin").read_bytes(), bytes([0b1100, 0b10]))
 
     def test_an_unbaked_site_gives_the_port_no_reach_rows(self):
         self.movie()

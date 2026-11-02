@@ -384,14 +384,20 @@ if __name__ == "__main__":
     unittest.main()
 
 
-ADDRESS_NAME = r"""
+# The RageWarsDecomp rule (config/sweep.toml): a suffix of 5 to 8 hex digits holding a decimal digit, a placeholder
+# prefix, or a linker fill name.
+ADDRESS_MATCH = (
+    r"\b(?:[A-Za-z_]\w*?_(?=[0-9A-Fa-f]{0,7}[0-9])[0-9A-Fa-f]{5,8}"
+    r"|(?:D|unk|func)_[0-9A-Fa-f]+|\w*LinkerAlignmentFill\w*)\b"
+)
+ADDRESS_NAME = f"""
 [[rule]]
 id = "address-name"
 kind = "pattern"
 severity = "block"
 why = "an identifier that names an address"
 paths = ["**/*.CPP", "**/*.H", "**/symbol_addrs.txt"]
-match = '\b(?:[A-Za-z_]\w*?_[0-9A-Fa-f]{8}|(?:D|unk|func)_[0-9A-Fa-f]+|\w*LinkerAlignmentFill\w*)\b'
+match = '{ADDRESS_MATCH}'
 """
 
 
@@ -419,3 +425,17 @@ class AddressNameTests(unittest.TestCase):
         )
         again = tree.sweep(ADDRESS_NAME, baseline=base, rewrite=False)
         self.assertEqual([(h["file"], h["line"]) for h in again["hits"] if h["new"]], [("src/POOL.CPP", 2)])
+
+    def test_a_rom_offset_suffix_of_five_to_seven_hex_digits_is_an_address_name(self):
+        # Lines cut from RageWarsDecomp at cf3e77e7f: older-build ROM offsets (6 hex digits) and segment labels (5).
+        tree = Tree(
+            {
+                "SOURCE/MENU.CPP": "extern char g_earlierMenuPaged_4064A8[];\n"
+                "unsigned int words_EF968[1] = { 0 };\n"
+                "if (state->flags & FLAG_ADDED) {\n"
+                "s32 k_scoreTable_1234[4];\n"
+                "s32 g_menuPageCount_FACED;\n",
+            }
+        )
+        hits = tree.sweep(ADDRESS_NAME)["hits"]
+        self.assertEqual([h["line"] for h in hits], [1, 2])  # 4 hex digits or no decimal digit is no address

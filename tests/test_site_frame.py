@@ -33,6 +33,9 @@ class FrameTest(unittest.TestCase):
         self.assertNotIn("<style", shell)
         self.assertIn("--accent", (SRC / "static" / "site" / "site.css").read_text())
 
+    def test_home_page_reaches_the_newest_run_in_one_click(self):
+        self.assertIn('<a class="btn" href="/watch"', (SRC / "runner.html").read_text())
+
     def test_the_stylesheet_is_served_as_css(self):
         kind, css = self.fetch("/static/site/site.css")
         self.assertEqual(kind, "text/css")

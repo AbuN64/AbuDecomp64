@@ -204,75 +204,6 @@ def _json_object(name: str, text: str | None) -> dict[str, Any] | None:
     return value
 
 
-def _display_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dir", type=Path, help="where displays are kept (default ~/.local/state/abu-decomp/displays)")
-    parser.add_argument(
-        "--backend", choices=("linux", "windows"), help="default: this host's own (linux, or windows on Windows)"
-    )
-    actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
-    create = actions.add_parser("create", help="start a headless display (Linux: labwc + wayvnc) at a size")
-    create.add_argument("--size", default="1280x720", help="WIDTHxHEIGHT (default 1280x720)")
-    create.add_argument("--endpoint", help="windows: HOST:PORT of the guest's VNC server (the site's config names it)")
-    invoke = actions.add_parser(
-        "invoke",
-        help="linux: run the profile's game (tas.port with tas.args and tas.env), or -- COMMAND, drawing on a fresh "
-        "display, then delete the display",
-    )
-    invoke.add_argument("--size", default="1280x720", help="WIDTHxHEIGHT (default 1280x720)")
-    invoke.add_argument(
-        "argv",
-        nargs=argparse.REMAINDER,
-        help="-- COMMAND ARGS: a command to run inside the display instead of the profile's game (the /live game)",
-    )
-    actions.add_parser("describe", help="show one display").add_argument("subject", help="the display identity")
-    capture = actions.add_parser("capture", help="write one PNG frame of a display read over RFB")
-    capture.add_argument("subject", help="the display identity")
-    capture.add_argument("--path", type=Path, required=True, help="absolute PNG path to write")
-    keys = actions.add_parser("input", help="send keys and pointer events to a display over RFB")
-    keys.add_argument("subject", help="the display identity")
-    keys.add_argument(
-        "--events",
-        required=True,
-        help='JSON list of {"key": "Control_L+c"}, {"text": "hi"}, {"pointer": {"x", "y", "buttons"}}, '
-        '{"click": {"x", "y", "button"}}',
-    )
-    actions.add_parser("delete", help="stop a display's compositor and VNC server and remove its folder").add_argument(
-        "subject", help="the display identity"
-    )
-
-
-def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    from dataclasses import asdict
-
-    from abu_decomp import display
-
-    shown = display.backend(args.dir, args.backend)
-    if args.action == "create":
-        return asdict(shown.create(args.size, args.endpoint)), 0, []
-    if args.action == "invoke":
-        from abu_decomp import site_live, tas
-
-        argv = [a for a in args.argv if a != "--"]
-        profile = None if argv else _profile(args.profile)  # refused before any display starts
-
-        def announce(identity: str, command: list[str]) -> None:
-            line = {"display": identity, "argv": command}
-            print(json.dumps(line), file=sys.stderr, flush=True)
-
-        game = (lambda _folder: (argv, dict(os.environ))) if argv else (lambda folder: tas.live(profile, folder))
-        return site_live.invoke(shown, args.size, game, announce), 0, []
-    if args.action == "capture":
-        return shown.capture(args.subject, args.path), 0, []
-    if args.action == "input":
-        try:
-            events = json.loads(args.events)
-        except ValueError as exc:
-            raise DecompError("cli.arguments", f"--events is not JSON: {exc}") from exc
-        return shown.input(args.subject, events), 0, []
-    record = shown.describe(args.subject) if args.action == "describe" else shown.delete(args.subject)
-    return asdict(record), 0, []
-
-
 def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     from abu_decomp import events
 
@@ -1703,11 +1634,6 @@ COMMANDS: dict[str, Command] = {
         "proof-build the profile's project (or --project) through the build pool", _tool_arguments, _run_make
     ),
     "taste": Command("run Cake Taste with the profile's Taste profile", _tool_arguments, _run_tool),
-    "display": Command(
-        "create, describe, capture, input and delete a headless display (Linux: labwc + wayvnc)",
-        _display_arguments,
-        _run_display,
-    ),
     "event": Command("append, tail and validate the event feed", _event_arguments, _run_event),
     "tools": Command("install one package into venvs", _tools_arguments, _run_tools),
     "supervisor": Command("supervise a role headless, or stage an artifact", _supervisor_arguments, _run_supervisor),

@@ -359,6 +359,24 @@ class HttpTests(Base):
         self.assertEqual(status, 200)
         self.assertTrue({"capacity", "used", "queue", "holders", "landings"} <= set(data))
 
+    def test_watch_redirects_to_the_newest_running_runs_play_view_or_names_none(self):
+        import http.client
+
+        def watch():
+            conn = http.client.HTTPConnection("127.0.0.1", self.http.server_address[1], timeout=10)
+            self.addCleanup(conn.close)
+            conn.request("GET", "/watch")
+            reply = conn.getresponse()
+            return reply.status, reply.getheader("Location"), reply.read()
+
+        self.server.live.running = []
+        status, _, body = watch()
+        self.assertEqual(status, 404)
+        self.assertIn(b"no run is going", body)
+        plays = self.server.cfg["runs"] / "plays"
+        self.server.live.running = [plays / "play-20261101-020000", plays / "play-20261101-030000"]
+        self.assertEqual(watch()[:2], (302, "/#/play/play-20261101-030000"))
+
     def test_the_page_carries_the_deployed_sha_of_its_server(self):
         self.server.deployed = "a" * 40
         _, _, body = self.get("/")

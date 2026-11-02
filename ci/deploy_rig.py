@@ -6,13 +6,14 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
 
   name       the engine's `decomp tools name` answers the build's NAME, a digest of every package commit the new toolkit
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
-             build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
-             deploys its own toolkit, never this one), so the name digests all of them. The deploy deletes nothing:
-             the activation prunes old builds, sealed ones included;
+             build holds several packages (unbake, recipemaker and cake-taste-64 move to their landed commits:
+             CakeUnbake64 deploys its own toolkit, never this one, so only this deploy moves them), so the name digests
+             all of them. The deploy deletes nothing: the activation prunes old builds, sealed ones included;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
-             SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of the live
-             toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine swaps, starts
-             as scratch and is never read), BUILD ends linked to that venv, and the full test suite (pytest over tests/)
+             SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every tool of ours the live
+             toolkit holds, at its landed commit, and every other package of it carried over as installed
+             (`--carry-from` the live link; BUILD, the link the engine swaps, starts as scratch and is never
+             read), BUILD ends linked to that venv, and the full test suite (pytest over tests/)
              runs in the tree with BUILD's python and the tree's src first on the import path. After the gate passes the
              built tree is made read-only (`chmod -R a-w`): the live toolkit is never written in place. The imported
              abu_decomp path must lie inside the tree. A failing suite exits non-zero, the live and previous links stay;
@@ -20,8 +21,10 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
   readback   the live link resolves to BUILD, a write into the live tree is refused (it is read-only), and the installed
              commit of AbuDecomp64 is the landed one. The tools are pinned by nobody: each is read as installed from its
              source repository and printed beside the commit that source has landed at (`deploy.landed_tools`, the same
-             read bin/test's clean environment resolves), `current` or `behind`; a tool that is missing or not a git
-             install refuses, a tool behind does not (its own deploy moves it). Any mismatch refuses (fix forward, no
+             read bin/test's clean environment resolves), `current`, `behind` or `off-main`; a tool that is missing,
+             not a git install, or installed at a commit that is not an ancestor of its source's main (`deploy.on_main`:
+             a handgate branch's commit) refuses, naming the tool and the commit. A tool behind does not: the build
+             installed it at its landed commit and it has landed again since. Any mismatch refuses (fix forward, no
              rollback). Then `decomp` is linked by name into the one command directory
              `commands` beside the toolkit link, through the live link, and read back: it resolves into the live
              toolkit. The toolkit holds the unbake library but none of its commands (the deploy removes them), and
@@ -168,14 +171,22 @@ here = installed(tools.DISTRIBUTION)
 print(f"readback-pin: {tools.DISTRIBUTION} {here}", flush=True)
 if here != sha:
     bad.append(f"{tools.DISTRIBUTION} is {here}, the landed commit is {sha}")
-# A tool installs itself at its landed commit; this deploy carries it as installed and pins none. The landed commit is
-# the one bin/test's clean environment resolves (deploy.landed_tools): a tool behind it is reported, not refused.
+# The deploy moves every tool of ours to the commit its source has landed at, the one bin/test's clean environment
+# resolves (deploy.landed_tools). A tool that landed again since the build is behind and reported, not refused; a
+# commit that is not on its source's main (a handgate branch's, an unpushed one) is refused.
 for name, landed in sorted(deploy.landed_tools().items()):
-    have = installed(name)
-    state = "current" if have == landed else "behind"
-    print(f"readback-tool: {name} installed {have} landed {landed} {state}", flush=True)
+    have, url = installed(name), deploy.PACKAGES[name]
     if len(have) != 40:
-        bad.append(f"{name} is {have}, it must be installed from its source {deploy.PACKAGES[name]}")
+        state = "refused"
+        bad.append(f"{name} is {have}, it must be installed from its source {url}")
+    elif have == landed:
+        state = "current"
+    elif deploy.on_main(url, have):
+        state = "behind"
+    else:
+        state = "off-main"
+        bad.append(f"{name} is installed at {have}, which is not on the main of {url}: only a landed commit may run")
+    print(f"readback-tool: {name} installed {have} landed {landed} {state}", flush=True)
 if bad:
     sys.exit("readback: " + "; ".join(bad))
 PY

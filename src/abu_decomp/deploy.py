@@ -1,10 +1,12 @@
 """`decomp tools deploy`: install ONE named package at one commit into a toolkit venv.
 
-A tool installs itself: no repository pins another of our tools by commit, so the deploy of a package (`--package`,
-`--sha`) installs that package at that commit and carries every other package the live venv has as it is installed
-(the exact commit of a git install, the exact version of the rest), never re-resolving them from pins. The package is
-installed from a git commit only (`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is refused), so a venv's
-provenance is always a commit that `decomp dependencies` can check.
+No repository pins another of our tools by commit, so the deploy of a package (`--package`, `--sha`) installs that
+package at that commit, moves every other tool of ours the live venv holds (`PACKAGES`) to the commit its source has
+landed at (`landed_commit`, installed with its dependencies: a tool's own land deploys its own toolkit, never this
+one, so a tool carried as installed would never move), and carries every other package as it is installed (the
+exact commit of a git install, the exact version of the rest). The package is installed from a git commit only
+(`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is refused), so a venv's provenance is
+always a commit that `decomp dependencies` can check.
 
 The carried set is read from the venv being replaced, or from `--carry-from PATH` when the venv named by `--venv` is
 scratch the caller recreates (the rig's `<toolkit>-stage` link): that is the live toolkit link, read before the new venv
@@ -58,6 +60,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -211,6 +214,36 @@ def carried(source: Path, package: str, project_packages: Sequence[str], run: Ru
     return json.loads(output.strip().splitlines()[-1])
 
 
+def landed_carry(carry: Sequence[str], package: str, run: Run) -> tuple[list[str], list[str]]:
+    """(tools, rest) of the `carry` rows: each tool of ours but `package` becomes `name @ git+URL@landed commit` (found
+    11-02: venv-decomp kept unbake and cake-taste-64 at the commits a past deploy installed, 48 and more behind their
+    main, because the carry reinstalled them as installed); every other row stays as installed."""
+    ours = {re.sub(r"[-_.]+", "-", name).lower(): name for name in PACKAGES if name != package}
+    moved: list[str] = []
+    rest: list[str] = []
+    for row in carry:
+        tool = ours.get(re.sub(r"[-_.]+", "-", re.split(r"\s*@|==|\[", row, maxsplit=1)[0].strip()).lower())
+        if tool:
+            moved.append(f"{tool} @ git+{PACKAGES[tool]}@{landed_commit(PACKAGES[tool], run)}")
+        else:
+            rest.append(row)
+    return moved, rest
+
+
+def on_main(url: str, commit: str, run: Run = run_command) -> bool:
+    """Whether `commit` is an ancestor of (or is) the commit the source repository `url` has landed at (its HEAD), read
+    from a fetch of commits only (no trees or blobs) into a scratch bare repository. A commit the fetch does not hold
+    (a handgate branch's, an unpushed one) is not on main; a fetch that fails refuses."""
+    with tempfile.TemporaryDirectory(prefix="on-main.") as bare:
+        fetch = ["git", "-C", bare, "fetch", "-q", "--filter=tree:0", url, "HEAD"]
+        for argv in (["git", "init", "-q", "--bare", bare], fetch):
+            code, output = run(argv, None)
+            if code:
+                raise DeployError("deploy.landed", f"{url}: {' '.join(argv[3:])} failed: {output.strip()[-300:]}")
+        code, _ = run(["git", "-C", bare, "merge-base", "--is-ancestor", commit, "FETCH_HEAD"], None)
+    return code == 0
+
+
 def requirement(package: str, commit: str) -> str:
     """The pip requirement of `package` at `commit`, with its `dev` extra (the suite a deploy gates on runs from it; pip
     only warns when a package has no such extra)."""
@@ -302,7 +335,8 @@ for spec in sys.argv[1:]:
 def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], run: Run) -> list[dict[str, Any]]:
     """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
     the carried requirements exactly as they are (`--no-deps`: they are already a resolved set), then `specs` (the
-    package at its commit and the project's pinned packages) with their dependencies."""
+    package at its commit, the tools of ours at their landed commits and the project's pinned packages) with their
+    dependencies."""
     python = venv / "bin" / "python"
     steps = [
         ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
@@ -479,7 +513,8 @@ def name(
         tools.project_dir(profile), str(land.get("remote", "origin")), str(land.get("branch", "main")), project_sha
     )
     packages = project_requirements(text, f"requirements.txt at {revision[:12]}")
-    specs, carry = [requirement(package, sha), *packages], carried(source, package, packages, run)
+    moved, carry = landed_carry(carried(source, package, packages, run), package, run)
+    specs = [requirement(package, sha), *moved, *packages]
     return {"name": content_name(specs, carry), "requirements": specs, "carried": carry}, 0, []
 
 
@@ -534,16 +569,18 @@ def deploy(
         return result, 1, findings
     for live in venvs:
         source = carry_from or live
-        carry = carried(source, package, packages, run)
-        build = content_name(specs, carry)
+        moved, carry = landed_carry(carried(source, package, packages, run), package, run)
+        wanted = [requirement(package, sha), *moved, *packages]
+        build = content_name(wanted, carry)
         if expect_name and build != expect_name:
             raise DeployError("deploy.name", f"{live} would build {build}, not the expected {expect_name}")
         venv = versioned_path(live, build)
-        steps = install(venv, source, specs, carry, run)
+        steps = install(venv, source, wanted, carry, run)
         row: dict[str, Any] = {
             "venv": str(live),
             "name": build,
             "versioned": str(venv),
+            "moved": moved,
             "carried": carry,
             "steps": steps,
         }

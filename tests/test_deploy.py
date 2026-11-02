@@ -21,7 +21,11 @@ CARRIED = [
 ]
 
 
-NAME1 = deploy.content_name([deploy.requirement("abu-decomp-64", D1)], CARRIED)  # the default deploy's build name
+U3, R3 = "4" * 40, "5" * 40  # where unbake and recipemaker have landed: the live venv holds older commits
+HEADS = {URL["unbake"]: U3, URL["recipemaker"]: R3, URL["cake-taste-64"]: "6" * 40, URL["abu-decomp-64"]: D1}
+MOVED = [f"recipemaker @ git+{URL['recipemaker']}@{R3}", f"unbake @ git+{URL['unbake']}@{U3}"]
+KEPT = ["pycparser==3.0"]  # carried as installed
+NAME1 = deploy.content_name([deploy.requirement("abu-decomp-64", D1), *MOVED], KEPT)  # the default deploy's name
 
 
 class DeployTests(unittest.TestCase):
@@ -43,6 +47,7 @@ class DeployTests(unittest.TestCase):
         self.commands = []
         self.fail_on = None
         self.carried = list(CARRIED)  # what the live venv holds
+        self.heads = dict(HEADS)  # source url -> the commit it has landed at
         self.requirements = ""  # requirements.txt of the project revision
         self.asked = []
 
@@ -64,6 +69,9 @@ class DeployTests(unittest.TestCase):
 
     def runner(self, argv, cwd=None):
         self.commands.append(list(argv))
+        if argv[:2] == ["git", "ls-remote"]:  # each tool's source answers its landed commit
+            head = self.heads.get(argv[2])
+            return (0, f"{head}\tHEAD\n") if head else (128, "fatal: repository not found")
         # the live venv's python lists its packages
         if argv[1:2] == ["-c"] and deploy.CARRY in argv and not (self.fail_on and self.fail_on in deploy.CARRY):
             return 0, json.dumps(self.carried)
@@ -87,13 +95,13 @@ class DeployTests(unittest.TestCase):
     def test_one_package_is_installed_at_its_commit_beside_the_carried_ones_into_every_venv_and_smoke_tested(self):
         result, code, findings = self.deploy(venvs=("venv-a", "venv-b"))
         self.assertEqual((code, findings), (0, []))
-        self.assertEqual(result["venvs"][0]["carried"], CARRIED)
+        self.assertEqual((result["venvs"][0]["moved"], result["venvs"][0]["carried"]), (MOVED, KEPT))
         installs = [c for c in self.commands if "install" in c]
         self.assertEqual(len(installs), 4)  # per venv: the carried set, then the package
         carry, package = installs[0], installs[1]
-        self.assertEqual(carry[carry.index("install") + 1 :], ["--no-deps", *CARRIED])  # as installed, not re-resolved
-        self.assertEqual(
-            package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"]
+        self.assertEqual(carry[carry.index("install") + 1 :], ["--no-deps", *KEPT])  # as installed, not re-resolved
+        self.assertEqual(  # our tools at their landed commits, with their dependencies
+            package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}", *MOVED]
         )
         self.assertEqual(
             sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
@@ -396,6 +404,24 @@ if __name__ == "__main__":
 class CarryTests(DeployTests):
     """The carry-over of the packages the deployed one does not replace."""
 
+    def test_every_tool_of_ours_the_live_venv_holds_moves_to_its_landed_commit_and_the_rest_stay_as_installed(self):
+        """11-02: venv-decomp kept unbake 55c9a21, 48 behind main b7675b8: the carry reinstalled it as installed, and
+        unbake's own land deploys CakeUnbake64's toolkit, never this one, so nothing ever moved it."""
+        taste = f"Cake_Taste.64 @ git+https://example.lan/x@{U1}"  # names compare normalised
+        moved, rest = deploy.landed_carry([*CARRIED, taste], "unbake", self.runner)
+        self.assertEqual(moved, [MOVED[0], f"cake-taste-64 @ git+{URL['cake-taste-64']}@{'6' * 40}"])
+        self.assertEqual(rest, ["pycparser==3.0", CARRIED[2]])  # the package being deployed is not moved
+        asked = [c[2] for c in self.commands if c[:2] == ["git", "ls-remote"]]
+        self.assertEqual(asked, [URL["recipemaker"], URL["cake-taste-64"]])
+
+    def test_a_tool_whose_source_does_not_answer_refuses_the_deploy_before_anything_installs(self):
+        self.heads.pop(URL["unbake"])
+        with self.assertRaises(deploy.DeployError) as refused:
+            self.deploy()
+        self.assertEqual(refused.exception.key, "deploy.landed")
+        self.assertIn("repository not found", str(refused.exception))
+        self.assertFalse([c for c in self.commands if "install" in c])
+
     def test_the_package_and_the_projects_own_packages_are_not_carried(self):
         self.requirements = "splat64[mips]==0.50.0\n"
         self.deploy(package="unbake", sha=U2)
@@ -403,7 +429,7 @@ class CarryTests(DeployTests):
         self.assertEqual(asked[0], str(self.root / "venv-a" / "bin" / "python"))  # the live venv lists itself
         self.assertEqual(asked[3:], ["unbake", "splat64"])
         install = [c for c in self.commands if "install" in c][-1]
-        self.assertEqual(install[-2:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", "splat64[mips]==0.50.0"])
+        self.assertEqual(install[-3:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", MOVED[0], "splat64[mips]==0.50.0"])
 
     def test_the_carried_set_is_read_from_carry_from_and_the_scratch_venv_is_never_run(self):
         """ed1c85a: the rig's `venv-decomp-stage` is scratch the deploy recreates; the live toolkit link is carried."""
@@ -418,7 +444,7 @@ class CarryTests(DeployTests):
         create = next(c for c in self.commands if "venv" in c and "-m" in c)
         self.assertEqual(create[0], str(live / "bin" / "python"))
         self.assertFalse(any(c[0] == str(scratch / "bin" / "python") for c in self.commands if "pip" not in c))
-        self.assertEqual(result["venvs"][0]["carried"], CARRIED)
+        self.assertEqual(result["venvs"][0]["carried"], KEPT)
         self.assertEqual(os.path.realpath(scratch), str(self.root / f"venv-a.{NAME1}"))  # the scratch link is swapped
 
     def test_a_carry_from_that_is_not_a_venv_refuses_before_anything_runs(self):
@@ -509,10 +535,12 @@ class NameTests(DeployTests):
 
     def test_the_name_is_the_content_of_the_whole_build_not_the_deployed_commit(self):
         first, _, _ = self.name(package="unbake", sha=U2)
-        self.carried = [row.replace(R1, "4" * 40) for row in CARRIED]  # another package moved: another build
+        self.heads[URL["recipemaker"]] = "7" * 40  # another tool landed: another build
         second, _, _ = self.name(package="unbake", sha=U2)
         self.assertNotEqual(first["name"], second["name"])
         self.assertEqual(first["name"], deploy.content_name(first["requirements"], first["carried"]))
+        self.carried = [row.replace(R1, "8" * 40) for row in CARRIED]  # the commit the live venv holds is not read
+        self.assertEqual(self.name(package="unbake", sha=U2)[0]["name"], second["name"])
         self.assertNotIn(U2[:12], first["name"])
 
     def test_one_content_has_one_name_whichever_order_it_is_listed_in(self):

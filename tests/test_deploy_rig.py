@@ -403,7 +403,7 @@ class BuildNameTests(unittest.TestCase):
                 deploy_rig.build_name(bad)
 
 
-class ReadbackScriptTests(ScriptCase):
+class ReadbackCase(ScriptCase):
     """The READBACK script against a stand-in venv: a link check, the installed commit of this package, then each tool
     as installed beside the commit its source repository has landed at (local repositories stand in for the sources)."""
 
@@ -459,6 +459,8 @@ class ReadbackScriptTests(ScriptCase):
         env = sh_env(**self.git_env)
         return self.bash(deploy_rig.READBACK, SHA, str(self.toolkit), str(build or self.venv), cwd=self.repo, env=env)
 
+
+class ReadbackScriptTests(ReadbackCase):
     def test_current_tools_and_link_exit_0_and_print_each_installed_and_landed_commit(self):
         done = self.readback()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
@@ -475,12 +477,6 @@ class ReadbackScriptTests(ScriptCase):
             self.assertTrue(spec_row.endswith(f"@{commit}"), spec_row)
             self.assertIn(f"readback-tool: {tool} installed {commit} landed {commit} current", done.stdout)
         self.assertIn("textual==8.2.8", specs)
-
-    def test_a_tool_behind_its_source_is_reported_not_refused(self):
-        self.dist("unbake", "9" * 40)
-        done = self.readback()
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn(f"readback-tool: unbake installed {'9' * 40} landed {self.landed['unbake']} behind", done.stdout)
 
     def test_a_read_only_live_tree_prints_the_refused_write_and_a_writable_one_exits_1(self):
         done = self.readback()

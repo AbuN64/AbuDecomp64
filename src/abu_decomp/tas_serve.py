@@ -47,6 +47,7 @@ import time
 import zlib
 from collections import OrderedDict, deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,7 +62,6 @@ from abu_decomp import (
     inotify,
     serve_actions,
     serve_api,
-    serve_audio,
     serve_feed,
     serve_files,
     serve_http,
@@ -85,7 +85,7 @@ from abu_decomp import (
     tas_triage,
 )
 from abu_decomp.config import Profile
-from abu_decomp.serve_pace import RELEASED, clock, driven, realtime
+from abu_decomp.serve_pace import RELEASED, driven, realtime
 
 _SERVE_KEYS = frozenset(
     {
@@ -227,7 +227,7 @@ class Server:
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
         )
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
-        self.pool = worker_pool(self.jobs)
+        self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
         self.refused: dict[str, dict[str, Any]] = {}  # id -> the row of a play refused at once (newest RECENT_SHOWN)
@@ -246,10 +246,10 @@ class Server:
 
     def _cached(self, key: Any, make: Any, seconds: float = CACHE_SECONDS) -> Any:
         hit = self.cache.get(key)
-        if hit and clock() - hit[0] < seconds:
+        if hit and time.monotonic() - hit[0] < seconds:
             return hit[1]
         value = make()
-        self.cache[key] = (clock(), value)
+        self.cache[key] = (time.monotonic(), value)
         return value
 
     def gzipped(self, tag: str, body: bytes) -> bytes:
@@ -1042,13 +1042,13 @@ class Live:
         self.sync()
         dirty, written = True, -LIVE_IDLE_SECONDS
         while True:
-            now = clock()
+            now = time.monotonic()
             beat = LIVE_SECONDS if self.running else LIVE_IDLE_SECONDS
             if (dirty and now - written >= LIVE_GAP_SECONDS) or now - written >= beat:
                 self.sync()  # also finds a run that died without a record, and drops watches of finished ones
                 self.write()
                 dirty, written = False, now
-            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - clock())
+            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - time.monotonic())
             ready = select.select([self.watcher.fd, self.wake_r], [], [], wait)[0]
             if self.wake_r in ready:
                 inotify.drain(self.wake_r)
@@ -1281,11 +1281,148 @@ class Reach:
 
 # Routes: an exact path, a first path segment (+ the rest), and a run's folder (video, frame ...). A route module
 # answers through the request's reply helpers; none imports this module.
+
+
+# The two wall-clock stream handlers (sleep-paced) stay here as on main: they are carded for removal.
+def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
+    row = tas.read_record(run)
+    if not row:
+        return req.missing()
+    if not realtime(run, row):
+        return req.reply(b"", "audio/wav", HTTPStatus.NO_CONTENT, extra={"X-Audio-Muted": "not-realtime"})
+    name = tas_oracle.AUDIO if query_args(query).get("side") == "oracle" else tas.AUDIO
+    pcm, rate_file = run / name, run / (name + ".rate")
+    deadline = time.monotonic() + 10
+    while not rate_file.is_file() or not pcm.is_file():
+        if not tas.running(run) or time.monotonic() > deadline:
+            return req.missing()
+        time.sleep(0.05)
+    rate = int(rate_file.read_text().strip() or 32000)
+    if not 8000 <= rate <= 192000:
+        return req.missing()
+    req.stream_head("audio/wav", {"Connection": "close"})
+    req.connection.settimeout(5)
+    req.wfile.write(wav_header(rate))
+    oracle = name == tas_oracle.AUDIO
+
+    def due() -> int:
+        return int(max(0.0, time.time() - float(row.get("started") or 0)) * rate) * 4
+
+    end = min(due(), pcm.stat().st_size) if oracle else pcm.stat().st_size
+    offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
+    # Even a producer that writes in bursts gets one steady wall-paced stream. Initial lead covers jitter.
+    began, sent = time.monotonic(), 0
+    with pcm.open("rb") as handle:
+        while True:
+            allowance = int((time.monotonic() - began + AUDIO_LEAD_SECONDS) * rate) * 4 - sent
+            count = min(max(0, allowance), int(rate * 0.05) * 4)
+            if oracle:
+                count = min(count, max(0, due() - offset))
+            handle.seek(offset)
+            chunk = handle.read(count)
+            chunk = chunk[: len(chunk) // 4 * 4]
+            if chunk:
+                req.wfile.write(chunk)
+                req.wfile.flush()
+                offset += len(chunk)
+                sent += len(chunk)
+            elif not tas.running(run) and (offset >= pcm.stat().st_size or (oracle and offset >= due())):
+                return
+            time.sleep(0.02)
+
+
+def video(req: Any, server: Any, run: Path, query: str = "") -> None:
+    """One bounded latest-frame stream: 30 samples/s, independent of RTT and turbo's game clock."""
+    req.stream_head("application/x-tas-frames", {"X-Video-Fps": str(VIDEO_FPS), "Connection": "close"})
+    # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
+    req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+    req.connection.settimeout(5)
+    stamp, deadline, sent_seq = 0, time.monotonic(), 0
+    feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
+    first = feed.first() if feed else None
+    while True:
+        try:
+            current, body, seq = server.capture(run / tas.VIEW, "JPEG")
+        except (OSError, ValueError):
+            current, body, seq = stamp, b"", 0
+        changed = current != stamp
+        # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
+        records = ([first] if first else []) + (feed.pending() if feed else [])
+        first = None
+        out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
+        if changed:
+            out += VIDEO_HEADER.pack(len(body), current, seq) + body
+        if out:
+            try:
+                req.wfile.write(out)
+                req.wfile.flush()
+            except OSError:
+                return  # disconnect/backpressure timeout: release this viewer immediately
+        if changed:
+            stamp, sent_seq = current, seq
+        if not tas.running(run):
+            return
+        now = time.monotonic()
+        if changed:
+            deadline = max(deadline + 1 / VIDEO_FPS, now)
+        # When the producer is late, wait for its next capture without losing another whole period.
+        time.sleep(max(0.002, deadline - now))
+
+
+def wall(req: Any, server: Any, query: str = "") -> None:
+    """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, WALL_FPS a second. A frame is
+    VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
+    shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
+    per connection and never reused. Each run's reach records (section 10a) ride flagged under its index too, a
+    full one first: the body of a flagged record is the table when it starts with "{", else a reach record.
+    Browsers allow six connections per host, so twelve per-tile streams would stall."""
+    req.stream_head("application/x-tas-wall", {"X-Wall-Fps": str(WALL_FPS), "Connection": "close"})
+    req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
+    req.connection.settimeout(5)
+    index: dict[str, int] = {}
+    stamps: dict[str, int] = {}
+    feeds: dict[str, Any] = {}
+    quiet = due = time.monotonic()
+    while True:
+        out = b""
+        for run in server.running_runs():
+            try:
+                stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
+            except (OSError, ValueError):
+                continue
+            if run.name not in index and len(index) < WALL_KEEPALIVE_INDEX:
+                index[run.name] = len(index)
+                name = json.dumps({"id": run.name}).encode()
+                out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
+                feeds[run.name] = feed = server.reach.feed_for(run)
+                first = feed.first() if feed else None
+                if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
+                    out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first
+            feed = feeds.get(run.name)
+            for record in feed.pending() if feed else []:
+                out += VIDEO_HEADER.pack(len(record) | REACH_FLAG, stamp, index[run.name]) + record
+            if run.name in index and stamps.get(run.name) != stamp:
+                stamps[run.name] = stamp
+                out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
+        now = time.monotonic()
+        if not out and now - quiet >= WALL_KEEPALIVE_SECONDS:
+            out = VIDEO_HEADER.pack(WALL_TABLE, 0, WALL_KEEPALIVE_INDEX)
+        if out:
+            quiet = now
+            try:
+                req.wfile.write(out)
+                req.wfile.flush()
+            except OSError:
+                return
+        due = max(due + 1 / WALL_FPS, time.monotonic())  # a round's own work does not slow the pace
+        time.sleep(max(0.0, due - time.monotonic()))
+
+
 EXACT = {
     "/": serve_pages.index,
     "/live": serve_pages.live,
     "/watch": serve_pages.watch,
-    "/wall": serve_video.wall,
+    "/wall": wall,
     "/api/feed/stream": serve_feed.stream,
     "/api/coverage": serve_api.coverage,
     "/api/pool": serve_api.pool,
@@ -1301,13 +1438,13 @@ PREFIX = {
     "stream": serve_run.stream,
 }
 RUN_ROUTES = {
-    "video": serve_video.video,
+    "video": video,
     "frame": serve_video.frame,
     "oracle": serve_video.oracle,
     "shot": serve_run.shot,
     "diff": serve_run.diff,
     "log": serve_run.log,
-    "audio": serve_audio.audio,
+    "audio": audio,
 }
 
 

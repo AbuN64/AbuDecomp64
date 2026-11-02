@@ -785,10 +785,10 @@ class HttpTests(Base):
         with (
             mock.patch.object(self.server, "capture", side_effect=[(1, png, 7), (1, png, 7), (3, png, 9)]),
             mock.patch.object(tas, "running", side_effect=[True, True, False]),
-            mock.patch.object(serve_video.time, "monotonic", side_effect=[0, 0.001, 0.034]),
-            mock.patch.object(serve_video.time, "sleep") as wait,
+            mock.patch.object(tas_serve.time, "monotonic", side_effect=[0, 0.001, 0.034]),
+            mock.patch.object(tas_serve.time, "sleep") as wait,
         ):
-            serve_video.video(h, self.server, run)
+            tas_serve.video(h, self.server, run)
         data = h.wfile.getvalue()
         n = len(png)
         self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
@@ -805,7 +805,7 @@ class HttpTests(Base):
         h.connection, h.wfile = mock.Mock(), mock.Mock()
         h.wfile.write.side_effect = BrokenPipeError
         with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
-            serve_video.video(h, self.server, run)
+            tas_serve.video(h, self.server, run)
         grab.assert_called_once()
 
 

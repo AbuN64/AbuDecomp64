@@ -406,7 +406,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     )
     stream = actions.add_parser("stream", help="the lockstep stream of recorded runs (both sides' pictures per poll)")
     stream_verbs = stream.add_subparsers(dest="verb", required=True, parser_class=_Parser)
-    pack = stream_verbs.add_parser("pack", help="turn runs' oracle shots into RUN/stream/{port,original}/POLL.jpg")
+    pack = stream_verbs.add_parser("pack", help="turn runs' oracle shots into RUN/stream/{port,oracle}/POLL.jpg")
     pack.add_argument("runs", nargs="*", help="run ids (default: every run that holds shots)")
     corpus = actions.add_parser("corpus", help="the regression corpus of movies, problem spots and the speedrun gate")
     verbs = corpus.add_subparsers(dest="verb", required=True, parser_class=_Parser)

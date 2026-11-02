@@ -138,7 +138,7 @@ def save_point(
         row = tas.read_record(folder_) if folder_ else None
         if not folder_ or not row:
             raise DecompError("tas.point", f"no run {run!r}")
-        eff = tas.read_raw(folder_ / "polls.raw")
+        eff = tas.read_polls(folder_, int(row.get("pads") or 1))
         start = row.get("start") or None
         pak, cpak = str(row.get("pak") or "on"), str(row.get("cpak") or "none")
     if start:

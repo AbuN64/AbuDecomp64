@@ -53,7 +53,7 @@ class ContractTest(unittest.TestCase):
 class RecordTest(unittest.TestCase):
     def test_run_record_reads_lane_sides_and_kind(self):
         run = site_core.run_record(RUNNING)
-        self.assertEqual((run["kind"], run["lane"], run["sides"]), ("tas", "LANE-A", ["port", "original"]))
+        self.assertEqual((run["kind"], run["lane"], run["sides"]), ("tas", "LANE-A", ["port", "oracle"]))
         self.assertEqual(site_core.run_record(DONE)["lane"], "owner")
         self.assertEqual(site_core.run_record({**DONE, "input": "movie"})["lane"], "runner")
 

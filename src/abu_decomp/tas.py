@@ -7,13 +7,13 @@ the game executable and `args` its arguments, where the token `{user_dir}` becom
 never leak between runs. `rom` is the image whose SHA-1 a movie names; replay refuses another one.
 
 The port speaks only the raw form, one `BUTTONS STICK_X STICK_Y` line per guest controller poll (hex buttons): it
-replays `N64C_TAS_PLAY`, appends every poll to `N64C_TAS_RECORD`, and exits 0 `N64C_TAS_EXIT_AFTER` polls after the
-movie. A movie (`NAME.tas`) is the readable form of the same polls: `#` header lines, then one line per run of equal
-polls, `BUTTONS [X,Y] [*COUNT]`, where BUTTONS is `-` or names joined by `+` (`A+START`) and the stick is omitted
-when centred. Replay keys input to the poll index, so a movie is the same run at any host speed.
-The header's `pak` (`on` or `off`) says whether the run had the Expansion Pak (8 MB RDRAM) or not (4 MB); a movie
-without one ran with it. A replay keeps what the movie ran with (`play --pak` overrides, the page's "new run" picks),
-the port gets `--pak off` for a run without it, and the run's record and the page's tile show it.
+replays `N64C_TAS_PLAY`, records every poll in its lockstep poll lines (`read_polls`), and exits 0 `N64C_TAS_EXIT_AFTER`
+polls after the movie. A movie (`NAME.tas`) is the readable form of the same polls: `#` header lines, then one line per
+run of equal polls, `BUTTONS [X,Y] [*COUNT]`, where BUTTONS is `-` or names joined by `+` (`A+START`) and the stick is
+omitted when centred. Replay keys input to the poll index, so a movie is the same run at any host speed. The header's
+`pak` (`on` or `off`) says whether the run had the Expansion Pak (8 MB RDRAM) or not (4 MB); a movie without one ran
+with it. A replay keeps what the movie ran with (`play --pak` overrides, the page's "new run" picks), the port gets
+`--pak off` for a run without it, and the run's record and the page's tile show it.
 
 The header's `cpak` says what Controller Pak (32 KiB save card) the run started with: `none` (the slot is empty; a movie
 without the line ran so), `fresh` (a newly formatted card) or the SHA-256 of the starting card, whose bytes sit beside
@@ -250,6 +250,34 @@ def read_raw(path: Path) -> list[Poll]:
     return parse_raw(text[: text.rfind("\n") + 1])
 
 
+def pad_poll(words: list[str]) -> Poll:
+    """One lockstep poll line's pad words (8 hex digits: buttons, stick x, stick y as signed bytes) as a Poll."""
+    out: list[int] = []
+    for word in words:
+        value = int(word, 16)
+        out += [value >> 16, ((value >> 8) & 255) - ((value >> 8) & 128) * 2, (value & 255) - (value & 128) * 2]
+    return tuple(out)
+
+
+def read_polls(run: Path, pads: int | None = None) -> list[Poll]:
+    """The pads the guest read, one Poll per poll: the poll lines of RUN/lockstep/port/lockstep.jsonl (CONTRACTS.md
+    "Run record"; poll 1 is the first), cut to the first `pads` controllers when given (the line names every one the
+    port polls). The port may still be writing: a last line cut short is left out. Raises
+    OSError when the run has no port lockstep."""
+    polls: list[Poll] = []
+    with (run / "lockstep" / "port" / "lockstep.jsonl").open("rb") as lines:
+        for line in lines:
+            if not line.endswith(b"\n") or b'"k":"poll"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("k") == "poll" and row.get("poll") == len(polls) + 1:
+                polls.append(pad_poll(row["pad"])[: pads * 3 if pads else None])
+    return polls
+
+
 def format_raw(polls: list[Poll]) -> str:
     return "".join(" ".join(f"{p[i]:04x} {p[i + 1]} {p[i + 2]}" for i in range(0, len(p), 3)) + "\n" for p in polls)
 
@@ -381,6 +409,7 @@ def save(
     source: Path | None,
     note: str,
     replace: bool,
+    polls: list[Poll] | None = None,
     now: datetime | None = None,
     pak: str = "on",
     cpak: str = "none",
@@ -393,7 +422,8 @@ def save(
     """Save polls as movie `name`; `parent`/`at` name the movie a take branched from and the poll it left it at
     (header lines `from` / `at`; module tas_serve folds takes under their root movie). `start` names the start point
     the recording began from (module tas_points): its first `prefix` polls are the point's, kept in the point, not
-    here."""
+    here. `polls` are the polls themselves (a run's lockstep record); otherwise they are read from the recording
+    `source` (the newest live one when None)."""
     cfg = settings(profile)
     check_pak(pak)
     if not _CARD_MODE.fullmatch(cpak):
@@ -401,19 +431,21 @@ def save(
     path = _movie(cfg, name)
     if path.exists() and not replace:
         raise DecompError("tas.save", f"{path.name} exists; pass --replace to overwrite it")
-    if source is None:
-        live = recordings(cfg)
-        if not live:
-            raise DecompError("tas.save", f"no recording under {cfg['runs'] / 'live'}")
-        source = live[-1]
-    text = source.read_text()
-    polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
+    if polls is None:
+        if source is None:
+            live = recordings(cfg)
+            if not live:
+                raise DecompError("tas.save", f"no recording under {cfg['runs'] / 'live'}")
+            source = live[-1]
+        text = source.read_text()
+        polls = parse_raw(text[: text.rfind("\n") + 1])  # a live recording may end in a half-written line
+    where = source or "the run"
     if start:
         if len(polls) <= prefix:
-            raise DecompError("tas.save", f"{source} holds no polls after start point {start!r}")
+            raise DecompError("tas.save", f"{where} holds no polls after start point {start!r}")
         polls = polls[prefix:]
     if not polls:
-        raise DecompError("tas.save", f"{source} holds no polls")
+        raise DecompError("tas.save", f"{where} holds no polls")
     header = {
         "rom-sha1": _sha1(cfg["rom"]),
         "recorded": _stamp(now),
@@ -512,8 +544,6 @@ def port_env(cfg: dict[str, Any], folder: Path) -> dict[str, str]:
         **os.environ,
         **cfg["env"],
         "GCOV_PREFIX": str(folder / "gcov"),
-        "N64C_CALLS": str(folder),  # the port's per-call record (RUN/calls.jsonl) is on in every replay, oracle or not
-        "N64C_CALLS_FIRST": str(tas_oracle.CALLS_FIRST),
     }
 
 
@@ -680,7 +710,7 @@ def retry_source(cfg: dict[str, Any], source: str, take_at: int | None) -> dict[
     if not run or not row:
         raise DecompError("tas.retry", f"no run {source}")
     try:
-        polls = read_raw(run / "polls.raw")
+        polls = read_polls(run, int(row.get("pads") or 1))
     except OSError:
         polls = []
     if take_at is None or not 0 <= take_at <= len(polls):
@@ -1304,8 +1334,11 @@ def save_taken(
     """Save a run that live input drove as a movie: the human's run under its own name, a takeover (or a retry) as a
     branch `<root>-take-STAMP` of its movie's root, with `from` = the movie it left and `at` = the poll it left it at.
     None when it reached no poll."""
-    source = run / "polls.raw"
-    if not source.is_file() or not read_raw(source):
+    try:
+        polls = read_polls(run, int((read_record(run) or {}).get("pads") or 1))
+    except OSError:
+        return None
+    if not polls:
         return None
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     name = movie if human else f"{take_root(movie)[:40]}-take-{stamp}"
@@ -1315,8 +1348,9 @@ def save_taken(
         return save(
             profile,
             name,
-            source=source,
+            source=None,
             note=note,
+            polls=polls,
             replace=False,
             pak=pak,
             cpak=cpak,
@@ -1581,7 +1615,12 @@ def play(
             oracle_card.write_bytes(start)
     env = {
         **port_env(cfg, run),
-        "N64C_TAS_RECORD": str(run / "polls.raw"),
+        # The port's lockstep record (CONTRACTS.md "Run record"): its poll lines are the pads the guest read, its call
+        # lines the per-call record.
+        "N64C_LOCKSTEP": "1",
+        "N64C_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "port")),
+        "N64C_CALLS": str(tas_oracle.lockstep_side(run, "port")),
+        "N64C_CALLS_FIRST": str(tas_oracle.CALLS_FIRST),
         "N64C_TAS_HASH": str(run / HASH),
         "N64C_VIEW": str(run / VIEW),
         # Keep readbacks within the realtime frame budget, including human input and takeovers.
@@ -1718,7 +1757,9 @@ def play(
                 process.stdin.close()
             code, cpu = _wait(process, timeout, run)
         text = (run / "output.txt").read_text(errors="replace")
-        reached = len(parse_raw((run / "polls.raw").read_text())) if (run / "polls.raw").is_file() else 0
+        reached = 0
+        with contextlib.suppress(OSError):  # a port that died before its first poll left no lockstep file
+            reached = len(read_polls(run))
         result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
         result.update(polls_reached=reached, **classify(code, text))
         found = inspect_files(run, shots_every, dump_ram_at, trace_draws)

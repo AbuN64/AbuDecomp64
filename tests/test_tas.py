@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+from polls_record import write_polls
+
 from abu_decomp import DecompError, tas
 from abu_decomp.config import load_profile
 
@@ -155,7 +157,7 @@ class MovieTests(unittest.TestCase):
                 seen.update(argv=argv, env=env)
                 run = Path(argv[argv.index("--run-dir") + 1])
                 self.assert_movie = (run / "movie.raw").read_text()
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                write_polls(env, "8000 0 0\n")
                 (run / "failure-stack.txt").write_text("#0 game\n")
                 stdout.write("debug-reason: host-fault-00002b88\n")
                 stdout.flush()
@@ -186,7 +188,7 @@ class MovieTests(unittest.TestCase):
 
         class Port:
             def __init__(self, argv, env, stdout, **kwargs):
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                write_polls(env, "8000 0 0\n")
                 stdout.write(outcome["text"])
                 stdout.flush()
                 self.pid, self.stdin = 1, io.StringIO()
@@ -257,7 +259,7 @@ class MovieTests(unittest.TestCase):
                 seen.append(json.loads((run / "run.json").read_text()))
                 Path(env["N64C_TAS_HASH"]).write_text(hashes)
                 Path(env["N64C_VIEW"]).write_bytes(b"BM")
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n8000 0 0\n")
+                write_polls(env, "8000 0 0\n8000 0 0\n")
                 stdout.write("n64c-tas: done polls=2\n")
 
             def wait(self, timeout=None):
@@ -385,7 +387,7 @@ class MovieTests(unittest.TestCase):
         class Port:
             def __init__(self, argv, env, stdout, **kwargs):
                 argvs.append(argv)
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                write_polls(env, "8000 0 0\n")
                 Path(env["N64C_TAS_HASH"]).write_text("1 aa\n")
                 self.pid = 1
                 self.stdin = io.StringIO()
@@ -426,7 +428,7 @@ class MovieTests(unittest.TestCase):
             def __init__(self, argv, env, stdout, **kwargs):
                 argvs.append(argv)
                 envs.append(env)
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                write_polls(env, "8000 0 0\n")
                 Path(env["N64C_TAS_HASH"]).write_text("1 aa\n2 bb\n")  # the same state every poll, unlock or not
                 unlocked = "--fps-unlock" in argv
                 stdout.write(
@@ -491,7 +493,7 @@ class MovieTests(unittest.TestCase):
                     image = bytearray(card.read_bytes())
                     image[0x300] ^= 0xFF  # the game saved something
                     card.write_bytes(bytes(image))
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n")
+                write_polls(env, "8000 0 0\n")
                 Path(env["N64C_TAS_HASH"]).write_text("1 aa\n")
                 self.pid = 1
                 self.stdin = io.StringIO()
@@ -923,6 +925,38 @@ class StallTests(unittest.TestCase):
             self.assertIsNone(code)
             kill.assert_called_once()
             self.assertGreater(clock[0], 100 + tas.STALL_SECONDS - 2)  # not at the 5 s timeout: after the stall
+
+
+class LockstepPollsTests(unittest.TestCase):
+    """tas.read_polls: the pads the guest read, from the poll lines of RUN/lockstep/port/lockstep.jsonl."""
+
+    def run_with(self, *lines: str) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        run = Path(directory.name)
+        (run / "lockstep" / "port").mkdir(parents=True)
+        (run / "lockstep" / "port" / "lockstep.jsonl").write_text("".join(line + "\n" for line in lines))
+        return run
+
+    def test_pad_words_are_buttons_and_signed_sticks(self):
+        self.assertEqual(tas.pad_poll(["80000000", "1000b050"]), (0x8000, 0, 0, 0x1000, -80, 80))
+        self.assertEqual(tas.pad_poll(["040005fb"]), (0x0400, 5, -5))
+
+    def test_polls_come_from_poll_lines_in_order_and_a_cut_last_line_is_left_out(self):
+        run = self.run_with(
+            '{"k":"meta","side":"port"}',
+            '{"k":"poll","poll":1,"vi":2,"pad":["80000000","00000000"],"pages":[]}',
+            '{"k":"call","fn":"f","o":0,"frame":1}',
+            '{"k":"poll","poll":2,"vi":4,"pad":["1000b050","00000000"],"pages":[[0,"00"]]}',
+        )
+        with (run / "lockstep" / "port" / "lockstep.jsonl").open("a") as lines:
+            lines.write('{"k":"poll","poll":3,"vi":6,"pad":["0000')  # the port is mid-write
+        self.assertEqual(tas.read_polls(run), [(0x8000, 0, 0, 0, 0, 0), (0x1000, -80, 80, 0, 0, 0)])
+        self.assertEqual(tas.read_polls(run, 1), [(0x8000, 0, 0), (0x1000, -80, 80)])
+
+    def test_a_run_without_a_port_lockstep_raises(self):
+        with self.assertRaises(OSError):
+            tas.read_polls(Path(tempfile.gettempdir()) / "no-such-run")
 
 
 if __name__ == "__main__":

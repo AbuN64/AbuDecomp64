@@ -7,6 +7,8 @@ from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 
+from polls_record import write_polls
+
 from abu_decomp import DecompError, site_core, site_feedback
 
 ROW = {
@@ -32,7 +34,8 @@ class Fixture(unittest.TestCase):
         run = self.runs / "plays" / "r1"
         run.mkdir(parents=True)
         (run / "run.json").write_text(json.dumps(ROW))
-        (run / "polls.raw").write_text(raw(300))
+        (run / "lockstep" / "port").mkdir(parents=True)
+        write_polls({"N64C_LOCKSTEP_DIR": run / "lockstep" / "port"}, raw(300))
         self.run = run
         self.server = SimpleNamespace(
             cfg={"runs": self.runs},
@@ -85,7 +88,7 @@ class InputsAndFramesTest(Fixture):
         self.assertEqual(site_feedback.inputs_at(self.run, 310)[-1]["poll"], 299)
 
     def test_a_run_without_recorded_inputs_has_none(self):
-        (self.run / "polls.raw").unlink()
+        (self.run / "lockstep" / "port" / "lockstep.jsonl").unlink()
         self.assertEqual(site_feedback.inputs_at(self.run, 10), [])
 
     def test_newest_at_takes_the_highest_poll_not_after_the_flag(self):
@@ -100,11 +103,11 @@ class InputsAndFramesTest(Fixture):
         self.assertIsNone(site_feedback.frame_path(self.run, "port", 40))
         (self.run / "view.bmp").write_bytes(b"BM")
         self.assertEqual(site_feedback.frame_path(self.run, "port", 40).name, "view.bmp")
-        self.assertIsNone(site_feedback.frame_path(self.run, "original", 40))
+        self.assertIsNone(site_feedback.frame_path(self.run, "oracle", 40))
         self.shot("port", 25)
-        self.shot("original", 25, "oracle")
+        self.shot("oracle", 25, "oracle")
         self.assertEqual(site_feedback.frame_path(self.run, "port", 40).name, "poll-000025.ppm")
-        self.assertEqual(site_feedback.frame_path(self.run, "original", 40).parent.name, "oracle")
+        self.assertEqual(site_feedback.frame_path(self.run, "oracle", 40).parent.name, "oracle")
         packed = self.run / "stream" / "port"
         packed.mkdir(parents=True)
         (packed / "30.jpg").write_bytes(b"x")
@@ -118,7 +121,7 @@ class FileTest(Fixture):
 
     def test_filing_writes_the_record_with_run_poll_category_text_inputs_and_both_frames(self):
         self.shot("port", 50)
-        self.shot("original", 50, "oracle")
+        self.shot("oracle", 50, "oracle")
         record = self.file()
         where = self.runs / "feedback" / record["id"]
         self.assertEqual(json.loads((where / "feedback.json").read_text()), record)
@@ -134,16 +137,16 @@ class FileTest(Fixture):
                 "movie": "boot-idle",
             },
         )
-        self.assertEqual(record["frames"], {"port": "port.jpg", "original": "original.jpg"})
+        self.assertEqual(record["frames"], {"port": "port.jpg", "oracle": "oracle.jpg"})
         self.assertEqual((where / "port.jpg").read_bytes(), b"JPEG:poll-000050.ppm")
         self.assertEqual(record["inputs"][-1]["poll"], 60)
-        self.assertEqual(sorted(p.name for p in where.iterdir()), ["feedback.json", "original.jpg", "port.jpg"])
+        self.assertEqual(sorted(p.name for p in where.iterdir()), ["feedback.json", "oracle.jpg", "port.jpg"])
 
     def test_a_side_without_a_picture_is_null_and_writes_no_file(self):
         (self.run / "view.bmp").write_bytes(b"BM")
         record = self.file()
-        self.assertEqual(record["frames"], {"port": "port.jpg", "original": None})
-        self.assertFalse((self.runs / "feedback" / record["id"] / "original.jpg").exists())
+        self.assertEqual(record["frames"], {"port": "port.jpg", "oracle": None})
+        self.assertFalse((self.runs / "feedback" / record["id"] / "oracle.jpg").exists())
 
     def test_the_id_is_stable_for_the_same_filing_and_differs_by_poll_and_time(self):
         self.assertEqual(self.file()["id"], self.file()["id"])

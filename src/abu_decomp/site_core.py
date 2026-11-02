@@ -90,7 +90,7 @@ def run_record(row: dict[str, Any]) -> dict[str, Any]:
         "outcome": row.get("outcome"),
         "started": float(row.get("started") or 0.0),
         "ended": float(row["ended"]) if row.get("ended") else None,
-        "sides": ["port", "original"] if row.get("oracle") else ["port"],
+        "sides": ["port", "oracle"] if row.get("oracle") else ["port"],
         "from": row.get("from"),
         "at": row.get("at"),
         "equal": row.get("equal"),

@@ -15,6 +15,8 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from polls_record import write_polls
+
 from abu_decomp import DecompError, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
 
@@ -331,7 +333,7 @@ class PlayTests(unittest.TestCase):
                 write_shot(Path(env["N64C_TAS_SHOT_DIR"]), 25, picture())
                 write_shot(Path(env["N64C_TAS_SHOT_DIR"]), 50, picture(box=(0, 0, W // 4, H)))
                 Path(env["N64C_TAS_TRACE"]).write_text("25 40\n50 82\n")
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                write_polls(env, "8000 0 0\n" * 50)
                 stdout.write("n64c-tas: done polls=57\n")
 
         def fake_wait(process, timeout, run=None):
@@ -382,7 +384,7 @@ class PlayTests(unittest.TestCase):
                 self.stdin = io.StringIO()
                 seen["oracle" if argv[0] == host else "port"] = env
                 if argv[0] != host:
-                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                    write_polls(env, "8000 0 0\n" * 50)
                     stdout.write("n64c-tas: done polls=57\n")
 
         def match(argv, stdout, **kwargs):  # lockstep.py match --run RUN: diverged at poll 9
@@ -401,7 +403,7 @@ class PlayTests(unittest.TestCase):
         run = Path(result["run"])
         self.assertEqual(seen["port"]["N64C_LOCKSTEP"], "1")
         self.assertEqual(seen["port"]["N64C_LOCKSTEP_DIR"], str(run / "lockstep" / "port"))
-        self.assertEqual(seen["port"]["N64C_CALLS"], str(run))
+        self.assertEqual(seen["port"]["N64C_CALLS"], str(run / "lockstep" / "port"))  # the calls beside the polls
         self.assertEqual(seen["oracle"]["N64R_LOCKSTEP_DIR"], str(run / "lockstep" / "oracle"))
         self.assertTrue((run / "lockstep" / "port").is_dir() and (run / "lockstep" / "oracle").is_dir())
         self.assertEqual(ran, [[sys.executable, str(tas_oracle.LOCKSTEP_PY), "match", "--run", str(run)]])
@@ -411,7 +413,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(lockstep["match"], str(run / "lockstep" / "match.json"))
         self.assertIn("poll 9", (run / "lockstep" / "lockstep.txt").read_text())
 
-    def test_without_lockstep_neither_side_records_it(self):
+    def test_without_the_lockstep_flag_only_the_port_records_its_side(self):
         seen = {}
         host = str(self.host)
 
@@ -421,7 +423,7 @@ class PlayTests(unittest.TestCase):
                 self.stdin = io.StringIO()
                 seen["oracle" if argv[0] == host else "port"] = env
                 if argv[0] != host:
-                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                    write_polls(env, "8000 0 0\n" * 50)
 
         with (
             mock.patch.object(tas.subprocess, "Popen", Process),
@@ -431,7 +433,8 @@ class PlayTests(unittest.TestCase):
         ):
             os.environ.pop("N64C_LOCKSTEP", None)
             result = tas.play(self.profile, "m", oracle=True)
-        self.assertNotIn("N64C_LOCKSTEP_DIR", seen["port"])
+        run = Path(result["run"])
+        self.assertEqual(seen["port"]["N64C_LOCKSTEP_DIR"], str(run / "lockstep" / "port"))  # the pads of every play
         self.assertNotIn("N64R_LOCKSTEP_DIR", seen["oracle"])
         self.assertNotIn("lockstep", result["oracle"])
 
@@ -452,7 +455,7 @@ class PlayTests(unittest.TestCase):
                 self.stdin = io.StringIO()
                 seen["oracle" if argv[0] == host else "port"] = env
                 if argv[0] != host:
-                    Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                    write_polls(env, "8000 0 0\n" * 50)
                     stdout.write("n64c-tas: done polls=57\n")
 
         with (
@@ -487,7 +490,7 @@ class PlayTests(unittest.TestCase):
                     Path(env["N64R_TAS_TRACE"]).write_text("25 40\n57 90\n")
                     Path(env["N64R_TAS_STATE_HASH"]).write_text("57\n")
                     return
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n" * 50)
+                write_polls(env, "8000 0 0\n" * 50)
                 stdout.write("n64c-tas: done polls=57\n")
 
         def begin(profile, cfg, run, pak, card, polls, pads=1, attach=False):
@@ -524,7 +527,7 @@ class PortEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GCOV_PREFIX": "/elsewhere"}):
             env = tas.port_env(cfg, Path("/runs/r1/dumps"))
         self.assertEqual((env["GCOV_PREFIX"], env["N64C_X"]), ("/runs/r1/dumps/gcov", "1"))
-        self.assertEqual(env["N64C_CALLS"], "/runs/r1/dumps")  # every replay records the port's calls
+        self.assertNotIn("N64C_LOCKSTEP_DIR", env)  # a dump replay is no run: it records no lockstep
 
     def test_the_state_dump_replay_spawns_the_port_with_that_environment(self):
         from types import SimpleNamespace

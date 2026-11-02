@@ -501,7 +501,7 @@ def coverage(port: dict[int, Any], original: dict[int, Any]) -> dict[str, Any]:
     comparison is `complete` only when both traces are nonempty and hold the same polls."""
     p, o = set(port), set(original)
     port_only, oracle_only = _ranges(sorted(p - o)), _ranges(sorted(o - p))
-    gaps = [(r, "port", "the original's") for r in port_only] + [(r, "original", "the port's") for r in oracle_only]
+    gaps = [(r, "port", "the original's") for r in port_only] + [(r, "oracle", "the port's") for r in oracle_only]
     first = min(gaps, default=None, key=lambda g: g[0][0])
     missing = None
     if first:
@@ -914,7 +914,7 @@ def _dump_pass(session: Session, polls: list[int], profile: Profile) -> dict[int
         log = session.run / DUMPS / "original-output.txt"
         with contextlib.suppress(OSError):
             shutil.copyfile(work / tas_oracle.LOG, log)  # kept whatever the exit, the work dir goes
-        ran.append({"side": "original", **tas_oracle.run_facts(code, cpu, None, 0, 0, log), "dump_polls": missing})
+        ran.append({"side": "oracle", **tas_oracle.run_facts(code, cpu, None, 0, 0, log), "dump_polls": missing})
         original_ok = code == 0
         for p in missing if original_ok else ():  # a replay that did not end cleanly adds nothing to the cache
             produced = work / f"state-{p}.bin"

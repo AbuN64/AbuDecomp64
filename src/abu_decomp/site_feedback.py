@@ -1,11 +1,11 @@
 """Site region `feedback`: a human flags a run at a poll; the record lands in `<tas.runs>/feedback/<id>/`.
 
 A Feedback record is `{id, at, run, poll, category, text, lane, movie, inputs[{poll,buttons,x,y}],
-frames{port,original}}` (lanes/RUNNER-REDO/PLAN.md) in `feedback.json` beside `port.jpg` / `original.jpg`. Both frames
+frames{port,oracle}}` (lanes/RUNNER-REDO/PLAN.md) in `feedback.json` beside `port.jpg` / `oracle.jpg`. Both frames
 are the newest picture at or before the flagged poll (the packed stream, else the oracle's shots, else the port's live
-view for the port side), and the inputs are the last INPUT_WINDOW polls of pad 0 from the run's `polls.raw`, so a
-record stays readable after the run's pictures are pruned. Filing publishes one `feedback.filed` event to the feed,
-which wakes the push stream.
+view for the port side), and the inputs are the last INPUT_WINDOW polls of pad 0 from the port's lockstep poll
+lines (`tas.read_polls`), so a record stays readable after the run's pictures are pruned. Filing publishes one
+`feedback.filed` event to the feed, which wakes the push stream.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from abu_decomp import DecompError, site_core, tas, tas_oracle
 TEXT_MAX = 2000  # characters of the human's note
 INPUT_WINDOW = 120  # polls of pad 0 kept before and at the flagged poll (2 s at 60 polls/s)
 RECORD = "feedback.json"
-SIDES = {"port": "port", "original": tas_oracle.SIDES[1]}  # feedback side -> the oracle's side folder
+SIDES = tas_oracle.SIDES  # the feedback sides, also the folders of the oracle's shots
 STREAM = "stream"  # packed pictures: stream/<side>/<poll>.jpg
 ID = re.compile(r"[0-9a-f]{12}")
 
@@ -55,10 +55,11 @@ def record_id(run: str, poll: int, category: str, text: str, at: float) -> str:
 
 def inputs_at(run: Path, poll: int) -> list[dict[str, int]]:
     """Pad 0 of the last INPUT_WINDOW polls ending at `poll` (an empty list when the run recorded none)."""
-    source = run / "polls.raw"
-    if not source.is_file():
+    try:
+        polls = tas.read_polls(run, 1)
+    except OSError:
         return []
-    rows = tas.read_raw(source)[max(0, poll - INPUT_WINDOW + 1) : poll + 1]
+    rows = polls[max(0, poll - INPUT_WINDOW + 1) : poll + 1]
     first = max(0, poll - INPUT_WINDOW + 1)
     return [{"poll": first + i, "buttons": row[0], "x": row[1], "y": row[2]} for i, row in enumerate(rows)]
 
@@ -80,7 +81,7 @@ def frame_path(run: Path, side: str, poll: int) -> Path | None:
     """Where the picture of `side` at `poll` lives now: the packed stream, the oracle's shots, the port's live view."""
     return (
         newest_at(run / STREAM / side, poll, ".jpg")
-        or newest_at(run / tas_oracle.SHOTS / SIDES[side], poll, ".ppm", "poll-")
+        or newest_at(run / tas_oracle.SHOTS / side, poll, ".ppm", "poll-")
         or ((run / tas.VIEW) if side == "port" and (run / tas.VIEW).is_file() else None)
     )
 
@@ -100,7 +101,7 @@ def build(
         "lane": run["lane"],
         "movie": run["movie"],
         "inputs": inputs,
-        "frames": {"port": None, "original": None},
+        "frames": dict.fromkeys(SIDES),
     }
 
 

@@ -1,5 +1,5 @@
 // Site region "fn" (function screen): the function's code with line counts, its runs grouped by kind, and the cases
-// table (inputs, port output, original output, first divergence), all typed records from /api/fn/NAME.
+// table (inputs, port output, oracle output, first divergence), all typed records from /api/fn/NAME.
 // mount(el, ctx): ctx = {contract, api(path), go(route), on(kind, fn), route: {name, arg, query}}.
 // Nothing here writes prose: every cell is a field of a record; updates arrive through ctx.on (the shell's SSE push).
 
@@ -127,13 +127,13 @@ function caseRow(c) {
     h("td", {}, `${text(c.caller)} #${text(c.ordinal)}`),
     h("td", {}, listing(c.inputs.port)),
     h("td", {}, side(c.outputs.port)),
-    h("td", {}, side(c.outputs.original)),
-    h("td", {}, d ? `${d.field} ${d.kind}: ${text(d.port)} ≠ ${text(d.original)}` : "–"),
+    h("td", {}, side(c.outputs.oracle)),
+    h("td", {}, d ? `${d.field} ${d.kind}: ${text(d.port)} ≠ ${text(d.oracle)}` : "–"),
     h("td", {}, h("span", { class: `tag ${c.verdict}` }, text(c.verdict)), ` ${text(c.compared)}`));
 }
 
 function casesPanel(rec) {
-  const head = ["call", "inputs", "port out", "original out", "first divergence", "verdict"];
+  const head = ["call", "inputs", "port out", "oracle out", "first divergence", "verdict"];
   return h("div", { class: "group" }, h("h3", {}, "Cases"),
     h("div", { class: "panel" }, h("table", {},
       h("thead", {}, h("tr", {}, ...head.map(title => h("th", {}, title)))),

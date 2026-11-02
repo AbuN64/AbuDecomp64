@@ -103,7 +103,7 @@ class ReadTests(unittest.TestCase):
             kwargs["extra"],
             {
                 "N64R_GOLDEN_DIR": golden,
-                "N64R_LOCKSTEP_DIR": golden,
+                "N64R_LOCKSTEP_DIR": str(self.root / "lockstep" / "oracle"),
                 "N64R_LOCKSTEP_CALLS": str(cov.tas_oracle.CALLS_FIRST),
             },
         )
@@ -841,8 +841,9 @@ def test_a_published_page_port_finds_its_build_tree_through_the_build_units(tmp_
 def test_a_runs_verdicts_are_judged_once_and_rejudged_when_the_calls_or_the_signature_change(tmp_path):
     """tas coverage re-read every run's calls.jsonl (1-4 s each, 732 movies): RUN/behaviour.json keeps the verdicts."""
     run = tmp_path / "run"
-    (run / cov.ORACLE_DIR).mkdir(parents=True)
-    port, oracle = run / cov.PORT_CALLS, run / cov.ORACLE_DIR / cov.ORACLE_CALLS
+    port, oracle = run / cov.PORT_CALLS, run / cov.ORACLE_CALLS
+    port.parent.mkdir(parents=True)
+    oracle.parent.mkdir(parents=True)
     port.write_text("p\n")
     oracle.write_text("o\n")
     with mock.patch.object(cov, "call_behaviour", return_value={"f": {"verdict": "behaves"}}) as judged:
@@ -860,6 +861,7 @@ def test_a_runs_verdicts_are_judged_once_and_rejudged_when_the_calls_or_the_sign
 
 
 def test_a_run_without_both_sides_calls_has_no_verdicts(tmp_path):
+    (tmp_path / cov.PORT_CALLS).parent.mkdir(parents=True)
     (tmp_path / cov.PORT_CALLS).write_text("p\n")
     assert cov.cached_behaviour(tmp_path, str, str, "sig") is None
     assert not (tmp_path / cov.BEHAVIOUR).exists()

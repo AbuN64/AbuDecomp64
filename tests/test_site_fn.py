@@ -93,16 +93,14 @@ class Server:
 class CaseTest(unittest.TestCase):
     def test_verdict_case_carries_both_sides_and_the_first_divergence(self):
         case = site_fn.verdict_case("Fn_A", CALL)
-        self.assertEqual(
-            (case["caller"], case["ordinal"], case["frame"]), ("Caller_X", 3, {"port": 41, "original": 40})
-        )
-        self.assertEqual(case["inputs"], {"port": ["0x5"], "original": ["0x5"]})
+        self.assertEqual((case["caller"], case["ordinal"], case["frame"]), ("Caller_X", 3, {"port": 41, "oracle": 40}))
+        self.assertEqual(case["inputs"], {"port": ["0x5"], "oracle": ["0x5"]})
         self.assertEqual(case["outputs"]["port"]["return"], "0x1")
-        self.assertEqual(case["outputs"]["original"]["return"], "0x2")
+        self.assertEqual(case["outputs"]["oracle"]["return"], "0x2")
         self.assertEqual(case["outputs"]["port"]["writes"], '{"buf":"00"}')
-        self.assertEqual(case["divergence"], [{"field": "return", "kind": "int", "port": "0x1", "original": "0x2"}])
+        self.assertEqual(case["divergence"], [{"field": "return", "kind": "int", "port": "0x1", "oracle": "0x2"}])
         self.assertEqual(
-            (case["verdict"], case["compared"], case["unmatched"]), ("differs", 7, {"port": 0, "original": 1})
+            (case["verdict"], case["compared"], case["unmatched"]), ("differs", 7, {"port": 0, "oracle": 1})
         )
 
     def test_verdict_without_a_diverging_call_makes_no_case(self):
@@ -114,8 +112,8 @@ class CaseTest(unittest.TestCase):
         self.assertEqual(
             status["divergence"],
             [
-                {"field": "status", "kind": "status", "port": "crashed", "original": "ok"},
-                {"field": "return", "kind": "return", "port": None, "original": "v0=4"},
+                {"field": "status", "kind": "status", "port": "crashed", "oracle": "ok"},
+                {"field": "return", "kind": "return", "port": None, "oracle": "v0=4"},
             ],
         )
         self.assertIsNone(blind["outputs"]["port"])
@@ -218,7 +216,7 @@ class PageLogicTest(unittest.TestCase):
         self.assertEqual(self.js("fn.countCell([1500, 1, 2])"), {"text": "1,500 1/2", "state": "hit"})
 
     def test_preview_frames_come_from_the_stream_files_of_the_run(self):
-        self.assertEqual(self.js('fn.previewSrc({id: "r1", first: 7}, "original")'), "/still/r1?side=original&poll=7")
+        self.assertEqual(self.js('fn.previewSrc({id: "r1", first: 7}, "oracle")'), "/still/r1?side=oracle&poll=7")
 
     def test_an_event_concerns_the_screen_by_target_run_or_movie(self):
         rec = '{name:"F",movies:["menu"],runs:[{id:"r1"}]}'
@@ -275,7 +273,7 @@ class PageLogicTest(unittest.TestCase):
                     "movie": "menu",
                     "stream": False,
                     "first": 12,
-                    "sides": ["port", "original"],
+                    "sides": ["port", "oracle"],
                 },
             ],
         }

@@ -237,13 +237,14 @@ class CompareTests(Fixture):
                 {"k": "call", "fn": fn, "caller": caller, "o": o, "frame": 1, "i": o, "a": [f"{a0:08x}", "0", "0", "0"]}
             )
             out.append({"k": "ret", "fn": fn, "i": o, "r": [f"{ret:08x}", "0"], "f0": "0"})
+        (run / name).parent.mkdir(parents=True, exist_ok=True)
         (run / name).write_text("\n".join(json.dumps(r) for r in out) + "\n")
 
     def test_a_function_that_stops_behaving_like_the_original_fails(self):
         reference = self.make_run("m")
         golden = reference / tas_coverage.ORACLE_DIR
         golden.mkdir()
-        self.calls(golden, tas_coverage.ORACLE_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])
+        self.calls(reference, tas_coverage.ORACLE_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])
         base = self.make_run("m", functions={"f1": 4, "f2": 9})
         now = self.make_run("m", functions={"f1": 4, "f2": 30})
         self.calls(base, tas_coverage.PORT_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])

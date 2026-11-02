@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
+from polls_record import write_polls
+
 from abu_decomp import DecompError, tas, tas_sanitize
 from abu_decomp.config import load_profile
 
@@ -154,7 +156,7 @@ class SanitizerRunTests(unittest.TestCase):
 
             def __init__(self, argv, env, stdout, **kwargs):
                 seen.append((argv, env))
-                Path(env["N64C_TAS_RECORD"]).write_text("8000 0 0\n8000 0 0\n")
+                write_polls(env, "8000 0 0\n8000 0 0\n")
                 Path(env["N64C_TAS_HASH"]).write_text("1 aa\n2 bb\n")
                 stdout.write(text + "n64c-tas: done polls=2\n")
 

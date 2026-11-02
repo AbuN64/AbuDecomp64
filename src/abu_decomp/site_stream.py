@@ -1,6 +1,7 @@
 """Site region `stream`: the lockstep stream of one recorded run (module tas_stream packs it).
 
-GET /api/stream/RUN answers {run, polls, inputs, every}; GET /still/RUN?side=SIDE&poll=N (serve_run.still) answers one
+GET /api/stream/RUN answers {run, sides, polls, inputs, every, match}, `match` the run's lockstep match.json
+summary (tas_oracle.read_match) or null while it has none; GET /still/RUN?side=SIDE&poll=N (serve_run.still) answers one
 frame. A request
 packs the shots the run has dumped since the last pack first (the rig prunes them), so a running run's index grows as
 its polls land. A refusal is a typed record {kind: "error", code, run, side, poll} with a 404 status, never prose.
@@ -14,7 +15,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas, tas_stream
+from abu_decomp import DecompError, tas, tas_oracle, tas_stream
 
 
 def refusal(code: str, run: str, side: str | None = None, poll: str | None = None) -> tuple[int, dict[str, Any]]:
@@ -37,9 +38,10 @@ def index(server: Any, run_id: str) -> tuple[int, dict[str, Any]]:
         return refusal("stream.run", run_id)
     refresh(run)
     try:
-        return HTTPStatus.OK, json.loads((tas_stream.folder(run) / tas_stream.INDEX).read_text())
+        stream = json.loads((tas_stream.folder(run) / tas_stream.INDEX).read_text())
     except (OSError, ValueError):
         return refusal("stream.empty", run_id)
+    return HTTPStatus.OK, {**stream, "match": tas_oracle.read_match(run)}
 
 
 def answer(server: Any, method: str, rest: str, query: str, body: bytes) -> tuple[int, Any]:

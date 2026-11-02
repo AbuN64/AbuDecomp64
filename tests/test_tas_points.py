@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
+from polls_record import write_polls
+
 from abu_decomp import DecompError, tas, tas_points
 from abu_decomp.config import load_profile
 
@@ -64,7 +66,7 @@ class PointBase(unittest.TestCase):
                 seen.append(env)
                 Path(env["N64C_TAS_HASH"]).write_text("1 aa\n")
                 Path(env["N64C_VIEW"]).write_bytes(b"BM")
-                Path(env["N64C_TAS_RECORD"]).write_text(recorded)
+                write_polls(env, recorded)
                 stdout.write("n64c-tas: done polls=1\n")
 
             def wait(self, timeout=None):

@@ -30,9 +30,9 @@ def ppm(shade: int) -> bytes:
 
 def make_run(root: Path, name="r1", polls=(0, 25, 50), original=None, every=25, raw="0000 0 0\n8000 5 -5\n0000 0 0\n"):
     run = root / "plays" / name
-    for side, disk in (("port", "port"), ("original", "oracle")):
-        for poll in original if side == "original" and original is not None else polls:
-            path = run / tas.SHOTS / disk / f"poll-{poll:06d}.ppm"
+    for side in ("port", "oracle"):
+        for poll in original if side == "oracle" and original is not None else polls:
+            path = run / tas.SHOTS / side / f"poll-{poll:06d}.ppm"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(ppm(poll % 250))
     (run / "movie.raw").write_text(raw)
@@ -67,7 +67,7 @@ class StreamTests(unittest.TestCase):
         assert out == {"run": "r1", "polls": 3, "added": 6, "every": 1}
         assert index == {
             "run": "r1",
-            "sides": ["port", "original"],
+            "sides": ["port", "oracle"],
             "polls": [0, 1, 2],
             "inputs": [[0, 0, 0], [0x8000, 5, -5], [0, 0, 0]],
             "every": 1,
@@ -89,7 +89,7 @@ class StreamTests(unittest.TestCase):
         index = json.loads((run / "stream" / "index.json").read_text())
         assert out == {"run": "solo", "polls": 3, "added": 3, "every": 25}
         assert index["sides"] == ["port"] and index["polls"] == [0, 25, 50]
-        assert not (run / "stream" / "original").exists()
+        assert not (run / "stream" / "oracle").exists()
         status, body, kind = still(run, "side=port&poll=50")
         assert status == HTTPStatus.OK and kind == "image/jpeg" and body[:2] == b"\xff\xd8"
 
@@ -104,8 +104,8 @@ class StreamTests(unittest.TestCase):
         run = make_run(tmp_path, polls=(0, 25))
         tas_stream.pack(run)
         shutil.rmtree(run / tas.SHOTS)  # the rig prunes the ppm files
-        for disk in ("port", "oracle"):
-            path = run / tas.SHOTS / disk / "poll-000050.ppm"
+        for side in ("port", "oracle"):
+            path = run / tas.SHOTS / side / "poll-000050.ppm"
             path.parent.mkdir(parents=True)
             path.write_bytes(ppm(9))
         out = tas_stream.pack(run)
@@ -119,6 +119,25 @@ class StreamTests(unittest.TestCase):
         tas_stream.pack(run)
         index = json.loads((run / "stream" / "index.json").read_text())
         assert index["inputs"] == [[1, 1, 2], None, None] and index["every"] == 40
+
+    def test_the_index_carries_the_lockstep_match_or_null_until_there_is_one(self):
+        run = make_run(self.tmp)
+        index = site_stream.answer(self.server, "GET", "r1", "", b"")[1]
+        assert index["match"] is None  # Unsupported until lockstep.py match wrote match.json, never faked
+        (run / "lockstep").mkdir()
+        (run / "lockstep" / "match.json").write_text(
+            json.dumps(
+                {
+                    "polls": {"oracle": 9, "port": 9, "common": 9},
+                    "matched_through_poll": 4,
+                    "first": {"poll": 5, "class": "vi"},
+                    "divergences": {"input": [], "vi": [{"poll": 5}, {"poll": 7}], "calls": [], "memory": []},
+                }
+            )
+        )
+        match = site_stream.answer(self.server, "GET", "r1", "", b"")[1]["match"]
+        assert match["matched_through_poll"] == 4 and match["first"] == {"poll": 5, "class": "vi"}
+        assert match["divergences"] == {"input": 0, "vi": 2, "calls": 0, "memory": 0}
 
     def test_a_run_without_pictures_refuses(self):
         tmp_path = self.tmp
@@ -161,10 +180,10 @@ class StreamTests(unittest.TestCase):
         tmp_path = self.tmp
         run = make_run(tmp_path)
         tas_stream.pack(run)
-        status, body, kind = still(run, "side=original&poll=25")
+        status, body, kind = still(run, "side=oracle&poll=25")
         assert (status, kind, body[:2]) == (HTTPStatus.OK, "image/jpeg", b"\xff\xd8")
         for query, code in (
-            ("side=oracle&poll=0", "stream.side"),
+            ("side=original&poll=0", "stream.side"),  # a retired name: no alias
             ("side=port&poll=26", "stream.poll"),
             ("side=port&poll=x", "stream.poll"),
             ("side=port", "stream.poll"),

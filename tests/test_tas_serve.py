@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 from PIL import Image
+from polls_record import write_polls
 
 from abu_decomp import DecompError, serve_audio, serve_files, serve_pages, serve_video, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
@@ -659,7 +660,8 @@ class HttpTests(Base):
 
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)
-        (source / "polls.raw").write_text("8000 0 0\n0000 0 0\n1000 0 0\n")
+        (source / "lockstep" / "port").mkdir(parents=True)
+        write_polls({"N64C_LOCKSTEP_DIR": source / "lockstep" / "port"}, "8000 0 0\n0000 0 0\n1000 0 0\n")
         started = []
         hold = threading.Event()
 

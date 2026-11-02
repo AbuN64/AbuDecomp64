@@ -314,9 +314,9 @@ HEADERS = (
     "src/**/*.cpp",
 )  # where the prototypes are read from: the project's functions are defined (and so declared) in its .CPP units
 PORT_CALLS, ORACLE_CALLS = (
-    "calls.jsonl",
-    "lockstep.jsonl",
-)  # RUN/ and RUN/oracle-golden/: one call line per recorded call
+    Path("lockstep") / "port" / "calls.jsonl",
+    Path("lockstep") / "oracle" / "lockstep.jsonl",
+)  # under RUN/ (CONTRACTS.md "Run record"): one call line per recorded call
 SEVERITY = (
     "differs-args",
     "differs-result",
@@ -332,7 +332,7 @@ def call_behaviour(
     """Per function either side called in this run: behave/percall's verdict dict, the port's and the original's
     recorded calls aligned by (function, caller, ordinal); the original's calls come from `oracle_run` (default: this
     run). None when one of the sides has no capture."""
-    port_file, oracle_file = run / PORT_CALLS, (oracle_run or run) / ORACLE_DIR / ORACLE_CALLS
+    port_file, oracle_file = run / PORT_CALLS, (oracle_run or run) / ORACLE_CALLS
     if not (port_file.is_file() and oracle_file.is_file()):
         return None
     oracle, _ = percall.read_calls(oracle_file, "oracle", resolve)
@@ -361,7 +361,7 @@ def cached_behaviour(
 ) -> dict[str, dict[str, Any]] | None:
     """`call_behaviour(run)`, read from RUN/behaviour.json when it was judged from the same call files (size and mtime)
     under the same signature, else judged and written there: a coverage union then re-judges only runs that changed."""
-    files = [run / PORT_CALLS, run / ORACLE_DIR / ORACLE_CALLS]
+    files = [run / PORT_CALLS, run / ORACLE_CALLS]
     if not all(f.is_file() for f in files):
         return None
     stamp = [signature, *(f"{f.stat().st_size}:{f.stat().st_mtime_ns}" for f in files)]
@@ -399,7 +399,7 @@ def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[st
         str(record.get("pak") or "on"),
         extra={
             "N64R_GOLDEN_DIR": str(run / ORACLE_DIR),
-            "N64R_LOCKSTEP_DIR": str(run / ORACLE_DIR),
+            "N64R_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "oracle")),
             "N64R_LOCKSTEP_CALLS": str(tas_oracle.CALLS_FIRST),
         },
         card=card,

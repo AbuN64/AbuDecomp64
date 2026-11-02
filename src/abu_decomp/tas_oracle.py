@@ -68,7 +68,9 @@ REMOVED_KEYS = {"cpu_profile": "the oracle's CPU profile is no longer read; dele
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
 AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
-CALLS_FIRST = 16  # calls per (caller, function) each side records for the per-call behaviour (RUN/calls.jsonl)
+CALLS_FIRST = (
+    16  # calls per (caller, function) each side records for the per-call behaviour (RUN/lockstep/port/calls.jsonl)
+)
 SHOTS = "shots"
 SIDES = ("port", "oracle")
 LOCKSTEP = "lockstep"  # RUN/lockstep/{port,oracle}/ and RUN/lockstep/match.json (CONTRACTS.md "Run record")
@@ -188,8 +190,6 @@ def port_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
     env = {
         "N64C_TAS_TRACE": str(run / PORT_TRACE),
     }
-    if oracle.get("lockstep"):  # the port half of the whole-movie lockstep (shim/boot/trace.c); N64C_CALLS is tas's
-        env.update(N64C_LOCKSTEP="1", N64C_LOCKSTEP_DIR=str(lockstep_side(run, "port")))
     if oracle.get("pictures"):
         shots = run / SHOTS / "port"
         shots.mkdir(parents=True, exist_ok=True)
@@ -227,13 +227,30 @@ def lockstep_match(run: Path) -> dict[str, Any]:
             check=False,
         ).returncode
     found: dict[str, Any] = {"exit": code, "log": str(folder / LOCKSTEP_LOG)}
-    report = folder / LOCKSTEP_MATCH
-    if code in (0, 1) and report.is_file():
-        data = json.loads(report.read_text())
-        found.update(match=str(report), matched_through_poll=data.get("matched_through_poll"), first=data.get("first"))
+    data = read_match(run)
+    if code in (0, 1) and data is not None:
+        found.update(
+            match=str(folder / LOCKSTEP_MATCH), matched_through_poll=data["matched_through_poll"], first=data["first"]
+        )
     else:
         found["error"] = (folder / LOCKSTEP_LOG).read_text(errors="replace").strip()[-400:]
     return found
+
+
+def read_match(run: Path) -> dict[str, Any] | None:
+    """The one reader of RUN/lockstep/match.json (CONTRACTS.md "Run record"): `polls` {oracle, port, common},
+    `matched_through_poll`, `first` (null or the first divergence with its class) and `divergences` as counts per
+    class. None while the run has no match.json (Unsupported until `lockstep.py match --run` wrote it)."""
+    try:
+        data = json.loads((run / LOCKSTEP / LOCKSTEP_MATCH).read_text())
+        return {
+            "polls": data.get("polls"),
+            "matched_through_poll": data.get("matched_through_poll"),
+            "first": data.get("first"),
+            "divergences": {name: len(rows) for name, rows in (data.get("divergences") or {}).items()},
+        }
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
 
 
 def movie_env(play: Path, pak: str, pads: int, exit_after: int, card: Path | None) -> dict[str, str]:

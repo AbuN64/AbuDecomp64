@@ -1,10 +1,10 @@
 """The lockstep stream of a recorded run: `decomp tas stream pack RUN` turns the oracle's `.ppm` shots into
-`RUN/stream/{port,original}/POLL.jpg` and `RUN/stream/index.json` (polls, every, per-poll inputs from movie.raw).
+`RUN/stream/{port,oracle}/POLL.jpg` and `RUN/stream/index.json` (polls, every, per-poll inputs from movie.raw).
 
 A run played with `--oracle --oracle-pictures` dumps both sides every `tas.oracle.shot_every` polls; a port-only play
 dumps the port every `--shots-every` polls (serve's plays: `tas.serve.stream_every`). The rig prunes the shots after
 a few minutes, so a pack only adds: polls already packed stay when their shots are gone. A run's stream sides are the
-sides it plays (the port always, the original only when its record names the oracle), and a poll is in the stream
+sides it plays (the port always, the oracle only when its record names it), and a poll is in the stream
 when every one of them pictured it: an oracle run shows the same poll on both sides by construction, a port-only run
 streams the port alone. The poll index is the logical clock.
 """
@@ -24,8 +24,7 @@ from abu_decomp import DecompError, tas, tas_oracle
 
 STREAM = "stream"
 INDEX = "index.json"
-SIDES = ("port", "original")  # the stream's sides; the original is the oracle's folder on disk
-DISK = {"port": "port", "original": "oracle"}
+SIDES = tas_oracle.SIDES  # the stream's sides, also the folders of the oracle's shots
 JPEG_QUALITY = 82
 
 
@@ -38,7 +37,7 @@ def frame_path(run: Path, side: str, poll: int) -> Path:
 
 
 def sides(run: Path) -> tuple[str, ...]:
-    """The sides the run plays: the port, and the original when its record names the oracle."""
+    """The sides the run plays: the port, and the oracle when its record names it."""
     return SIDES if (tas.read_record(run) or {}).get("oracle") else SIDES[:1]
 
 
@@ -87,7 +86,7 @@ def pack(run: Path) -> dict[str, Any]:
     """Add the run's polls every played side pictured to its stream and rewrite index.json; refuse a run with no
     stream at all."""
     played = sides(run)
-    shots = {side: tas_oracle.shots(run, DISK[side]) for side in played}
+    shots = {side: tas_oracle.shots(run, side) for side in played}
     added = 0
     for poll in sorted(set.intersection(*(set(found) for found in shots.values()))):
         for side, found in shots.items():

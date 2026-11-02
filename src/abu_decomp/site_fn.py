@@ -13,15 +13,14 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import site_core, tas, tas_coverage
+from abu_decomp import site_core, tas, tas_coverage, tas_oracle
 
 STREAM_INDEX = Path("stream") / "index.json"  # RUN/: present once the run's frames are packed for the stream view
-SIDES = ("port", "original")  # the contract's side names; the bake's `oracle` is the `original` here
-BAKE_SIDE = {"port": "port", "original": "oracle"}
+SIDES = tas_oracle.SIDES  # the contract's side names: port, oracle
 
 
 def side_pair(pick: Any) -> dict[str, Any]:
-    return {side: pick(BAKE_SIDE[side]) for side in SIDES}
+    return {side: pick(side) for side in SIDES}
 
 
 def string_or_none(value: Any) -> str | None:
@@ -53,13 +52,13 @@ def verdict_case(name: str, call: dict[str, Any]) -> dict[str, Any] | None:
                 "field": d.get("field"),
                 "kind": d.get("kind"),
                 "port": string_or_none(d.get("port")),
-                "original": string_or_none(d.get("oracle")),
+                "oracle": string_or_none(d.get("oracle")),
             }
             for d in first.get("diffs") or []
         ],
         "verdict": call.get("verdict"),
         "compared": call.get("compared"),
-        "unmatched": {"port": call.get("unmatched_port"), "original": call.get("unmatched_oracle")},
+        "unmatched": {"port": call.get("unmatched_port"), "oracle": call.get("unmatched_oracle")},
     }
 
 
@@ -67,19 +66,19 @@ def behave_case(name: str, ordinal: int, row: dict[str, Any]) -> dict[str, Any]:
     """The Case of one decoded behave row: both sides got the same inputs; the divergence is where outputs differ."""
     inputs = [f"{a['where']}={a['value']}" for a in row.get("arguments") or []]
     outputs = row.get("outputs") or {}
-    sides = {side: outputs.get(BAKE_SIDE[side]) for side in SIDES}
+    sides = {side: outputs.get(side) for side in SIDES}
     divergence = []
     if all(sides.values()):
         for field in ("status", "return"):
-            port, original = sides["port"].get(field), sides["original"].get(field)
-            if port != original:
-                divergence.append({"field": field, "kind": field, "port": port, "original": original})
+            port, oracle = sides["port"].get(field), sides["oracle"].get(field)
+            if port != oracle:
+                divergence.append({"field": field, "kind": field, "port": port, "oracle": oracle})
     return {
         "function": name,
         "ordinal": ordinal,
         "caller": None,
-        "frame": {"port": None, "original": None},
-        "inputs": {"port": inputs, "original": inputs},
+        "frame": {"port": None, "oracle": None},
+        "inputs": {"port": inputs, "oracle": inputs},
         "outputs": {
             side: None if got is None else {"status": got.get("status"), "return": got.get("return"), "writes": None}
             for side, got in sides.items()
@@ -87,7 +86,7 @@ def behave_case(name: str, ordinal: int, row: dict[str, Any]) -> dict[str, Any]:
         "divergence": divergence,
         "verdict": row.get("verdict"),
         "compared": row.get("count", 1),
-        "unmatched": {"port": 0, "original": 0},
+        "unmatched": {"port": 0, "oracle": 0},
     }
 
 

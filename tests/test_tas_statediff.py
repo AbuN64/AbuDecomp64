@@ -290,7 +290,7 @@ class CompareTests(unittest.TestCase):
         self.assertEqual(out["oracle_only_ranges"], [[1, 3], [20, 24]])
         self.assertEqual(out["port_only_ranges"], [[40, 41], [51, 59]])
         self.assertEqual((out["only_port"], out["only_oracle"]), (11, 8))
-        self.assertEqual(out["first_missing"], "polls 1-3 are only in the original trace, missing from the port's")
+        self.assertEqual(out["first_missing"], "polls 1-3 are only in the oracle trace, missing from the port's")
 
     def test_coverage_is_complete_only_for_equal_nonempty_traces(self):
         same = {1: [], 2: [(0, 1)]}
@@ -603,12 +603,12 @@ class FinishTests(unittest.TestCase):
         self.traces("1 0:1 1:2 2:9\n", "1 0:1 1:2 2:3\n")
 
         def killed(session, polls, profile):
-            session.detail_runs.append({"side": "original", "exit": None, "outcome": "hang", "cpu_seconds": 300.0})
+            session.detail_runs.append({"side": "oracle", "exit": None, "outcome": "hang", "cpu_seconds": 300.0})
             return {}
 
         with mock.patch.object(sd, "_dump_pass", side_effect=killed):
             summary = sd.finish(self.session, None, "movie-a", {})
-        self.assertEqual(summary["detail"]["failed"], ["original"])
+        self.assertEqual(summary["detail"]["failed"], ["oracle"])
         self.assertEqual(summary["detail"]["runs"][0]["cpu_seconds"], 300.0)
 
     def test_a_port_without_the_feature_says_so(self):
@@ -693,10 +693,10 @@ class DumpPassFailureTests(unittest.TestCase):
         self.assertFalse((self.cache / "dump-3.bin").exists())  # a killed replay is not cached
         ran = {r["side"]: r for r in self.session.detail_runs}
         self.assertEqual((ran["port"]["exit"], ran["port"]["cpu_seconds"]), (0, 40.0))
-        self.assertEqual((ran["original"]["outcome"], ran["original"]["exit"]), ("hang", None))
-        self.assertEqual(ran["original"]["cpu_seconds"], 300.0)
-        self.assertEqual(Path(ran["original"]["log"]).read_text(), "original output")
-        self.assertIn("detail replay of the original hang, 300.0 CPU s", self.session.notes[0])
+        self.assertEqual((ran["oracle"]["outcome"], ran["oracle"]["exit"]), ("hang", None))
+        self.assertEqual(ran["oracle"]["cpu_seconds"], 300.0)
+        self.assertEqual(Path(ran["oracle"]["log"]).read_text(), "original output")
+        self.assertIn("detail replay of the oracle hang, 300.0 CPU s", self.session.notes[0])
 
     def test_the_port_exiting_non_zero_is_reported_and_its_dumps_are_not_read(self):
         dumps = self.replay((3, 12.5), (0, 30.0))

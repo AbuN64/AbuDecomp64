@@ -1,4 +1,4 @@
-// Site region "stream": a recorded run replayed in lockstep, port beside original, keyed to the poll index.
+// Site region "stream": a recorded run replayed in lockstep, port beside oracle, keyed to the poll index.
 // Route #/stream/RUN?poll=P. The clock is the poll index (60 polls per second at 1x); the page shows, for the poll
 // the clock stands on, the latest recorded poll at or before it on every side the run plays, so the pictures always match.
 // mount(el, ctx): ctx = {contract, api(path), go(route), on(kind, fn), route: {name, arg, query}}.
@@ -114,7 +114,9 @@ async function open(root, ctx) {
   };
   const takeover = h("button", { class: "take", title: "take over at the shown poll" }, icon("gamepad-2"), "take over");
   const result = h("span", {});
-  view.append(frames, h("div", { class: "bar" }, btn.rewind, btn.back, btn.pause, btn.play, btn.forward, speeds, scrub, count, takeover, result));
+  const match = data.match; // the run's lockstep verdict, null until `lockstep.py match` wrote one
+  const verdict = h("span", { class: "match" }, !match ? "" : match.first ? `lockstep: diverges at poll ${match.first.poll} (${match.first.class})` : `lockstep: matched through poll ${match.matched_through_poll}`);
+  view.append(frames, h("div", { class: "bar" }, btn.rewind, btn.back, btn.pause, btn.play, btn.forward, speeds, scrub, count, takeover, result, verdict));
 
   function paint() {
     const index = indexAt(polls, state.pos), at = polls[index];

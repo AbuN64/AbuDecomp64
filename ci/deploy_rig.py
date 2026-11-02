@@ -361,8 +361,8 @@ def render_profile(template: str, home: str, site: dict[str, object]) -> str:
     return text
 
 
-def install_profile(template: Path, home: Path) -> Path:
-    """Write the live profile whole from the tree's template; the previous live file is replaced, never read."""
+def rendered_profile(template: Path, home: Path) -> str:
+    """The tree's template rendered with the host's site file under `home`: the one way a profile is made."""
     try:
         site = json.loads((home / SITE_FILE).read_text())
         text = template.read_text()
@@ -370,7 +370,12 @@ def install_profile(template: Path, home: Path) -> Path:
         raise Refused(f"profile input: {exc}") from exc
     if not isinstance(site, dict) or not all(isinstance(value, str) for value in site.values()):
         raise Refused(f"{SITE_FILE} is not an object of strings")
-    rendered = render_profile(text, str(home), site)
+    return render_profile(text, str(home), site)
+
+
+def install_profile(template: Path, home: Path) -> Path:
+    """Write the live profile whole from the tree's template; the previous live file is replaced, never read."""
+    rendered = rendered_profile(template, home)
     live = home / LIVE_PROFILE
     staged = live.with_name(f"{live.name}.{os.getpid()}.new")
     try:

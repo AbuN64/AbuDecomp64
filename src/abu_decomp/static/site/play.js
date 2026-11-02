@@ -11,7 +11,7 @@ const KEYS = [["ArrowUp", "stick up"], ["ArrowDown", "stick down"], ["ArrowLeft"
   ["KeyI", "CUP"], ["KeyK", "CDOWN"], ["KeyJ", "CLEFT"], ["KeyL", "CRIGHT"], ["KeyT", "UP"], ["KeyG", "DOWN"], ["KeyF", "LEFT"], ["KeyH", "RIGHT"]];
 const PAD = [[0, "A"], [1, "B"], [2, "B"], [3, "CUP"], [4, "L"], [5, "R"], [6, "Z"], [7, "Z"], [9, "START"], [12, "UP"], [13, "DOWN"], [14, "LEFT"], [15, "RIGHT"]];
 const STICK = 80, DEADZONE = 0.15, HEARTBEAT_MS = 500;
-const RUN_KINDS = ["run.progress:tas", "run.progress:tas-target", "run.queued", "run.refused", "run.ended"];
+const RUN_KINDS = ["run.started:tas", "run.started:tas-target", "run.queued", "run.refused", "run.ended"];
 
 const node = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);

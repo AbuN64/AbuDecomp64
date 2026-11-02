@@ -1350,12 +1350,13 @@ def check_inspect(shots_every: int, dump_ram_at: int | None, trace_draws: int | 
 
 
 def inspect_env(run: Path, shots_every: int, dump_ram_at: int | None, trace_draws: int | None) -> dict[str, str]:
-    """The port's inspection variables for one run: pictures every N polls, guest RAM at poll P and the draw trace of
-    the first graphics task from poll P (n64compat n64c_tas.h). Everything lands in the run folder the page serves."""
+    """The port's inspection variables for one run: pictures every N polls (shots/port, the folder the oracle's port
+    pictures and the stream read), guest RAM at poll P and the draw trace of the first graphics task from poll P
+    (n64compat n64c_tas.h). Everything lands in the run folder the page serves."""
     env: dict[str, str] = {}
     if shots_every:
-        (run / SHOTS).mkdir(exist_ok=True)
-        env.update(N64C_TAS_SHOT_EVERY=str(shots_every), N64C_TAS_SHOT_DIR=str(run / SHOTS))
+        (run / SHOTS / "port").mkdir(parents=True, exist_ok=True)
+        env.update(N64C_TAS_SHOT_EVERY=str(shots_every), N64C_TAS_SHOT_DIR=str(run / SHOTS / "port"))
     if dump_ram_at is not None:
         env.update(N64C_TAS_DUMP_AT=str(dump_ram_at), N64C_TAS_DUMP_PATH=str(run / RAM_DUMP.format(dump_ram_at)))
     if trace_draws is not None:
@@ -1365,7 +1366,7 @@ def inspect_env(run: Path, shots_every: int, dump_ram_at: int | None, trace_draw
 
 def inspect_files(run: Path, shots_every: int, dump_ram_at: int | None, trace_draws: int | None) -> list[str]:
     """The inspection files a finished run holds, by path (a run that ended before its poll holds none of that kind)."""
-    found = sorted(str(p) for p in (run / SHOTS).glob("poll-*.ppm")) if shots_every else []
+    found = sorted(str(p) for p in (run / SHOTS / "port").glob("poll-*.ppm")) if shots_every else []
     if dump_ram_at is not None:
         found += [str(run / RAM_DUMP.format(dump_ram_at))] * (run / RAM_DUMP.format(dump_ram_at)).is_file()
     if trace_draws is not None:
@@ -1632,6 +1633,8 @@ def play(
         record[tas_select.PINS] = pins  # what the port was built from: the next selective replay diffs against it
     if pads > 1:
         record["pads"] = pads
+    if shots_every:  # the port's pictures' interval: the stream's clock step (tas_stream.every)
+        record[SHOTS] = {"every": shots_every}
     if started[0]:
         record.update({"start": started[0], "prefix": started[1]})
     if retry and source is not None:

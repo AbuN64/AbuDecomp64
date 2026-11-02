@@ -2,7 +2,7 @@
 // plan's closed / working / open split, each MVP item with its plan rows (card link, state, last line), the critical path
 // (the plan's longest chain) highlighted, and the finish line (the platform proofs and the launch gate). It is the home page.
 // mount(el, ctx): ctx = {api(path), on(kind, fn)}. The record is refetched when a run event lands on the feed stream.
-export const LIVE_KINDS = ["run.progress:tas", "run.progress:tas-target", "run.progress:unit", "run.progress:set", "run.queued", "run.ended"];
+export const LIVE_KINDS = ["run.started:tas", "run.started:tas-target", "run.started:unit", "run.started:set", "run.queued", "run.ended"];
 export const STATES = ["closed", "working", "open"];
 
 const node = (tag, attrs = {}, ...kids) => {

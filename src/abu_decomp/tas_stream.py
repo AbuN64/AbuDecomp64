@@ -1,10 +1,12 @@
 """The lockstep stream of a recorded run: `decomp tas stream pack RUN` turns the oracle's `.ppm` shots into
 `RUN/stream/{port,original}/POLL.jpg` and `RUN/stream/index.json` (polls, every, per-poll inputs from movie.raw).
 
-A run played with `--oracle --oracle-pictures` dumps both sides every `tas.oracle.shot_every` polls and the rig prunes
-the shots after a few minutes, so a pack only adds: polls already packed stay when their shots are gone. A poll is
-in the stream when both sides pictured it, so the page shows the same poll on both sides by construction; the poll
-index is the logical clock.
+A run played with `--oracle --oracle-pictures` dumps both sides every `tas.oracle.shot_every` polls; a port-only play
+dumps the port every `--shots-every` polls (serve's plays: `tas.serve.stream_every`). The rig prunes the shots after
+a few minutes, so a pack only adds: polls already packed stay when their shots are gone. A run's stream sides are the
+sides it plays (the port always, the original only when its record names the oracle), and a poll is in the stream
+when every one of them pictured it: an oracle run shows the same poll on both sides by construction, a port-only run
+streams the port alone. The poll index is the logical clock.
 """
 
 from __future__ import annotations
@@ -35,13 +37,16 @@ def frame_path(run: Path, side: str, poll: int) -> Path:
     return folder(run) / side / f"{poll}.jpg"
 
 
-def packed(run: Path) -> list[int]:
-    """The polls both sides hold a frame for, ascending."""
-    both: set[int] | None = None
-    for side in SIDES:
-        here = {int(p.stem) for p in (folder(run) / side).glob("*.jpg") if p.stem.isdigit()}
-        both = here if both is None else both & here
-    return sorted(both or ())
+def sides(run: Path) -> tuple[str, ...]:
+    """The sides the run plays: the port, and the original when its record names the oracle."""
+    return SIDES if (tas.read_record(run) or {}).get("oracle") else SIDES[:1]
+
+
+def packed(run: Path, played: tuple[str, ...]) -> list[int]:
+    """The polls every played side holds a frame for, ascending."""
+    return sorted(
+        set.intersection(*({int(p.stem) for p in (folder(run) / s).glob("*.jpg") if p.stem.isdigit()} for s in played))
+    )
 
 
 def jpeg(path: Path) -> bytes:
@@ -67,9 +72,9 @@ def inputs(run: Path, polls: list[int]) -> list[list[int] | None]:
 
 
 def every(run: Path, polls: list[int]) -> int:
-    """The shot interval the run recorded, else the smallest gap between its polls."""
+    """The shot interval the run recorded (its oracle's, else its port shots'), else the smallest gap between polls."""
     record = tas.read_record(run) or {}
-    given = (record.get("oracle") or {}).get("every")
+    given = (record.get("oracle") or record.get(tas.SHOTS) or {}).get("every")
     if given:
         return int(given)
     gaps = [b - a for a, b in pairwise(polls)]
@@ -79,22 +84,30 @@ def every(run: Path, polls: list[int]) -> int:
 
 
 def pack(run: Path) -> dict[str, Any]:
-    """Add the run's complete shot pairs to its stream and rewrite index.json; refuse a run with no stream at all."""
-    shots = {side: tas_oracle.shots(run, DISK[side]) for side in SIDES}
+    """Add the run's polls every played side pictured to its stream and rewrite index.json; refuse a run with no
+    stream at all."""
+    played = sides(run)
+    shots = {side: tas_oracle.shots(run, DISK[side]) for side in played}
     added = 0
     for poll in sorted(set.intersection(*(set(found) for found in shots.values()))):
         for side, found in shots.items():
             if not (target := frame_path(run, side, poll)).is_file():
                 write(target, jpeg(found[poll]))
                 added += 1
-    polls = packed(run)
+    polls = packed(run, played)
     if not polls:
         raise DecompError(
             "tas.stream",
-            f"run {run.name} has no pictured polls on both sides",
-            "play it with --oracle --oracle-pictures",
+            f"run {run.name} has no polls pictured on its sides ({', '.join(played)})",
+            "play it with --shots-every N, or --oracle --oracle-pictures for both sides",
         )
-    index = {"run": run.name, "polls": polls, "inputs": inputs(run, polls), "every": every(run, polls)}
+    index = {
+        "run": run.name,
+        "sides": list(played),
+        "polls": polls,
+        "inputs": inputs(run, polls),
+        "every": every(run, polls),
+    }
     write(folder(run) / INDEX, json.dumps(index, separators=(",", ":")).encode())
     return {"run": run.name, "polls": len(polls), "added": added, "every": index["every"]}
 

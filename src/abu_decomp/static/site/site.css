@@ -80,7 +80,7 @@ h2 { margin: 0 0 12px; font: 600 13px var(--mono); text-transform: uppercase; le
 .ev a { color: var(--accent); text-decoration: none; }
 .ev a:hover { text-decoration: underline; }
 .ev .n { font-family: var(--mono); }
-.ev[data-family="run.progress"] svg { color: var(--good); }
+.ev[data-family="run.started"] svg { color: var(--good); }
 .ev[data-family="run.ended"] svg { color: var(--dim); }
 .ev[data-family="run.refused"] svg, .ev[data-family="feedback.filed"] svg { color: var(--bad); }
 .ev[data-family="function.matched"] svg { color: var(--s-named); }
@@ -138,4 +138,31 @@ body.page .frame { min-height: calc(100vh - 56px); height: auto; }
   html, body { height: auto; }
   .sitemap { max-height: 42vh; border-right: 0; border-bottom: 1px solid var(--line); }
   main { padding: var(--gutter); }
+}
+
+/* home: the playthrough wall (three columns, rows grow as pages load) and the hideable feed right of it; still, no motion */
+.home { display: grid; grid-template-columns: minmax(0, 1fr) 20rem; gap: var(--gutter); align-items: start; }
+body.feed-hidden .home { grid-template-columns: minmax(0, 1fr); }
+body.feed-hidden .feedpane { display: none; }
+.feedpane { position: sticky; top: 0; max-height: calc(100vh - 56px - 2 * var(--gutter)); overflow: auto;
+  border-left: 1px solid var(--line); padding-left: var(--gutter); }
+.feedpane h3 { margin: 0 0 8px; font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+/* the pane is narrow: time and icon over a full-width line, the kind tag dropped (the icon carries it) */
+.feedpane .ev { grid-template-columns: 52px 16px minmax(0, 1fr); gap: 6px; padding: 6px 4px; font-size: 13px; }
+.feedpane .ev .k { display: none; }
+.feedpane .ev time { font-size: 11px; }
+.wall { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.tile { display: flex; flex-direction: column; border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  text-decoration: none; min-width: 0; }
+.tile img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #000; }
+.tile[data-still="empty"] img { visibility: hidden; }
+.tile span { padding: 6px 8px; font: 12px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile[data-status="running"] span { color: var(--text); }
+.tile:hover, .tile:focus-visible { border-color: var(--text); outline: none; }
+.wall-more { min-height: 1px; padding: 12px 0; color: var(--dim); font: 12px var(--mono); }
+.plan { margin-top: var(--gutter); }
+@media (max-width: 760px) {
+  .home, body.feed-hidden .home { grid-template-columns: minmax(0, 1fr); }
+  .wall { grid-template-columns: minmax(0, 1fr); }
+  .feedpane { position: static; max-height: none; border-left: 0; border-top: 1px solid var(--line); padding: var(--gutter) 0 0; }
 }

@@ -57,7 +57,13 @@ class StreamTests(unittest.TestCase):
         out = tas_stream.pack(run)
         index = json.loads((run / "stream" / "index.json").read_text())
         assert out == {"run": "r1", "polls": 3, "added": 6, "every": 1}
-        assert index == {"run": "r1", "polls": [0, 1, 2], "inputs": [[0, 0, 0], [0x8000, 5, -5], [0, 0, 0]], "every": 1}
+        assert index == {
+            "run": "r1",
+            "sides": ["port", "original"],
+            "polls": [0, 1, 2],
+            "inputs": [[0, 0, 0], [0x8000, 5, -5], [0, 0, 0]],
+            "every": 1,
+        }
         for side in tas_stream.SIDES:
             assert (run / "stream" / side / "2.jpg").read_bytes()[:2] == b"\xff\xd8"
 
@@ -66,6 +72,24 @@ class StreamTests(unittest.TestCase):
         run = make_run(tmp_path, polls=(0, 25, 50), original=(0, 50))
         tas_stream.pack(run)
         assert json.loads((run / "stream" / "index.json").read_text())["polls"] == [0, 50]
+
+    def test_a_port_only_run_streams_the_port_alone_at_its_recorded_shot_interval(self):
+        # The slice of a served wall play (rig-20261102T014039Z): no oracle in the record, port shots only.
+        run = make_run(self.tmp, "solo", polls=(0, 25, 50), original=())
+        (run / tas.RECORD).write_text(json.dumps({"movie": "m", tas.SHOTS: {"every": 25}}))
+        out = tas_stream.pack(run)
+        index = json.loads((run / "stream" / "index.json").read_text())
+        assert out == {"run": "solo", "polls": 3, "added": 3, "every": 25}
+        assert index["sides"] == ["port"] and index["polls"] == [0, 25, 50]
+        assert not (run / "stream" / "original").exists()
+        status, body, kind = site_stream.frame(self.server, "solo/port/50.jpg")
+        assert status == HTTPStatus.OK and kind == "image/jpeg" and body[:2] == b"\xff\xd8"
+
+    def test_an_oracle_run_waits_for_the_original_even_while_the_port_has_frames(self):
+        run = make_run(self.tmp, polls=(0, 25), original=())
+        with self.assertRaises(DecompError):
+            tas_stream.pack(run)
+        assert tas_stream.packed(run, tas_stream.sides(run)) == []
 
     def test_pack_only_adds_so_pruned_shots_keep_their_frames(self):
         tmp_path = self.tmp

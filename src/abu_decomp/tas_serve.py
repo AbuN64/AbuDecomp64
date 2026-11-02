@@ -4,10 +4,10 @@ region a module under static/site. The record contract, the live feed and the re
 (`/api/contract`, `/api/feed`, `/api/feed/stream` Server-Sent Events, `/api/map|fn|stream|feedback/...`); the feed
 is fed from the same run rows live.json holds, at the moment Live writes them.
 Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "keep_days": days,
-"phase_frame_minutes": m, "port_source": path}; `lanes`, `invocations` and `claims` are still accepted (the bake reads
-the last two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a folder under `runs/plays`
-whose `run.json` the port's run writes (module tas); the page sees all of them: the port's own latest picture
-(`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV).
+"phase_frame_minutes": m, "port_source": path, "stream_every": polls}; `lanes`, `invocations` and `claims` are still
+accepted (the bake reads the last two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a
+folder under `runs/plays` whose `run.json` the port's run writes (module tas); the page sees all of them: the port's own
+latest picture (`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV).
 The page is static files: `/data/*` serves `<tas.runs>/site/` (module tas_bake writes it; a `.gz` sibling goes out to
 a client that accepts gzip, hashed names are immutable). The one file serve writes there is `live.json`: the running,
 queued and newest finished runs, rewritten from an inotify watch on the run folders (class Live), never per request.
@@ -96,6 +96,7 @@ _SERVE_KEYS = frozenset(
         "phase_frame_minutes",
         "port_source",
         "enhanced",
+        "stream_every",
     }
 )
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
@@ -254,6 +255,11 @@ class Server:
             raise DecompError("tas.serve", f"unknown tas.serve keys: {', '.join(sorted(extra))}")
         self.listen = str(serve.get("listen", "127.0.0.1:8099"))
         self.jobs = int(serve.get("jobs", 4))
+        # A play started here without the oracle pictures the port every `stream_every` polls (shots/port), so the
+        # wall's tile and the stream show it; 0 or absent: no port pictures (an oracle play pictures both sides).
+        self.stream_every = int(serve.get("stream_every", 0))
+        if self.stream_every < 0:
+            raise DecompError("tas.serve", f"stream_every is a poll count >= 0, not {self.stream_every}")
         # Where the site's displays are kept (`decomp display --dir`): the Live page and the viewer read the same
         # folder.
         self.displays = (
@@ -882,6 +888,7 @@ class Server:
                     "cpak": cpak,
                     "oracle": oracle,
                     "oracle_pictures": oracle,  # a person asked from the page: the picture comparison is the point
+                    "shots_every": 0 if oracle else self.stream_every,  # the oracle's pictures cover the port
                     "hold_at": hold_at,
                     "fps_unlock": fps_unlock,
                 }

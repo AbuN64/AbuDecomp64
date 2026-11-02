@@ -1,11 +1,10 @@
 // Site region "stream": a recorded run replayed in lockstep, port beside original, keyed to the poll index.
 // Route #/stream/RUN?poll=P. The clock is the poll index (60 polls per second at 1x); the page shows, for the poll
-// the clock stands on, the latest recorded poll at or before it on both sides, so the two pictures always match.
+// the clock stands on, the latest recorded poll at or before it on every side the run plays, so the pictures always match.
 // mount(el, ctx): ctx = {contract, api(path), go(route), on(kind, fn), route: {name, arg, query}}.
 
 export const RATE = 60; // polls per second at 1x
 export const SPEEDS = [1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16];
-export const SIDES = ["port", "original"];
 
 // ---------- the poll clock (pure) ----------
 // state = {pos: poll position, dir: -1 rewind | 0 paused | 1 play, speed}; polls = recorded polls, ascending.
@@ -95,13 +94,14 @@ async function open(root, ctx) {
   const data = await ctx.api(`/api/stream/${encodeURIComponent(run)}`);
   if (data.kind === "error") return view.append(refusal(data));
   let polls = data.polls, inputs = data.inputs;
+  const sides = data.sides; // the sides the run plays: a port-only run streams the port alone
   let state = { pos: startPoll(polls, ctx.route.query.poll), dir: 0, speed: 1 };
   let shown = -1, token = 0, last = 0, frame = 0;
 
-  const imgs = Object.fromEntries(SIDES.map(side => [side, h("img", { alt: side })]));
+  const imgs = Object.fromEntries(sides.map(side => [side, h("img", { alt: side })]));
   const poll = h("span", {}), count = h("span", {}), pad = h("span", {});
-  const caption = side => h("figcaption", {}, h("span", {}, side), side === SIDES[0] ? poll : pad);
-  const frames = h("div", { class: "frames" }, ...SIDES.map(side => h("figure", { "data-side": side }, imgs[side], caption(side))));
+  const caption = side => h("figcaption", {}, h("span", {}, side), side === sides[0] ? poll : pad, ...(sides.length === 1 ? [pad] : []));
+  const frames = h("div", { class: "frames" }, ...sides.map(side => h("figure", { "data-side": side }, imgs[side], caption(side))));
   const scrub = h("input", { type: "range", step: 1, "aria-label": "scrub" });
   const button = (name, label, on) => { const b = h("button", { title: label, "aria-label": label }, icon(name)); b.onclick = on; return b; };
   const speeds = h("select", { "aria-label": "speed" }, ...SPEEDS.map(s => h("option", { value: s, selected: s === 1 }, speedLabel(s))));
@@ -129,8 +129,8 @@ async function open(root, ctx) {
     poll.textContent = `poll ${at}`;
     pad.textContent = input ? `${input.buttons} ${input.x} ${input.y}` : "";
     // Both sides swap together once both decoded, so a viewer never sees two different polls.
-    Promise.all(SIDES.map(side => { const img = new Image(); img.src = `/stream/${encodeURIComponent(run)}/${side}/${at}.jpg`; return img.decode().then(() => img.src); }))
-      .then(urls => { if (mine === token) SIDES.forEach((side, i) => { imgs[side].src = urls[i]; }); }, () => {});
+    Promise.all(sides.map(side => { const img = new Image(); img.src = `/stream/${encodeURIComponent(run)}/${side}/${at}.jpg`; return img.decode().then(() => img.src); }))
+      .then(urls => { if (mine === token) sides.forEach((side, i) => { imgs[side].src = urls[i]; }); }, () => {});
     history.replaceState(null, "", `#/stream/${encodeURIComponent(run)}?poll=${at}`);
   }
   function tick(now) {

@@ -21,18 +21,20 @@ from typing import Any
 RUN_KINDS = ("unit", "set", "tas")  # single-function diff, function-set integration, TAS play
 FEEDBACK_CATEGORIES = ("crashed", "ui", "glitch", "audio", "input", "other")
 FEED_KEPT = 200  # newest events the feed holds and /api/feed answers
+WALL_PAGE = 12  # playthrough tiles per wall page: four rows of the three-column wall
 
 # One template per event kind (a kind:variant key when a run kind or a target picks the wording).
 TEMPLATES = {
-    "run.progress:tas": "{lane} is playing {movie} (poll {poll} of {polls})",
-    "run.progress:tas-target": "{lane} is playing toward {target} (poll {poll} of {polls})",
-    "run.progress:unit": "{lane} is matching function {target}: {equal}/{cases} cases equal",
-    "run.progress:set": "{lane} is running set {target}: {equal}/{cases} cases equal",
+    "run.started:tas": "{lane} started playthrough {movie} (poll {poll} of {polls})",
+    "run.started:tas-target": "{lane} started playthrough toward {target} (poll {poll} of {polls})",
+    "run.started:unit": "{lane} started matching function {target}: {equal}/{cases} cases equal",
+    "run.started:set": "{lane} started set {target}: {equal}/{cases} cases equal",
     "run.queued": "{lane} queued {movie}",
     "run.ended": "{lane} finished {movie}: {outcome} at poll {poll} of {polls}",
     "run.refused": "{lane} was refused {movie}: {reason}",
     "case.diffed": "{lane} diffed {target}: {equal}/{cases} cases equal, first divergence in {field}",
-    "function.matched": "{lane} matched function {target}",
+    "function.matched": "{lane} made function {target} newly exact",
+    "function.mismatch": "{lane} detected a behaviour mismatch in {target}: {equal}/{cases} cases equal",
     "feedback.filed": "{lane} flagged {movie} at poll {poll}: {category}",
 }
 FIELD = re.compile(r"\{(\w+)\}")
@@ -124,8 +126,37 @@ def run_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     if run["status"] == "running":
         variant = run["kind"] if run["kind"] != "tas" else ("tas-target" if run["target"] else "tas")
         extra = {"target": run["target"], "equal": run["equal"], "cases": run["cases"]}
-        return [event(f"run.progress:{variant}", run["started"], **common, **fields, **extra)]
+        return [event(f"run.started:{variant}", run["started"], **common, **fields, **extra)]
     return [event("run.ended", run["ended"] or run["started"], outcome=run["outcome"] or "unknown", **common, **fields)]
+
+
+def function_events(run: dict[str, Any], exact: set[str]) -> list[dict[str, Any]]:
+    """What a run says about its target function: a behaviour mismatch while any case differs, and `function.matched`
+    once, the first time the function goes exact (`exact` holds the functions already exact and is updated)."""
+    target, equal, cases = run["target"], run["equal"], run["cases"]
+    if not target or equal is None or not cases:
+        return []
+    fields = {"target": target, "equal": int(equal), "cases": int(cases), "run": run["id"]}
+    at = run["ended"] or run["started"]
+    if int(equal) < int(cases):
+        exact.discard(target)
+        return [event("function.mismatch", at, run["lane"], target, **fields)]
+    if run["status"] == "running" or target in exact:
+        return []
+    exact.add(target)
+    return [event("function.matched", at, run["lane"], target, **fields)]
+
+
+def wall_page(runs: list[dict[str, Any]], offset: int, limit: int) -> dict[str, Any]:
+    """One page of the playthrough wall: running runs first, then newest started; `next` is the following page's
+    offset, None at the end."""
+    if offset < 0 or limit <= 0:
+        raise ValueError(f"wall page offset {offset} limit {limit}: offset must be >= 0 and limit > 0")
+    order = sorted(runs, key=lambda run: (run["status"] != "running", -run["started"], run["id"]))
+    page = order[offset : offset + limit]
+    tiles = [{key: run[key] for key in ("id", "lane", "movie", "status", "poll", "polls", "sides")} for run in page]
+    more = offset + limit < len(order)
+    return {"total": len(order), "offset": offset, "tiles": tiles, "next": offset + limit if more else None}
 
 
 def render(item: dict[str, Any]) -> str:
@@ -149,6 +180,8 @@ class Feed:
         self.events: dict[str, dict[str, Any]] = {}
         self.changed: dict[str, int] = {}  # event id -> version it last changed at
         self.version = 0
+        self.runs: dict[str, dict[str, Any]] = {}  # run id -> Run record, the wall's tiles
+        self.exact: set[str] = set()  # functions whose newest run matched every case
         self.cond = threading.Condition()
 
     def publish(self, items: list[dict[str, Any]]) -> int:
@@ -170,7 +203,10 @@ class Feed:
         items: list[dict[str, Any]] = []
         for row in rows:
             try:
-                items += run_events(run_record(row))
+                run = run_record(row)
+                items += run_events(run) + function_events(run, self.exact)
+                with self.cond:
+                    self.runs[run["id"]] = run
             except (ValueError, KeyError, TypeError) as error:  # a malformed record is visible, never fatal
                 print(f"site feed: skipped run {row.get('id')}: {error}", flush=True)
         return self.publish(items)
@@ -239,6 +275,15 @@ def answer(server: Any, method: str, path: str, query: str, body: bytes) -> tupl
     if path == "/api/feed" and method == "GET":
         version, items = server.feed.snapshot()
         return HTTPStatus.OK, {"version": version, "events": items}
+    if path == "/api/wall" and method == "GET":
+        ask = dict(pair.partition("=")[::2] for pair in query.split("&") if pair)
+        try:
+            offset, limit = int(ask.get("offset") or 0), int(ask.get("limit") or WALL_PAGE)
+            with server.feed.cond:
+                runs = list(server.feed.runs.values())
+            return HTTPStatus.OK, wall_page(runs, offset, limit)
+        except ValueError as error:
+            return HTTPStatus.BAD_REQUEST, {"kind": "error", "code": "wall.page", "message": str(error)}
     head, _, rest = path.removeprefix("/api/").partition("/")
     if not path.startswith("/api/") or head not in REGIONS:
         return None

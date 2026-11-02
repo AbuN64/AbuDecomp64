@@ -17,6 +17,7 @@
   <label class="search"><svg class="i"><use href="/static/icons.svg#i-search"/></svg><input id="q" placeholder="Filter the feed" autocomplete="off"></label>
   <nav class="chips" id="chips" aria-label="live runs"></nav>
   <span class="live" id="live"><i></i>offline</span>
+  <button class="btn" id="feedtoggle" type="button" aria-pressed="true">Feed</button>
   <a class="btn" href="/watch" title="The live game: watch it, click it and play">Watch live</a>
   <a class="btn" href="/live" target="_blank">Displays</a>
   <a class="btn" href="#/play"><svg class="i"><use href="/static/icons.svg#i-gamepad-2"/></svg>New run</a>
@@ -45,7 +46,7 @@ async function api(path, init) {
 
 // ---------- the feed: events by id, rendered by their kind's template ----------
 const S = { contract: null, events: new Map(), listeners: new Map(), q: "" };
-const ICON = { "run.progress": "play", "run.queued": "hourglass", "run.ended": "circle-check", "run.refused": "circle-alert",
+const ICON = { "run.started": "play", "function.mismatch": "circle-alert", "run.queued": "hourglass", "run.ended": "circle-check", "run.refused": "circle-alert",
   "case.diffed": "columns-2", "function.matched": "code-xml", "feedback.filed": "radio" };
 const family = kind => kind.split(":")[0];
 const fmt = v => typeof v === "number" && Number.isInteger(v) ? v.toLocaleString("en-US") : String(v);
@@ -73,7 +74,7 @@ function renderFeed() {
   if (list) list.replaceChildren(...(items.length ? items.map(ev => el("li", { class: "ev", "data-family": family(ev.kind), "data-id": ev.id },
     el("time", { datetime: new Date(ev.at * 1000).toISOString() }, new Date(ev.at * 1000).toLocaleTimeString("en-GB", { hour12: false })),
     icon(ICON[family(ev.kind)] || "list"), el("span", {}, ...line(ev)), el("span", { class: "k" }, ev.kind))) : [el("li", { class: "empty" }, "No events yet.")]));
-  const live = items.filter(ev => ev.kind.startsWith("run.progress") || ev.kind === "run.queued");
+  const live = items.filter(ev => ev.kind.startsWith("run.started") || ev.kind === "run.queued");
   $("#chips").replaceChildren(...live.map(ev => el("a", { class: `chip ${ev.kind === "run.queued" ? "queued" : ""}`, href: `#/stream/${encodeURIComponent(ev.fields.run)}` },
     el("i", { class: "dot" }), `${ev.lane} · ${ev.fields.movie} · ${fmt(ev.fields.poll)}`)));
 }
@@ -84,6 +85,15 @@ function connect() {
   src.addEventListener("feed", m => { take(JSON.parse(m.data)); renderFeed(); });
   src.onerror = () => { $("#live").className = "live"; $("#live").lastChild.textContent = "reconnecting"; };
 }
+
+// The feed is third and hideable; the viewer's choice is kept in this browser.
+function feedShown(shown) {
+  document.body.classList.toggle("feed-hidden", !shown);
+  $("#feedtoggle").setAttribute("aria-pressed", String(shown));
+  localStorage.setItem("site.feed", shown ? "shown" : "hidden");
+}
+feedShown(localStorage.getItem("site.feed") !== "hidden");
+$("#feedtoggle").addEventListener("click", () => feedShown(document.body.classList.contains("feed-hidden")));
 
 // ---------- routes and regions ----------
 const ctx = {
@@ -107,8 +117,13 @@ async function show() {
   mounted = routeKey(location.hash);
   document.body.dataset.route = REGION[r.name] ? r.name : "enhanced";
   if (!REGION[r.name]) {
+    // Home: the wall of playthroughs, the hideable feed right of it, the Enhanced plan folded below.
+    const wall = el("section", { class: "wallhost", "aria-label": "playthroughs" });
     const status = el("div", { class: "overview", id: "overview" }, el("div", { class: "skeleton" }), el("div", { class: "skeleton" }));
-    view.replaceChildren(el("h2", {}, "Enhanced MVP plan"), status, el("details", {}, el("summary", {}, "Feed"), el("ul", { class: "feed", id: "feed" })));
+    view.replaceChildren(el("div", { class: "home" }, el("div", { class: "homemain" }, wall,
+      el("details", { class: "plan" }, el("summary", {}, "Enhanced MVP plan"), status)),
+      el("aside", { class: "feedpane", "aria-label": "feed" }, el("h3", {}, "Feed"), el("ul", { class: "feed", id: "feed" }))));
+    import("/static/site/wall.js").then(mod => mod.mount(wall, ctx));
     import("/static/site/enhanced.js").then(mod => mod.mount(status, ctx)); // its own API, independent of every other region
     return renderFeed();
   }

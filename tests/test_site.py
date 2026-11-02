@@ -65,11 +65,13 @@ class RecordTest(unittest.TestCase):
         def render(row: dict) -> list[str]:
             return [site_core.render(e) for e in site_core.run_events(site_core.run_record(row))]
 
-        self.assertEqual(render(RUNNING), ["LANE-A is playing boot-idle (poll 1,200 of 3,000)"])
-        self.assertEqual(render({**RUNNING, "target": "Fn_A"}), ["LANE-A is playing toward Fn_A (poll 1,200 of 3,000)"])
+        self.assertEqual(render(RUNNING), ["LANE-A started playthrough boot-idle (poll 1,200 of 3,000)"])
+        self.assertEqual(
+            render({**RUNNING, "target": "Fn_A"}), ["LANE-A started playthrough toward Fn_A (poll 1,200 of 3,000)"]
+        )
         self.assertEqual(
             render({**RUNNING, "kind": "unit", "target": "Fn_A", "equal": 41, "cases": 50}),
-            ["LANE-A is matching function Fn_A: 41/50 cases equal"],
+            ["LANE-A started matching function Fn_A: 41/50 cases equal"],
         )
         self.assertEqual(render(DONE), ["owner finished menu: ok at poll 1,401 of 1,101"])
         self.assertEqual(render({**DONE, "error": "stale binary"}), ["owner was refused menu: stale binary"])
@@ -182,7 +184,8 @@ class PageTest(unittest.TestCase):
         helpers = {"viewer", *re.findall(r'from "\./(\w+)\.js"', viewer)}
         self.assertIn("viewer_audio", helpers)
         shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - helpers
-        self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced"})
+        self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced", "wall"})
+        self.assertIn('import("/static/site/wall.js")', page)  # home mounts the playthrough wall
         self.assertNotIn('map: "map"', page)  # the map is the sidebar on every route, not a page
         for name in shipped:
             self.assertRegex((ROOT / "static" / "site" / f"{name}.js").read_text(), r"export function mount\(el, ctx\)")

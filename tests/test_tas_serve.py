@@ -629,14 +629,15 @@ class HttpTests(Base):
         seen = []
 
         def fake_play(profile, movie, *, run_id=None, **kwargs):
-            seen.append((movie, kwargs.get("hold_at"), kwargs.get("oracle")))
+            seen.append((movie, kwargs.get("hold_at"), kwargs.get("oracle"), kwargs.get("shots_every")))
             return {}
 
         self.assertEqual(self.post("/api/play", {"hold_at": 5})[0], 400)
+        self.server.stream_every = 25  # tas.serve.stream_every: a port-only play pictures the port for the wall
         with mock.patch.object(tas, "play", fake_play):
             self.assertEqual(self.post("/api/play", {"movie": "boot-idle", "speed": 0, "hold_at": 25})[0], 200)
             self.server.pool.shutdown(wait=True)
-        self.assertEqual(seen, [("boot-idle", 25, False)])
+        self.assertEqual(seen, [("boot-idle", 25, False, 25)])
 
     def test_retry_from_a_poll_and_pin(self):
         source = self.make_run("src", movie="boot-idle", status="done", started=1.0, outcome="crash", polls_reached=3)

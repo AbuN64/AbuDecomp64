@@ -273,14 +273,16 @@ class MovieTests(unittest.TestCase):
             result = tas.play(self.profile, "m", now=T0, shots_every=30, dump_ram_at=40, trace_draws=50)
         env = seen[0]
         run = Path(result["run"])
-        self.assertEqual((env["N64C_TAS_SHOT_EVERY"], env["N64C_TAS_SHOT_DIR"]), ("30", str(run / "shots")))
+        self.assertEqual((env["N64C_TAS_SHOT_EVERY"], env["N64C_TAS_SHOT_DIR"]), ("30", str(run / "shots" / "port")))
+        self.assertEqual(tas.read_record(run)["shots"], {"every": 30})
         self.assertEqual((env["N64C_TAS_DUMP_AT"], env["N64C_TAS_DUMP_PATH"]), ("40", str(run / "ram-40.bin")))
         self.assertEqual(env["N64C_TAS_TRACE_DRAWS"], f"50:{run / 'draws-50.txt'}")
         self.assertNotIn("inspect", result)  # the stand-in port wrote none of them
-        (run / "shots" / "poll-000030.ppm").write_bytes(b"P6")
+        (run / "shots" / "port" / "poll-000030.ppm").write_bytes(b"P6")
         (run / "draws-50.txt").write_text("draw 0\n")
         self.assertEqual(
-            tas.inspect_files(run, 30, 40, 50), [str(run / "shots" / "poll-000030.ppm"), str(run / "draws-50.txt")]
+            tas.inspect_files(run, 30, 40, 50),
+            [str(run / "shots" / "port" / "poll-000030.ppm"), str(run / "draws-50.txt")],
         )
         with self.assertRaises(DecompError):
             tas.check_inspect(-1, None, None)

@@ -521,7 +521,7 @@ def native(page):
 
 def port_from_oracle(out, edit=None):
     """A port run of the real oracle slice: the lines trace.c writes (meta, poll, call/ret) over the oracle's pages in
-    native order, hashed by the port's canonical hash. edit(poll_record, pages) changes one poll before it is written."""
+    native order, hashed by the port's canonical hash. edit(record, pages, current) changes one poll before writing."""
     oracle = ls.Side(ORACLE_POLLS, lambda r: None)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"k": "meta", "side": "port", "ram": oracle.meta["ram"], "page": 4096, "bytes": "native",
@@ -552,6 +552,10 @@ def port_from_oracle(out, edit=None):
     return out
 
 
+def poll_lines(directory):
+    return [x for x in (directory / "lockstep.jsonl").read_text().splitlines() if '"k":"poll"' in x]
+
+
 class MatchTests(unittest.TestCase):
     def run_match(self, port, *extra):
         report = args.work / "match.json"
@@ -570,8 +574,7 @@ class MatchTests(unittest.TestCase):
 
     def test_matching_movie_writes_equal_poll_lines_and_matches_through_the_last_poll(self):
         port = port_from_oracle(args.work / "match-same")
-        polls = lambda d: [x for x in (d / "lockstep.jsonl").read_text().splitlines() if '"k":"poll"' in x]  # noqa: E731
-        self.assertEqual(polls(port), polls(ORACLE_POLLS))
+        self.assertEqual(poll_lines(port), poll_lines(ORACLE_POLLS))
         code, report, text = self.run_match(port)
         self.assertEqual(code, 0, text)
         self.assertEqual(report["polls"], {"oracle": 3, "port": 3, "common": 3})
@@ -606,7 +609,9 @@ class MatchTests(unittest.TestCase):
         (port / "lockstep.jsonl").write_text("\n".join(x for x in lines if '"poll":3' not in x) + "\n")
         code, report, _ = self.run_match(port)
         self.assertEqual(code, 1)
-        self.assertEqual(report["divergences"]["input"], [{"poll": 3, "oracle": ["0010ff01", "00200000"], "port": None}])
+        self.assertEqual(
+            report["divergences"]["input"], [{"poll": 3, "oracle": ["0010ff01", "00200000"], "port": None}]
+        )
         self.assertEqual(report["matched_through_poll"], 2)
 
     def test_call_in_another_poll_is_a_calls_divergence(self):
@@ -704,13 +709,15 @@ class PortRecorderTests(unittest.TestCase):
             polls = [json.loads(x) for x in (out / "lockstep.jsonl").read_text().splitlines() if '"k":"poll"' in x]
             # the oracle's poll line key for key, its own baseline: every page at poll 1, then those run() changed
             self.assertEqual([list(x) for x in polls], [["k", "poll", "vi", "pad", "pages"]] * 3)
-            self.assertEqual([(x["poll"], x["vi"], x["pad"]) for x in polls],
-                             [(1, 2, ["80000000", "00000000"]), (2, 4, ["1000b050", "040005fb"]), (3, 6, ["1000b050"])])  # fmt: skip
+            self.assertEqual(
+                [(x["poll"], x["vi"], x["pad"]) for x in polls],
+                [(1, 2, ["80000000", "00000000"]), (2, 4, ["1000b050", "040005fb"]), (3, 6, ["1000b050"])],
+            )
             self.assertEqual(len(polls[0]["pages"]), 1024)
             self.assertTrue(polls[1]["pages"])
             self.assertEqual(polls[2]["pages"], [])
             side = ls.Side(out, lambda r: r.get("order"))
-            for pg, h in polls[1]["pages"]:
+            for _, h in polls[1]["pages"]:
                 self.assertEqual(ls.page_hash(side.page(int(h, 16)), native=True), int(h, 16))
             self.assertNotIn("boot-shim-bind:", result.stderr)
             self.assertNotIn("boot-shim:", result.stderr)

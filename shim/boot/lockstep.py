@@ -1037,7 +1037,7 @@ def match_vi(oracle, port, polls):
 
 def same_words(matcher, ow, pw):
     return len(ow) == len(pw) and all(
-        same_word(matcher, "unknown", int(a, 16), int(b, 16), 0, -PORT_STACK * 4) for a, b in zip(ow, pw)
+        same_word(matcher, "unknown", int(a, 16), int(b, 16), 0, -PORT_STACK * 4) for a, b in zip(ow, pw, strict=True)
     )
 
 
@@ -1094,7 +1094,10 @@ def match_memory(matcher, oracle, port, polls, persist):
                 for w, c in cache[pair].items():
                     if c == "value":
                         word = pg * WORDS + w
-                        now[word] = (int.from_bytes(o[4 * w : 4 * w + 4], "big"), int.from_bytes(p[4 * w : 4 * w + 4], "little"))
+                        now[word] = (
+                            int.from_bytes(o[4 * w : 4 * w + 4], "big"),
+                            int.from_bytes(p[4 * w : 4 * w + 4], "little"),
+                        )
         for w in list(active):
             if w not in now:
                 del active[w]
@@ -1184,7 +1187,7 @@ def build_parser():
         help="reviewed exact differences with reasons (kept visible in the report)",
     )
     c.add_argument("--json")
-    m = sub.add_parser("match", help="a whole TAS movie compared poll by poll: divergences per class, matched-through poll")
+    m = sub.add_parser("match", help="a whole TAS movie compared poll by poll: divergences per class")
     m.add_argument("--oracle", required=True)
     m.add_argument("--port", required=True)
     m.add_argument("--symbols")

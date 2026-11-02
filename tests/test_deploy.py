@@ -50,6 +50,8 @@ class DeployTests(unittest.TestCase):
         self.heads = dict(HEADS)  # source url -> the commit it has landed at
         self.requirements = ""  # requirements.txt of the project revision
         self.asked = []
+        self.envs = []  # the env of each command, parallel to self.commands
+        self.tree = self.root / "tree"  # the git tree the deploy runs from
 
     def requirements_of(self, project, remote, branch, sha):
         self.asked.append((project, remote, branch, sha))
@@ -67,8 +69,11 @@ class DeployTests(unittest.TestCase):
         ]
         (self.project / "ci" / "run").write_text("\n".join(rows) + "\n")
 
-    def runner(self, argv, cwd=None):
+    def runner(self, argv, cwd=None, env=None):
         self.commands.append(list(argv))
+        self.envs.append(env)
+        if argv[3:5] == ["rev-parse", "--show-toplevel"] and self.fail_on != "rev-parse":
+            return 0, f"{self.tree}\n"
         if argv[:2] == ["git", "ls-remote"]:  # each tool's source answers its landed commit
             head = self.heads.get(argv[2])
             return (0, f"{head}\tHEAD\n") if head else (128, "fatal: repository not found")
@@ -267,7 +272,7 @@ class DeployTests(unittest.TestCase):
         live, order = self.root / "venv-a", []
         old = os.path.realpath(live)
 
-        def runner(argv, cwd=None):
+        def runner(argv, cwd=None, env=None):
             if argv[0] == "chmod":
                 order.append(("chmod", argv[1:], os.path.realpath(live) == old))  # the link still names the old tree
             elif argv[0].endswith("decomp") and argv[1] == "dependencies":
@@ -330,7 +335,7 @@ class DeployTests(unittest.TestCase):
         trees[3].mkdir()
         calls = []
 
-        def runner(argv, cwd=None):
+        def runner(argv, cwd=None, env=None):
             if argv[:3] == ["git", "worktree", "list"]:
                 return 0, "".join(f"worktree {t}\nHEAD {'0' * 40}\n\n" for t in trees)
             if "sync" in argv:
@@ -396,9 +401,113 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((drained["hits"], drained["misses"], drained["unexposed"]), (2, 3, ["api build_context"]))
         self.assertEqual(tools.drain_cache()["calls"], [])
 
+    def test_the_package_install_fetches_its_own_commit_from_the_tree_the_deploy_runs_from_not_the_mirror(self):
+        result, code, findings = self.deploy()
+        self.assertEqual((code, findings), (0, []))
+        installs = [(c, e) for c, e in zip(self.commands, self.envs, strict=True) if "install" in c and "pip" in c]
+        (_, carry_env), (package, package_env) = installs
+        self.assertIsNone(carry_env)  # the carried set is not the package: nothing is rewritten for it
+        self.assertEqual(  # provenance and requirement stay git+PACKAGES URL@SHA
+            package[package.index("install") + 1 :][0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"
+        )
+        self.assertEqual(
+            package_env,
+            {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": f"url.{self.tree}.insteadOf",
+                "GIT_CONFIG_VALUE_0": deploy.DECOMP_URL,
+            },
+        )
+        self.assertEqual(result["requirements"][0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}")
+        self.assertEqual(sum(bool(e) for e in self.envs), 1)  # only the package's own pip run is steered
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_a_tree_that_does_not_hold_the_commit_refuses_before_anything_is_built(self):
+        self.fail_on = "cat-file"
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy()
+        self.assertEqual(caught.exception.key, "deploy.tree")
+        self.assertFalse([c for c in self.commands if "venv" in c or "pip" in c])
+
+    def test_a_deploy_outside_a_git_tree_refuses(self):
+        self.fail_on = "rev-parse"
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.deploy()
+        self.assertEqual(caught.exception.key, "deploy.tree")
+
+
+class TreeInstallTests(unittest.TestCase):
+    """The unit-level proof of the landed-commit fetch: a throwaway repository holds a commit no remote has, the
+    package's PACKAGES URL is unreachable, and the real pip install path resolves that commit from the tree."""
+
+    def git(self, *argv, cwd=None):
+        done = subprocess.run(
+            ["git", *argv],
+            cwd=cwd or self.tree,
+            capture_output=True,
+            text=True,
+            check=True,
+            env={
+                **os.environ,
+                "GIT_AUTHOR_NAME": "t",
+                "GIT_AUTHOR_EMAIL": "t@example.lan",
+                "GIT_COMMITTER_NAME": "t",
+                "GIT_COMMITTER_EMAIL": "t@example.lan",
+            },
+        )
+        return done.stdout.strip()
+
+    def test_pip_installs_a_commit_only_the_tree_holds_while_the_package_url_is_unreachable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.tree = root / "tree"
+            self.tree.mkdir()
+            (self.tree / "pyproject.toml").write_text(
+                '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n'
+                '[project]\nname = "landedpkg"\nversion = "1"\n'
+            )
+            (self.tree / "backend.py").write_text(BACKEND)
+            self.git("init", "-q", "-b", "main")
+            self.git("add", ".")
+            self.git("commit", "-q", "-m", "landed")
+            sha = self.git("rev-parse", "HEAD")
+            url = "https://unreachable.invalid/AbuN64/landedpkg"
+            venv = root / "venv"
+            with mock.patch.dict(deploy.PACKAGES, {"landedpkg": url}):
+                spec = deploy.requirement("landedpkg", sha).replace("[dev]", "")
+                # without the rewrite pip cannot get the commit: the mirror is not reachable
+                code, _ = deploy.run_command([sys.executable, "-m", "venv", str(venv)])
+                self.assertEqual(code, 0)
+                python = str(venv / "bin" / "python")
+                pip = [python, "-m", "pip", "install", "--no-deps", "--no-build-isolation", spec]
+                code, _ = deploy.run_command(pip)
+                self.assertNotEqual(code, 0)
+                env = deploy.tree_fetch("landedpkg", self.tree)
+                code, output = deploy.run_command(pip, None, env)
+                self.assertEqual(code, 0, output)
+            code, output = deploy.run_command([python, "-m", "pip", "freeze"])
+            self.assertIn(f"landedpkg @ git+{url}@{sha}", output)  # the provenance is the PACKAGES URL, not the tree
+
+
+BACKEND = """\
+import base64, hashlib, zipfile
+
+def _wheel(directory):
+    name = "landedpkg-1-py3-none-any.whl"
+    meta = "Metadata-Version: 2.1\\nName: landedpkg\\nVersion: 1\\n"
+    wheel = "Wheel-Version: 1.0\\nGenerator: t\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n"
+    with zipfile.ZipFile(f"{directory}/{name}", "w") as z:
+        z.writestr("landedpkg.py", "")
+        z.writestr("landedpkg-1.dist-info/METADATA", meta)
+        z.writestr("landedpkg-1.dist-info/WHEEL", wheel)
+        z.writestr("landedpkg-1.dist-info/RECORD", "")
+    return name
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    return _wheel(wheel_directory)
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+"""
 
 
 class CarryTests(DeployTests):
@@ -459,8 +568,8 @@ class CarryTests(DeployTests):
         self.make_venv(live)
         origin = "unbake is installed from file:///home/abu/runs/char-de-3/src, not from a git commit"
 
-        def run(argv, cwd=None):
-            return (1, origin) if argv[1:2] == ["-c"] else (0, "")
+        def run(argv, cwd=None, env=None):
+            return (1, origin) if argv[1:2] == ["-c"] else (0, str(self.tree))
 
         with self.assertRaises(deploy.DeployError) as caught:
             deploy.deploy(
@@ -575,3 +684,7 @@ class NameTests(DeployTests):
             with self.assertRaises(deploy.DeployError):
                 self.name(**kwargs)
         self.assertFalse([c for c in self.commands if "install" in c])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -31,6 +31,11 @@ commit, the project's pinned packages), sorted. Two builds of one content share 
 no-op); a build that differs in any package gets another. `decomp tools name` answers that name without building, for
 a deployer that must name the build before the activation (`content_name` is the one rule, used by both).
 
+The package's own commit is the one Land has just pushed to Gitea, which fans it out to the GitHub mirror some time
+later, so pip must not fetch it from there: the requirement and the recorded provenance stay `name @ git+URL@SHA`
+(the PACKAGES URL), but the pip run that installs it has git rewrite that one URL to the tree this deploy runs from
+(`tree_fetch`; the activation job's checkout at the landed revision). No wait, no retry.
+
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
 carried packages and the package are installed into a fresh venv beside it (`PATH.<name>`, pip run by that venv's own
 python so console script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake
@@ -61,7 +66,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +87,7 @@ _EXACT = re.compile(r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_*-]
 
 
 Requirements = Callable[[Path, str, str, str | None], "tuple[str, str]"]
-Run = Callable[[Sequence[str], Path | None], "tuple[int, str]"]
+Run = Callable[..., "tuple[int, str]"]  # (argv, cwd, env=None): `env` is added to the process environment
 
 
 class DeployError(DecompError):
@@ -108,8 +113,10 @@ def requirements_at(project: Path, remote: str, branch: str, sha: str | None) ->
     return commit, git("show", f"{commit}:requirements.txt") if listed.strip() else ""
 
 
-def run_command(argv: Sequence[str], cwd: Path | None = None) -> tuple[int, str]:
-    done = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, check=False)
+def run_command(argv: Sequence[str], cwd: Path | None = None, env: Mapping[str, str] | None = None) -> tuple[int, str]:
+    done = subprocess.run(
+        list(argv), cwd=cwd, env={**os.environ, **env} if env else None, capture_output=True, text=True, check=False
+    )
     return done.returncode, (done.stdout + done.stderr)[-200_000:]
 
 
@@ -244,6 +251,32 @@ def on_main(url: str, commit: str, run: Run = run_command) -> bool:
     return code == 0
 
 
+def source_tree(package: str, commit: str, run: Run = run_command) -> Path:
+    """The git tree this deploy runs from (the one holding this module: the activation job's checkout at the landed
+    revision), which must hold `commit`: pip fetches the package's own commit from it, never from the mirror of
+    `PACKAGES[package]`, which Gitea fans out to some time after Land pushes."""
+    here = str(Path(__file__).resolve().parent)
+    code, output = run(["git", "-C", here, "rev-parse", "--show-toplevel"], None)
+    if code or not output.strip():
+        raise DeployError("deploy.tree", f"{here} is not inside a git tree, so {commit} cannot be fetched from it")
+    tree = Path(output.strip())
+    code, output = run(["git", "-C", str(tree), "cat-file", "-e", f"{commit}^{{commit}}"], None)
+    if code:
+        raise DeployError("deploy.tree", f"{tree} does not hold {package} commit {commit}: {output.strip()[-300:]}")
+    return tree
+
+
+def tree_fetch(package: str, tree: Path) -> dict[str, str]:
+    """The environment of the one pip subprocess that installs `package`: git rewrites `PACKAGES[package]` to `tree`
+    (`url.<tree>.insteadOf`), so the requirement and the provenance pip records stay `git+URL@SHA` while the fetch of
+    that commit is served by `tree`. Nothing else is rewritten and nothing is written to any git config file."""
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": f"url.{tree}.insteadOf",
+        "GIT_CONFIG_VALUE_0": PACKAGES[package],
+    }
+
+
 def requirement(package: str, commit: str) -> str:
     """The pip requirement of `package` at `commit`, with its `dev` extra (the suite a deploy gates on runs from it; pip
     only warns when a package has no such extra)."""
@@ -332,21 +365,28 @@ for spec in sys.argv[1:]:
 """
 
 
-def install(venv: Path, base: Path, specs: Sequence[str], carry: Sequence[str], run: Run) -> list[dict[str, Any]]:
+def install(
+    venv: Path,
+    base: Path,
+    specs: Sequence[str],
+    carry: Sequence[str],
+    run: Run,
+    fetch: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
     the carried requirements exactly as they are (`--no-deps`: they are already a resolved set), then `specs` (the
     package at its commit, the tools of ours at their landed commits and the project's pinned packages) with their
-    dependencies."""
+    dependencies. `fetch` is the environment of that last pip run (`tree_fetch`)."""
     python = venv / "bin" / "python"
     steps = [
         ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
         *([("carry", [str(python), "-m", "pip", "install", "--no-deps", *carry])] if carry else []),
-        ("install", [str(python), "-m", "pip", "install", *specs]),
+        ("install", [str(python), "-m", "pip", "install", *specs], fetch),
         ("retire", [str(python), "-c", RETIRE]),  # the venv carries no unbake command: land and the rig find it by name
     ]
     done: list[dict[str, Any]] = []
-    for name, argv in steps:
-        code, output = run(argv, None)
+    for name, argv, *env in steps:
+        code, output = run(argv, None, *env) if env and env[0] else run(argv, None)
         done.append({"step": name, "ok": code == 0, "tail": output[-400:] if code else ""})
         if code:
             break
@@ -552,6 +592,7 @@ def deploy(
     revision, text = requirements_of(project, remote, branch, project_sha)
     packages = project_requirements(text, f"{project} requirements.txt at {revision[:12]}")
     specs = [requirement(package, sha), *packages]
+    fetch = tree_fetch(package, source_tree(package, sha, run))
     result: dict[str, Any] = {
         "package": package,
         "sha": sha,
@@ -575,7 +616,7 @@ def deploy(
         if expect_name and build != expect_name:
             raise DeployError("deploy.name", f"{live} would build {build}, not the expected {expect_name}")
         venv = versioned_path(live, build)
-        steps = install(venv, source, wanted, carry, run)
+        steps = install(venv, source, wanted, carry, run, fetch)
         row: dict[str, Any] = {
             "venv": str(live),
             "name": build,

@@ -57,7 +57,6 @@ from PIL import Image
 
 from abu_decomp import (
     DecompError,
-    display,
     evidence,
     inotify,
     serve_actions,
@@ -71,7 +70,6 @@ from abu_decomp import (
     serve_video,
     site_core,
     site_enhanced,
-    site_live,
     site_map,
     tas,
     tas_board,
@@ -101,8 +99,6 @@ from abu_decomp.serve_video import (
 _SERVE_KEYS = frozenset(
     {
         "listen",
-        "displays",
-        "live",
         "jobs",
         "inbox",
         "states",
@@ -215,17 +211,6 @@ class Server:
         self.stream_every = int(serve.get("stream_every", 0))
         if self.stream_every < 0:
             raise DecompError("tas.serve", f"stream_every is a poll count >= 0, not {self.stream_every}")
-        # Where the site's displays are kept (`decomp display --dir`): the Live page and the viewer read the same
-        # folder.
-        self.displays = (
-            profile.path("tas.serve.displays", serve["displays"])
-            if "displays" in serve
-            else Path.home() / ".local" / "state" / "abu-decomp" / "displays"
-        )
-        # The site's own live game (module site_live): `tas.serve.live` names its display size.
-        self.keeper = site_live.Keeper(
-            lambda: display.backend(self.displays), serve.get("live"), lambda folder: tas.live(profile, folder)
-        )
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
@@ -1431,7 +1416,6 @@ def wall(req: Any, server: Any, query: str = "") -> None:
 
 EXACT = {
     "/": serve_pages.index,
-    "/live": serve_pages.live,
     "/watch": serve_pages.watch,
     "/wall": wall,
     "/api/feed/stream": serve_feed.stream,
@@ -1443,7 +1427,6 @@ EXACT = {
     "/phase/frame.png": serve_phase.frame,
 }
 PREFIX = {
-    "viewer": serve_pages.viewer_page,
     "data": serve_files.data,
     "static": serve_files.static,
     "stream": serve_run.stream,
@@ -1485,7 +1468,7 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
                 return
-            except DecompError as error:  # a refusal answers (a missing display is a 404 naming it), never a hang
+            except DecompError as error:  # a refusal answers (a missing run is a 404 naming it), never a hang
                 status = HTTPStatus.NOT_FOUND if error.key.endswith("notfound") else HTTPStatus.BAD_REQUEST
                 self.json({"error": str(error)}, status)
 
@@ -1497,11 +1480,8 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 if (site := site_core.answer(server, "POST", path, query, raw)) is not None:
                     return self.json(site[1], site[0])
                 body = json.loads(raw or b"{}")
-                prefix, suffix = serve_actions.DISPLAY_INPUT
                 if path in serve_actions.ACTIONS:
                     serve_actions.ACTIONS[path](self, server, body)
-                elif path.startswith(prefix) and path.endswith(suffix):
-                    serve_actions.display_input(self, server, body, path[len(prefix) : -len(suffix)])
                 else:
                     self.missing()
             except (DecompError, ValueError, TypeError) as error:
@@ -1516,7 +1496,6 @@ def serve(profile: Profile) -> dict[str, Any]:
     http = ThreadingHTTPServer((host, int(port)), handler(server))
     http.daemon_threads = True
     server.live.start()
-    server.keeper.start()
     server.snapshots.start()
     threading.Thread(target=server.archive, daemon=True).start()
     threading.Thread(target=server.gatekeeper, daemon=True).start()

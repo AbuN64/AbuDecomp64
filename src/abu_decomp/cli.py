@@ -256,7 +256,7 @@ def _run_display(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[di
         profile = None if argv else _profile(args.profile)  # refused before any display starts
 
         def announce(identity: str, command: list[str]) -> None:
-            line = {"display": identity, "viewer": f"/viewer/{identity}", "argv": command}
+            line = {"display": identity, "argv": command}
             print(json.dumps(line), file=sys.stderr, flush=True)
 
         game = (lambda _folder: (argv, dict(os.environ))) if argv else (lambda folder: tas.live(profile, folder))

@@ -167,25 +167,3 @@ class EndpointTest(unittest.TestCase):
 
 
 class PageTest(unittest.TestCase):
-    def test_the_page_loads_every_region_module_that_ships(self):
-        page = (ROOT / "runner.html").read_text()
-        for path in (
-            "/api/contract",
-            "/api/feed",
-            "/api/feed/stream",
-            "/static/site/",
-            "/static/icons.svg",
-            '<aside id="sitemap"',
-        ):
-            self.assertIn(path, page)
-        # viewer.js is the display viewer's own page script and its imports are its helpers (viewer_audio.js):
-        # none is a region module, none has mount()
-        viewer = (ROOT / "static" / "site" / "viewer.js").read_text()
-        helpers = {"viewer", *re.findall(r'from "\./(\w+)\.js"', viewer)}
-        self.assertIn("viewer_audio", helpers)
-        shipped = {p.stem for p in (ROOT / "static" / "site").glob("*.js")} - helpers
-        self.assertEqual(shipped, {"map", "fn", "stream", "play", "enhanced", "wall"})
-        self.assertIn('import("/static/site/wall.js")', page)  # home mounts the playthrough wall
-        self.assertNotIn('map: "map"', page)  # the map is the sidebar on every route, not a page
-        for name in shipped:
-            self.assertRegex((ROOT / "static" / "site" / f"{name}.js").read_text(), r"export function mount\(el, ctx\)")

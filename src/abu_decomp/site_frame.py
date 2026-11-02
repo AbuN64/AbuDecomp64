@@ -5,7 +5,7 @@ from html import escape
 
 STYLESHEET = "/static/site/site.css"
 LINK = f'<link rel="stylesheet" href="{STYLESHEET}">'
-NAV = (("/", "Runs"), ("/live", "Live"), ("/coverage/", "Coverage"))
+NAV = (("/", "Runs"), ("/coverage/", "Coverage"))
 SIDEBAR = (
     '<aside id="sitemap" aria-label="map"></aside>'
     '<script type="module">import { boot } from "/static/site/map.js";'

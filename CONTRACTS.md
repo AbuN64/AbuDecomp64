@@ -137,22 +137,18 @@ included: `{"error": "<text>"}` with the status below, and the text names the ru
 named (`no run r9`, `no display 'd-none'`, `no function f`). A request that names nothing is refused with "the body names
 no run" (400), never with an empty id. A refusal always answers; it never hangs the connection.
 
-Every HTML page the site answers (`/`, `/live`, `/viewer/<display>`, `/coverage/...`) links the one stylesheet `/static/site/site.css` and carries no inline `<style>`; module `site_frame` builds the shared head and header, and wraps the generated coverage report with them. Regions of the `/` shell (`#/fn`, `#/stream`, `#/play`, `#/map`) are routes of that page, so they share its stylesheet.
+Every HTML page the site answers (`/`, `/coverage/...`) links the one stylesheet `/static/site/site.css` and carries no inline `<style>`; module `site_frame` builds the shared head and header, and wraps the generated coverage report with them. Regions of the `/` shell (`#/fn`, `#/stream`, `#/play`, `#/map`) are routes of that page, so they share its stylesheet.
 
 | Route | Answer | Refusal |
 |---|---|---|
-| `GET /`, `/live`, `/coverage/...`, `/static/...` | `text/html`, `text/css`, `text/javascript` | 404 `{"error"}` for a file that is not there |
-| `GET /viewer/<display>` | `text/html`, the display's canvas page | 404 `no display '<display>'` |
-| `GET /watch` | 302 to `/viewer/<display>` of the site's own live game: tas serve keeps one display (`tas.serve.live` = its size, e.g. `"1280x720"`) running `tas.live`, starts the next game after a clean exit and stops on a crash (module `site_live`) | 404 `site.live.notfound` naming why: no `tas.serve.live`, the game is starting, or how the last one exited |
-| `GET /viewer/<display>/ws` | WebSocket carrying the display's RFB | 404 `no display '<display>'`; 400 `viewer.upgrade` without an upgrade |
-| `GET /viewer/<display>/audio` | `audio/wav`, one growing WAV (s16le stereo, 48000 Hz) of the display's sound from the request on, until the viewer leaves | 404 `no display '<display>'`; 400 `display.audio` when the display has no sound server; 400 `display.unsupported` on a Windows display |
+| `GET /`, `/coverage/...`, `/static/...` | `text/html`, `text/css`, `text/javascript` | 404 `{"error"}` for a file that is not there |
+| `GET /watch` | 302 to `/#/play/<run>`, the play view of the newest running run (its data path: `/video/<run>` picture, `/audio/<run>` sound) | 404 `no run is going` (`watch.notfound`) |
 | `GET /video`, `/frame`, `/oracle`, `/shot`, `/diff`, `/log`, `/audio` `/<run>` | the run's stream, PNG, text or WAV | 404 `no run <run>`; 404 `not found` when the run lacks that file |
 | `GET /stream/<run>/<side>/<poll>.jpg` | `image/jpeg` | the typed refusal `{"kind": "error", "code", "run", "side", "poll"}`, 404 (`stream.run`, `stream.side`, `stream.poll`) |
 | `GET /api/contract`, `/api/feed`, `/api/coverage`, `/api/pool`, `/api/runs`, `/api/phase`, `/api/map`, `/api/enhanced`, `/api/feedback` | `application/json` | 404 or 400 `{"error"}` |
 | `GET /api/fn/<name>` | `application/json` | 404 `no function <name>`; 400 without a name |
 | `POST /api/play` | 200 `{"id", ...}` | 400 `{"error"}` |
 | `POST /api/stop`, `/api/pin`, `/api/take`, `/api/input` `{"id": ...}` | 200 the run's new state | 400 `no run <id>`, `no running run <id>`, `run <id> is not driven by live input`; 400 `the body names no run` without an id |
-| `POST /api/display/<display>/input` `{"events": [...]}` | 200 `{"events", "strokes"}` | 400 `no display '<display>'`; 400 `display.unsupported` on a Windows display |
 
 ## Port boilerplate
 

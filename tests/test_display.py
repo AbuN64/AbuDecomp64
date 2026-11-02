@@ -139,10 +139,6 @@ def test_create_starts_labwc_randr_wayvnc_and_checks_the_size(tmp_path: Path, to
         "labwc", "pipewire", "wireplumber", "pipewire-pulse", "wayvnc", "holder"
     }  # fmt: skip
     assert linux.environment(ok.identity)["XDG_RUNTIME_DIR"] == str(Path(ok.directory) / "run")
-    capture = linux.audio(ok.identity)
-    assert isinstance(capture, FakeTool)
-    assert fake_spawn.argv[-1][0] == "parec" and f"--device={display.SINK}.monitor" in fake_spawn.argv[-1]
-    assert f"--rate={display.AUDIO_RATE}" in fake_spawn.argv[-1] and "--format=s16le" in fake_spawn.argv[-1]
     assert linux.describe(ok.identity) == ok
 
 
@@ -511,59 +507,10 @@ def test_invoke_with_a_command_runs_it_and_needs_no_profile(tmp_path: Path, monk
     assert ran == [["foot", "-e", "true"]] and shown.deleted == ["d-live"]
 
 
-def test_keeper_starts_the_game_again_after_a_clean_exit_and_stops_on_a_crash(tmp_path: Path) -> None:
-    """The site's own live display (module site_live): a menu quit (exit 0) starts the next game, a crash stops the
-    keeper and /watch names it; each display is deleted when its game exits."""
-    shown, codes, seen = Shown(tmp_path), [0, 139], []
-    keeper: site_live.Keeper
-
-    def run(argv: list[str], env: dict[str, str], check: bool) -> subprocess.CompletedProcess:
-        seen.append(keeper.watch())  # the viewer path while the game runs
-        shutil.rmtree(tmp_path / "d-live")  # Shown.create makes the folder again for the next game
-        return subprocess.CompletedProcess(argv, codes.pop(0))
-
-    profile = load_profile(live_profile(tmp_path))
-    keeper = site_live.Keeper(lambda: shown, "1280x720", lambda folder: tas.live(profile, folder), run)
-    keeper.run()
-    assert seen == ["/viewer/d-live", "/viewer/d-live"] and shown.deleted == ["d-live", "d-live"]
-    with pytest.raises(DecompError, match="d-live exited 139") as refused:
-        keeper.watch()
-    assert refused.value.key == "site.live.notfound"  # the site answers it as a 404 naming the crash
-
-
-def test_keeper_without_a_live_size_starts_nothing_and_watch_names_the_missing_key() -> None:
-    keeper = site_live.Keeper(lambda: pytest.fail("no display without tas.serve.live"), None, lambda folder: ([], {}))
-    keeper.start()
-    keeper.run()
-    with pytest.raises(DecompError, match=r"tas\.serve\.live"):
-        keeper.watch()
-
-
-def test_keeper_stops_when_the_display_cannot_start(tmp_path: Path) -> None:
-    class Broken(Shown):
-        def create(self, size: str, endpoint: str | None = None) -> display.Record:
-            raise DecompError("display.package", "labwc is not installed")
-
-    keeper = site_live.Keeper(lambda: Broken(tmp_path), "1280x720", lambda folder: pytest.fail("no game"))
-    keeper.run()
-    with pytest.raises(DecompError, match="could not start: labwc is not installed"):
-        keeper.watch()
-
 
 def test_home_page_reaches_the_live_game_in_one_click() -> None:
     page = (Path(site_live.__file__).with_name("runner.html")).read_text()
     assert '<a class="btn" href="/watch"' in page
-
-
-def test_audio_refuses_a_display_without_a_sound_server_and_on_windows(tmp_path: Path) -> None:
-    root = tmp_path / "root"
-    (root / "d-00000000").mkdir(parents=True)
-    record = display.Record("d-00000000", 8, 8, "rfb", {}, str(root / "d-00000000"))
-    (root / "d-00000000" / "display.json").write_text(json.dumps(record.__dict__))
-    with pytest.raises(DecompError, match="no sound server"):
-        display.Linux(root, spawn=fake_spawn).audio("d-00000000")
-    with pytest.raises(DecompError, match="Unsupported"):
-        display.Windows(root).audio("d-00000000")
 
 
 def test_create_names_a_sound_step_that_fails(tmp_path: Path, tools: None) -> None:

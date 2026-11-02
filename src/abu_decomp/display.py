@@ -34,12 +34,9 @@ from abu_decomp import DecompError, inotify
 # Host packages the Linux backend runs; the rig's install names them (docs/display.md), nothing here installs them.
 PACKAGES = ("labwc", "wayvnc", "wlr-randr", "pipewire", "wireplumber", "pipewire-pulse", "pactl", "parec")
 # The display's sound: a private PipeWire (with its session manager and Pulse server) in the run directory, so a game
-# drawing on the display finds it through XDG_RUNTIME_DIR alone and plays into the null sink SINK; Audio reads that
-# sink's monitor
-# as raw s16le stereo at AUDIO_RATE.
+# drawing on the display finds it through XDG_RUNTIME_DIR alone and plays into the null sink SINK at AUDIO_RATE.
 SINK = "display"
 AUDIO_RATE = 48000
-AUDIO_LATENCY_MS = 20
 # Seconds a stopped tool gets to leave on SIGTERM before SIGKILL: a bound the adapter declares, not a wait for effect.
 GRACE_SECONDS = 5.0
 # Seconds a tool gets to become ready (labwc's socket, wlr-randr's exit, wayvnc's socket) and the RFB server to answer
@@ -74,7 +71,6 @@ class Backend(Protocol):
     def capture(self, subject: str, path: Path) -> dict[str, object]: ...
     def input(self, subject: str, events: object) -> dict[str, object]: ...
     def environment(self, subject: str) -> dict[str, str]: ...
-    def audio(self, subject: str) -> subprocess.Popen: ...
     def delete(self, subject: str) -> Record: ...
 
 
@@ -467,26 +463,6 @@ class Linux:
             if failed:
                 raise DecompError("display.audio", f"pactl {argv[2]} failed: " + self._log(directory, "pactl"))
 
-    def audio(self, subject: str) -> subprocess.Popen:
-        """The display's sound from now on: parec on the null sink's monitor, raw s16le stereo AUDIO_RATE on stdout.
-
-        The caller owns the process (reads it, kills it when its viewer leaves); each viewer gets its own, so the sound
-        starts at the moment it connects and keeps pace with the picture.
-        """
-        record = self.describe(subject)
-        native = Path(record.directory) / "run" / "pulse" / "native"
-        if not native.exists():
-            raise DecompError("display.audio", f"display {subject} has no sound server (no {native})")
-        argv = [
-            "parec", "--server=unix:" + str(native), "--device=" + SINK + ".monitor", "--raw", "--format=s16le",
-            "--channels=2", f"--rate={AUDIO_RATE}", f"--latency-msec={AUDIO_LATENCY_MS}",
-        ]  # fmt: skip
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": str(Path.home()), "XDG_RUNTIME_DIR": str(native.parents[1])}
-        with (Path(record.directory) / "parec.log").open(
-            "ab"
-        ) as log:  # parec's own words, kept beside the other tools'
-            return self.spawn(argv, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log)
-
     def _start(self, directory: Path, argv: list[str], env: dict[str, str], name: str = "") -> subprocess.Popen:
         with (directory / f"{name or argv[0]}.log").open("wb") as log:
             return self.spawn(argv, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
@@ -650,12 +626,6 @@ class Windows:
 
     def environment(self, subject: str) -> dict[str, str]:
         raise DecompError("display.unsupported", "a Windows guest runs its own programs; invoke is for Linux displays")
-
-    def audio(self, subject: str) -> subprocess.Popen:
-        raise DecompError(
-            "display.unsupported",
-            "Unsupported: a Windows guest's sound has no capture yet; audio is for Linux displays",
-        )
 
     def delete(self, subject: str) -> Record:
         record = self.describe(subject)

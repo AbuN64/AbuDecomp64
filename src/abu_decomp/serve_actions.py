@@ -1,12 +1,9 @@
-"""The POST routes of `decomp tas serve`: start, stop and keep a run, take it over, and send live input.
-The page's keyboard and gamepad reach a Linux or Windows display through `/api/display/ID/input`, the same display
-Input the CLI and the live proof use."""
+"""The POST routes of `decomp tas serve`: start, stop and keep a run, take it over, and send live input."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from abu_decomp import display
 from abu_decomp.serve_http import need_id
 
 
@@ -62,9 +59,4 @@ def run_input(req: Any, server: Any, body: dict[str, Any]) -> None:
         )
 
 
-def display_input(req: Any, server: Any, body: dict[str, Any], shown: str) -> None:
-    req.json(display.backend(server.displays).input(shown, body.get("events")))
-
-
 ACTIONS = {"/api/play": play, "/api/stop": stop, "/api/pin": pin, "/api/take": take, "/api/input": run_input}
-DISPLAY_INPUT = ("/api/display/", "/input")

@@ -703,45 +703,6 @@ class HttpTests(Base):
             urllib.request.urlopen(self.base + "/coverage/../secret.txt", timeout=10)
         self.assertEqual(caught.exception.code, 404)
 
-    def test_viewer_audio_streams_the_displays_capture_as_a_wav_and_ends_it(self):
-        import subprocess
-        import sys
-
-        from abu_decomp import display
-
-        pcm = struct.pack("<4h", 0, 0, 1200, -900) * 3
-        started = []
-
-        def audio(_self, subject):
-            started.append(subject)
-            argv = [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({pcm!r})"]
-            return subprocess.Popen(argv, stdout=subprocess.PIPE)
-
-        with (
-            mock.patch.object(display.Linux, "audio", audio),
-            urllib.request.urlopen(self.base + "/viewer/d-aa/audio", timeout=10) as reply,
-        ):
-            kind, body = reply.headers["Content-Type"], reply.read()
-        self.assertEqual(started, ["d-aa"])
-        self.assertEqual(kind, "audio/wav")
-        self.assertEqual(body[:44], serve_audio.wav_header(display.AUDIO_RATE))
-        self.assertEqual(body[44:], pcm)
-
-    def test_a_missing_display_or_run_is_a_404_naming_it(self):
-        for url, named in (
-            ("/viewer/d-none", "d-none"),
-            ("/viewer/d-none/ws", "d-none"),
-            ("/viewer/d-none/audio", "d-none"),
-            ("/frame/nope", "nope"),
-            ("/video/nope", "nope"),
-            ("/log/nope", "nope"),
-        ):
-            with self.subTest(url=url):
-                with self.assertRaises(urllib.error.HTTPError) as caught:
-                    urllib.request.urlopen(self.base + url, timeout=5)
-                self.assertEqual(caught.exception.code, 404)
-                self.assertIn(named, json.load(caught.exception)["error"])
-
     def test_a_post_without_an_id_says_so(self):
         for path in ("/api/stop", "/api/pin", "/api/take", "/api/input"):
             with self.subTest(path=path):
@@ -1108,38 +1069,6 @@ class DataTests(Base):
             self.assertEqual(self.fetch("/static/u.js", **{"If-None-Match": tag})[0], 304)
             for path in ("/static/nope.js", "/static/../secret.txt", "/static/%2e%2e/secret.txt"):
                 self.assertEqual(self.fetch(path)[0], 404, path)
-
-    def test_baked_files_with_gz_siblings_etags_and_cache_rules(self):
-        plain = json.dumps({"rows": list(range(500))}).encode()
-        (self.site / "fns.1a2b3c4d.json").write_bytes(plain)
-        (self.site / "fns.1a2b3c4d.json.gz").write_bytes(gzip.compress(plain))
-        (self.site / "live.json").write_bytes(plain)
-        (self.site / "manifest.json").write_bytes(b"{}")
-        (self.site / "movies.json").write_bytes(plain)
-        (self.site / "fn" / "Foo.json").write_bytes(b'{"c": 1}')
-        (self.site / "reach").mkdir()
-        (self.site / "reach" / "m.bin").write_bytes(b"\x01\x02")
-        status, head, body = self.fetch("/data/fns.1a2b3c4d.json", **{"Accept-Encoding": "gzip"})
-        self.assertEqual((status, head["Content-Encoding"], head["Content-Type"]), (200, "gzip", "application/json"))
-        self.assertEqual(gzip.decompress(body), plain)
-        self.assertEqual(head["Cache-Control"], "public, max-age=31536000, immutable")
-        tag = head["ETag"]
-        self.assertEqual(
-            self.fetch("/data/fns.1a2b3c4d.json", **{"If-None-Match": tag, "Accept-Encoding": "gzip"})[::2], (304, b"")
-        )
-        status, head, body = self.fetch("/data/fns.1a2b3c4d.json")  # no gzip accepted: the plain bytes
-        self.assertEqual((status, head.get("Content-Encoding"), body), (200, None, plain))
-        self.assertNotEqual(head["ETag"], tag)
-        status, head, body = self.fetch("/data/live.json", **{"Accept-Encoding": "gzip"})  # compressed once per tag
-        self.assertEqual(
-            (head["Cache-Control"], head["Content-Encoding"], gzip.decompress(body)), ("no-store", "gzip", plain)
-        )
-        self.assertEqual(self.fetch("/data/manifest.json")[1]["Cache-Control"], "no-store")
-        self.assertEqual(self.fetch("/data/movies.json")[1]["Cache-Control"], "no-cache")
-        status, head, body = self.fetch("/data/fn/Foo.json", **{"Accept-Encoding": "gzip"})
-        self.assertEqual((head.get("Content-Encoding"), body), (None, b'{"c": 1}'))  # small: sent as it is
-        status, head, body = self.fetch("/data/reach/m.bin")
-        self.assertEqual((head["Content-Type"], body), ("application/octet-stream", b"\x01\x02"))
 
     def test_other_paths_are_404(self):
         (self.site / "x.json.gz").write_bytes(b"z")

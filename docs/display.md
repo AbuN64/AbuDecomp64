@@ -49,19 +49,7 @@ adapter never installs packages.
 `create` also starts the display's own sound server in its run directory: `pipewire`, `wireplumber` and `pipewire-pulse`
 (config and state under the display's folder), then loads a null sink `display` (48000 Hz stereo) with `pactl` and makes
 it the default. A game started through `environment()` (as `invoke` does) finds that server through `XDG_RUNTIME_DIR`
-alone and plays into the sink; nothing reaches the host's own sound. `audio(id)` starts `parec` on the sink's monitor
-(raw s16le stereo, 20 ms latency, its log `parec.log` in the display's folder) for one listener; the site's `GET /viewer/<id>/audio` sends it as a growing WAV and
-kills it when the viewer leaves, so each listener hears the display from the moment it asked, in step with the picture.
-The viewer page opens that stream on its first click or key (the browser's autoplay rule) and plays it with WebAudio
-(`static/site/viewer_audio.js`), writing the bytes and the loudest sample so far to the canvas's `data-audio-bytes` and
-`data-audio-peak`. The Windows backend refuses `audio` as `display.unsupported` until its capture is built.
-
-## Runner page
-
-`/viewer/<id>` sends the canvas's keys down and up over RFB by physical key (a release always matches its press, and a
-blur releases what is held). Its first browser gamepad is polled each frame and mapped onto the same keys, so the game
-sees a keyboard: d-pad and left stick the arrows, A x, B c, X s, Y d, LB q, RB e, LT z, RT r, Back Tab, Start Return.
-Events also go to `POST /api/display/<id>/input` (`{"events": [...]}`): the same `Input` action the CLI uses.
+alone and plays into the sink; nothing reaches the host's own sound. The site keeps no display viewer: it watches runs on their data path (`/watch` -> `/#/play/RUN`).
 
 ## Windows
 
@@ -79,8 +67,7 @@ decomp display --backend windows delete d-1a2b3c4d             # forgets the rec
 own VNC server). `describe` and `capture` speak RFB to the endpoint like the Linux backend; the record carries the size
 the guest reports, and `--size` is the guest's own. `input` and `invoke` refuse `display.unsupported` ("Unsupported: ...")
 because a Windows guest takes input from its own viewer session and runs its own programs. A display id the directory
-does not hold refuses `display.notfound` naming it (`no display 'd-none'`); the site answers `GET /viewer/<id>` for it
-with a 404 of the same text.
+does not hold refuses `display.notfound` naming it (`no display 'd-none'`).
 
 ## Proof
 

@@ -36,8 +36,10 @@ with a note of what you saw, at once, then keep going if the run lives. Keep sec
 is the first defect (determinism, [02](02-tas-behaviour-loop.md)). Replay it on the page too (`new --movie NAME`) so
 the person can watch it. The movie stays in the TAS folder as a regression test and runs after every port build.
 
-**Watching.** Every run, `tas new` or `play NAME`, gets its own display and sound card, so runs never block each other.
-The page always shows the newest active run, labelled with its kind (live / proof replay), movie, poll and outcome, and
+**Watching.** Every run, `tas new` or `play NAME`, writes its own frames and sound into its run folder, so runs never
+block each other and a headless replay at any speed is watched the same way: `/watch` opens `/#/play/RUN` of the newest
+running run, which reads the run's data path (`/video/RUN` picture with reach records in-band, `/audio/RUN` sound); there
+is no remote-display viewer. The page always shows the newest active run, labelled with its kind (live / proof replay), movie, poll and outcome, and
 its switcher pins another; `tas watch` also reports `play-start` / `play-end`. No flag makes a run watched.
 
 **Triage.** Every `stop`, `crash`, `hang` or `mark` is one cycle of [02](02-tas-behaviour-loop.md), with

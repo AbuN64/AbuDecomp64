@@ -11,8 +11,8 @@ reported; every other marker is left over from a build without that unit: it is 
 Nothing here blocks a play. Whether a shared port seat may run at all is tas_seat's rule (stamped repo, SHA and shim pin
 against the project's current main); `pins_stale` only reports a port build older than its tree: "pins" is the stamp
 the build writes ({<pins_key>: sha}); "pins_repo" is the reference, a git URL or path whose HEAD is mirrored into a bare
-repo under the user's cache directory (fetched on every check; a mirror whose fetch fails is refetched once into a fresh one that replaces it) and compared by git ancestry: a build is stale only when
-its sha is an ancestor of the reference's HEAD (and differs) or unrelated to it. A reference that cannot be fetched
+repo under the user's cache directory (fetched on every check; a mirror whose fetch fails is refetched once into a
+fresh one that replaces it) and compared by git ancestry: a build is stale only when its sha is an ancestor of the reference's HEAD (and differs) or unrelated to it. A reference that cannot be fetched
 refuses with its cause; it never falls back to comparing equality.
 """
 
@@ -156,8 +156,8 @@ def _heal_mirror(mirror: Path, source: str, cause: str) -> subprocess.CompletedP
 
 
 def reference_head(source: str) -> tuple[Path, str]:
-    """Fetch every branch and HEAD of `source` into its bare mirror: (mirror, the sha of the source's HEAD). A fetch that
-    fails on an existing mirror (a corrupt object store: missing blob, unresolved deltas) is refetched once into a
+    """Fetch every branch and HEAD of `source` into its bare mirror: (mirror, the sha of the source's HEAD). A fetch
+    that fails on an existing mirror (a corrupt object store: missing blob, unresolved deltas) is refetched once into a
     fresh mirror that replaces it, the cause named on stderr. Refuses, naming the cause, when the mirror cannot be made
     or the source cannot be fetched."""
     mirror = mirror_path(source)
@@ -173,7 +173,8 @@ def reference_head(source: str) -> tuple[Path, str]:
             )
     head = _git("-C", str(mirror), "rev-parse", "refs/mirror/head") if not fetched.returncode else fetched
     if head.returncode or not head.stdout.strip():
-        raise DecompError("tas.pins", f"cannot read the reference {source}: {_cause(head) if head.returncode else 'no HEAD'}")
+        cause = _cause(head) if head.returncode else "no HEAD"
+        raise DecompError("tas.pins", f"cannot read the reference {source}: {cause}")
     return mirror, head.stdout.strip()
 
 

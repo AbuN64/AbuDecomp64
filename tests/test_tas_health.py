@@ -155,7 +155,7 @@ class HealthTests(unittest.TestCase):
             pack.unlink()
         for loose in mirror.glob("objects/??/*"):
             loose.unlink()
-        self.assertNotEqual(subprocess.run(["git", "-C", str(mirror), "fsck", "-q"], capture_output=True).returncode, 0)
+        self.assertNotEqual(subprocess.run(["git", "-C", str(mirror), "fsck"], capture_output=True).returncode, 0)
         real = tas_health._git
         failed = subprocess.CompletedProcess([], 128, "", "fatal: unresolved deltas left after unpacking\n")
 
@@ -164,15 +164,15 @@ class HealthTests(unittest.TestCase):
 
         with mock.patch.object(tas_health, "_git", broken_fetch), mock.patch("sys.stderr") as err:
             got, head = tas_health.reference_head(source)
-        self.assertEqual((got, head), (mirror, subprocess.run(
-            [*self.git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()))
+        newest = subprocess.run([*self.git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
+        self.assertEqual((got, head), (mirror, newest.stdout.strip()))
         said = "".join(c.args[0] for c in err.write.call_args_list)
         self.assertIn("replaced the pin mirror", said)
         self.assertIn("unresolved deltas left after unpacking", said)
-        self.assertEqual(subprocess.run(["git", "-C", str(mirror), "fsck", "-q"], capture_output=True).returncode, 0)
+        self.assertEqual(subprocess.run(["git", "-C", str(mirror), "fsck"], capture_output=True).returncode, 0)
         self.assertFalse(mirror.with_name(mirror.name + ".fresh").exists())
-        self.assertIn(history.old, subprocess.run(
-            ["git", "-C", str(mirror), "rev-list", "refs/mirror/head"], capture_output=True, text=True).stdout)
+        listed = subprocess.run(["git", "-C", str(mirror), "rev-list", "refs/mirror/head"], capture_output=True, text=True)
+        self.assertIn(history.old, listed.stdout)
 
     def test_mirror_that_cannot_be_refetched_stays_and_the_refusal_names_both_causes(self):
         self.git_history()

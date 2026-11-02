@@ -46,13 +46,28 @@ static void failure(unsigned kind,const char *message,int signum)
             volatile float result=kind==36 ? one/zero : zero/zero;
             (void)result;
         }
+        if (kind==38) {
+            /* The owner's #/play SIGFPE at poll 3407: the renderer's divss of 0/0 (GfxSpTri1) ran under the guest's armed
+             * invalid-operation trap. Host code runs masked; the guest's traps come back armed. */
+            (void)n64c_fpu_set_control(0x01000c00u);
+            const int enabled=n64c_fp_traps_mask();
+            volatile float zero=0.0f,one=1.0f;
+            volatile float nan=zero/zero,inf=one/zero;
+            n64c_fp_traps_restore(enabled);
+            if (!isnan(nan) || !isinf(inf) || n64c_fpu_get_control()!=0x01000c00u) _Exit(2);
+            fputs("host-masked\n",stderr);
+            volatile float result=zero/zero;
+            (void)result;
+        }
         _Exit(1);
     }
     close(fd[1]); char text[128]={0};
     ssize_t bytes=read(fd[0],text,sizeof text-1); close(fd[0]); CHECK(bytes>=0);
     int status; CHECK(waitpid(pid,&status,0)==pid);
-    if (signum) CHECK(WIFSIGNALED(status) && WTERMSIG(status)==signum);
-    else {
+    if (signum) {
+        CHECK(WIFSIGNALED(status) && WTERMSIG(status)==signum);
+        CHECK(strcmp(text,message)==0);
+    } else {
         CHECK(WIFEXITED(status) && WEXITSTATUS(status)==78);
         CHECK(strcmp(text,message)==0);
     }
@@ -111,6 +126,7 @@ int main(void)
     failure(35,"boot-missing: system-FPU-trap-mismatch\n",0);
     failure(36,"",SIGFPE);
     failure(37,"",SIGFPE);
+    failure(38,"host-masked\n",SIGFPE);
     volatile float one=1.0f,zero=0.0f;
     volatile float infinity=one/zero;
     CHECK(isinf(infinity));

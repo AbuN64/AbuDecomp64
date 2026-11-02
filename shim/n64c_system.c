@@ -258,9 +258,9 @@ void n64c_dev_handler_set(void *handler) { dev_handler = handler; }
 void *n64c_dev_handler(void) { return dev_handler; }
 
 /* The guest runs with trap-enabled floating point (osSetFpcCsr). Code of the host (the renderer, a graphics driver, the audio
- * backend) computes with values that set invalid-operation flags harmlessly: it runs with the traps masked. Linux and the
- * Windows build mask them only where a host library is called; no other platform needs it. */
-#if NATIVE_FPU && defined(_WIN32)
+ * backend) computes with values that set invalid-operation flags harmlessly: it runs with the traps masked, as the N64's
+ * RSP and RDP never see the CPU's FCSR. Every x86 build (Linux and Windows) masks them where host code is called. */
+#if NATIVE_SSE
 /* The saved state is the low 16 bits of MXCSR and the x87 control word, packed: restore puts both back exactly. */
 int n64c_fp_traps_mask(void)
 {

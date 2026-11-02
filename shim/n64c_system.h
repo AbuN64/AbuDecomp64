@@ -27,8 +27,8 @@ s32 n64c_string_length(const u8 *string);
 s32 n64c_printf(void *(*emit)(void *, const void *, s32), void *target, const char *format, va_list args);
 void *n64c_printf_copy(void *destination, const void *source, s32 count);
 u8 *n64c_string_find(u8 *string, u8 value);
-/* Mask the floating point traps the guest enabled while host code runs (Windows only; elsewhere a no-op): the mask returned
- * goes back to n64c_fp_traps_restore. */
+/* Mask the floating point traps the guest enabled while host code runs (x86 and Android; elsewhere a no-op): the mask
+ * returned goes back to n64c_fp_traps_restore, which clears the flags host code raised and rearms the guest's traps. */
 int n64c_fp_traps_mask(void);
 void n64c_fp_traps_restore(int enabled);
 /* The development-cartridge handshake port (host debugger link) does not exist on the host, so the handler

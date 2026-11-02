@@ -867,7 +867,7 @@ class SettleTests(Base):
         server = tas_serve.Server(self.profile())
         made = []
         for key in ("k", "k", "j"):
-            server._cached(key, lambda: made.append(key) or key)
+            server._cached(key, lambda key=key: made.append(key) or key)
         self.assertEqual(made, ["k", "j"])
 
 

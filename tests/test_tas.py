@@ -962,7 +962,7 @@ class MovieTests(unittest.TestCase):
 class TurboWaitTests(unittest.TestCase):
     """Regression slice: 055254Z port stopped at 29779 while oracle reached 59874."""
 
-    def wait_events(self, events, *, until=59874, taken=False):
+    def wait_events(self, events, *, until=59874, taken=False, timeout=180, event_seconds=0):
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
             if taken:
@@ -970,9 +970,11 @@ class TurboWaitTests(unittest.TestCase):
             process = mock.Mock(pid=4242)
             watcher = mock.Mock(fd=101)
             observed = []
+            clock = [0.0]
 
             def ready(inputs, _writes, _errors, bound):
                 event = events.pop(0)
+                clock[0] += event_seconds
                 observed.append(event)
                 if event == "exit":
                     return [100], [], []
@@ -993,8 +995,9 @@ class TurboWaitTests(unittest.TestCase):
                 mock.patch.object(tas.select, "select", side_effect=ready) as select,
                 mock.patch.object(tas.os, "wait4", return_value=(4242, 0, mock.Mock(ru_utime=2, ru_stime=1))),
                 mock.patch.object(tas.os, "killpg") as kill,
+                mock.patch.object(tas.time, "monotonic", side_effect=lambda: clock[0]),
             ):
-                result = tas._wait(process, 180, run, until)
+                result = tas._wait(process, timeout, run, until)
             watcher.close.assert_called_once()
             return result, kill, observed, select
 
@@ -1003,11 +1006,18 @@ class TurboWaitTests(unittest.TestCase):
         oracle = mock.Mock(pid=4241)
         with mock.patch.object(tas.os, "wait4", return_value=(4241, 0, mock.Mock(ru_utime=1, ru_stime=0))):
             self.assertEqual(tas._reap(oracle), (0, 1))
-        result, kill, observed, select = self.wait_events([29779, 59873, 59874, "exit"])
+        result, kill, observed, select = self.wait_events([29779, 59873, 59874, "exit"], event_seconds=150)
         self.assertEqual(result, (0, 3))
         self.assertEqual(observed, [29779, 59873, 59874, "exit"])
         kill.assert_not_called()
         self.assertTrue(all(call.args[0] == [100, 101] for call in select.call_args_list))
+        self.assertEqual([call.args[3] for call in select.call_args_list], [180] * 4)
+
+    def test_inactivity_bound_comes_from_configuration(self):
+        result, kill, _, select = self.wait_events([29779, "stall"], timeout=17, event_seconds=12)
+        self.assertIsNone(result[0])
+        self.assertEqual([call.args[3] for call in select.call_args_list], [17, 17])
+        kill.assert_called_once_with(4242, signal.SIGKILL)
 
     def test_stalled_port_is_killed_and_reaped(self):
         result, kill, _, _ = self.wait_events([29779, "stall"])

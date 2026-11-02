@@ -19,7 +19,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--compiler", default="gcc")
 parser.add_argument("--work", type=pathlib.Path, required=True)
 parser.add_argument("--m32", action="store_true")
-args = parser.parse_args()
+# bin/test runs this file as a script with its flags; pytest imports it and gets a scratch --work of its own.
+args = (
+    parser.parse_args()
+    if __name__ == "__main__"
+    else parser.parse_args(["--work", tempfile.mkdtemp(prefix="test_lockstep-")])
+)
 args.work.mkdir(parents=True, exist_ok=True)
 ROOT = pathlib.Path(__file__).resolve().parent
 os.environ.setdefault("N64C_PORT_DIR", str(ROOT / "fixtures"))  # a port facts directory when set
@@ -530,9 +535,10 @@ def port_from_oracle(out, edit=None):
     meta = {"k": "meta", "side": "port", "ram": oracle.meta["ram"], "page": 4096, "bytes": "native",
             "hash": "fnv1a64-le64", "calls": 8, "trace": 0, "watch": "00000000"}  # fmt: skip
     lines, store, stored, current = [json.dumps(meta, separators=(",", ":"))], b"", set(), {}
+    oracle_pages = dict(oracle.poll_pages())
     for poll in sorted(oracle.polls):
         r = dict(oracle.polls[poll])
-        pages = {pg: native(oracle.page(int(h, 16))) for pg, h in r["pages"]}
+        pages = {pg: native(oracle.page(int(h, 16))) for pg, h in oracle_pages[poll]}
         if edit:
             edit(r, pages, current)
         listed = []
@@ -627,24 +633,25 @@ class MatchTests(unittest.TestCase):
 
     def test_real_oracle_page_hashes_the_same_as_the_port_holding_it_natively(self):
         oracle = ls.Side(ORACLE_POLLS, lambda r: None)
-        h = int(oracle.polls[1]["pages"][2][1], 16)
+        h = int(dict(oracle.poll_pages())[1][2][1], 16)
         page = oracle.page(h)
         self.assertEqual(page[:4], bytes.fromhex("11223344"))
         self.assertEqual(ls.page_hash(page), h)
         self.assertEqual(ls.page_hash(native(page), native=True), h)
         self.assertNotEqual(ls.page_hash(native(page)), h)  # the old port hash over native bytes never met the oracle's
 
-    def test_real_oracle_store_holds_each_distinct_page_once_and_is_mapped_not_read(self):
-        # A whole-movie pages.bin is gigabytes (pp-1p-match: 10,491,587,072 B): Side maps it and indexes the headers.
+    def test_real_oracle_store_holds_each_distinct_page_once_and_is_indexed_not_held(self):
+        # A whole-movie pages.bin is gigabytes (pp-1p-match: 10,526,152,544 B): Side keeps only its sorted hashes.
         oracle = ls.Side(ORACLE_POLLS, lambda r: None)
-        self.assertIsInstance(oracle.store, ls.mmap.mmap)
         data = (ORACLE_POLLS / "pages.bin").read_bytes()
         heads = [struct.unpack_from("<IIQ", data, at) for at in range(0, len(data), 16 + 4096)]
         self.assertEqual(len(heads), len({h for _, _, h in heads}))  # one record per distinct page content
-        listed = {int(h, 16) for r in oracle.polls.values() for _, h in r["pages"]}
+        self.assertEqual(list(oracle.hashes), sorted(h for _, _, h in heads))
+        self.assertTrue(all("pages" not in r for r in oracle.polls.values()))  # streamed by poll_pages, not held
+        listed = {int(h, 16) for _, pages in oracle.poll_pages() for _, h in pages}
         for h in listed:
             self.assertEqual(ls.page_hash(oracle.page(h)), h)
-        code, report, text = self.run_match(port_from_oracle(args.work / "match-mapped"))
+        code, _report, text = self.run_match(port_from_oracle(args.work / "match-mapped"))
         self.assertEqual(code, 0, text)
 
     def test_matching_movie_writes_equal_poll_lines_and_matches_through_the_last_poll(self):
@@ -705,6 +712,33 @@ class MatchTests(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(ls.main(["match", "--oracle", str(ORACLE_POLLS), "--port", str(port)]), 2)
         self.assertIn("poll lines", err.getvalue())
+
+
+# pp-1p-match (rig play 20261102T055254Z, 29,779 common polls, a 10.5 GB oracle pages.bin): its first polls cut to the
+# pages that diverge most, and the memory divergences lockstep.py listed for that cut before match_memory went
+# incremental. The whole play once took over 20 minutes in match_memory (every RAM page and every differing word
+# revisited at every poll); each poll now costs only the pages it lists.
+PP_SLICE = ROOT / "fixtures" / "lockstep-pp-1p-match"
+
+
+class MatchSliceTests(unittest.TestCase):
+    def test_real_pp_1p_match_slice_lists_the_same_memory_divergences_reading_each_listed_page_once(self):
+        oracle, port = ls.Side(PP_SLICE / "oracle", lambda r: None), ls.Side(PP_SLICE / "port", lambda r: None)
+        reads = []
+        for side in (oracle, port):
+            side.page = lambda h, read=side.page: reads.append(h) or read(h)
+        matcher = ls.Matcher(min(oracle.meta["ram"], port.meta["ram"]), ([], {}), [])
+        polls = sorted(set(oracle.polls) & set(port.polls))
+        memory = ls.match_memory(matcher, oracle, port, polls, 2)
+        oracle_pages, port_pages = dict(oracle.poll_pages()), dict(port.poll_pages())
+        self.assertEqual(memory, json.loads((PP_SLICE / "memory.json").read_text()))
+        listed, oh, ph = 0, {}, {}  # the page pairs that differ among the pages each poll lists
+        for poll in polls:
+            oh.update(oracle_pages[poll])
+            ph.update(port_pages[poll])
+            pages = {pg for pg, _ in oracle_pages[poll] + port_pages[poll]}
+            listed += sum(oh.get(pg) != ph.get(pg) for pg in pages)
+        self.assertEqual(len(reads), 2 * listed)  # each listed page once, never every differing page at every poll
 
 
 @unittest.skipUnless(args.m32, "the argument words and the return trampoline are i386")
@@ -869,4 +903,5 @@ class PortRecorderTests(unittest.TestCase):
             self.assertFalse((path / "lockstep").exists())
 
 
-unittest.main(argv=[sys.argv[0]])
+if __name__ == "__main__":
+    unittest.main(argv=[sys.argv[0]])

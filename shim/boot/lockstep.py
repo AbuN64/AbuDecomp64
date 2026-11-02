@@ -49,14 +49,16 @@ import concurrent.futures
 import csv
 import hashlib
 import importlib.util
+import itertools
 import json
-import mmap
 import os
 import pathlib
 import re
 import struct
 import subprocess
 import sys
+
+import numpy as np
 
 # The sibling portdir.py is loaded by its path: importing lockstep (a test exec-loading it) never touches sys.path,
 # which would shadow tests/ modules with shim/boot ones of the same name for the rest of the process.
@@ -68,6 +70,7 @@ sys.dont_write_bytecode = True
 PAGE = 4096
 WORDS = PAGE // 4
 RDRAM = 0x80000000
+EMPTY_WORDS = (np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, np.int64), np.empty(0, object))
 FNV_OFFSET, FNV_PRIME, MASK64 = 0xCBF29CE484222325, 0x100000001B3, (1 << 64) - 1
 ORACLE_STACK, PORT_STACK = 0x10000, 0x100000
 
@@ -83,6 +86,9 @@ def page_hash(data, native=False):
     for (w,) in struct.iter_unpack("<Q", data):
         h = ((h ^ w) * FNV_PRIME) & MASK64
     return h
+
+
+ZERO_PAGE = page_hash(bytes(PAGE))
 
 
 # ---- inputs -----------------------------------------------------------------------------------------------------
@@ -161,16 +167,24 @@ def read_boot_copy(path):
 
 
 class Side:
-    """One run's lockstep files: points (key -> page-hash array), calls and returns (key -> index -> record)."""
+    """One run's lockstep files: points (key -> page-hash array), calls and returns (key -> index -> record), polls
+    (index -> record without its pages: a whole movie's page lists are gigabytes parsed, so poll_pages streams them)."""
 
     def __init__(self, directory, key_of):
         self.dir = pathlib.Path(directory)
         self.points, self.calls, self.rets, self.sps, self.watch = {}, {}, {}, {}, []
         self.polls, self.movie_calls, self.movie_rets = {}, {}, {}
-        self.meta, self.store, self.offsets = None, None, {}
+        self.meta, self.store, self.hashes, self.slots = None, None, array.array("Q"), array.array("I")
+        with open(self.dir / "lockstep.jsonl") as stream:
+            lines = itertools.chain(stream, self.movie_lines(self.dir / "calls.jsonl"))
+            self.read_lines(lines, key_of)
+        if self.meta is None:
+            raise ValueError(f"{self.dir}: no meta line")
+        self.canonical = self.meta.get("bytes") == "canonical-be"
+        self.index_store()
+
+    def read_lines(self, lines, key_of):
         current = None
-        lines = (self.dir / "lockstep.jsonl").read_text().splitlines()
-        lines += self.movie_lines(self.dir / "calls.jsonl")
         for number, line in enumerate(lines):
             if not line.strip():
                 continue
@@ -196,6 +210,7 @@ class Side:
                 if key is not None and key not in self.points:
                     self.points[key] = (array.array("Q", current), r)
             elif kind == "poll":
+                r.pop("pages", None)
                 self.polls[r["poll"]] = r
             elif kind in ("call", "ret") and "o" in r:  # a whole-movie call, keyed by (fn, caller, ordinal)
                 movie = self.movie_calls if kind == "call" else self.movie_rets
@@ -206,19 +221,31 @@ class Side:
                     (self.calls if kind == "call" else self.rets).setdefault(key, {})[r["i"]] = r
             elif kind == "watch":
                 self.watch.append(r)
-        if self.meta is None:
-            raise ValueError(f"{self.dir}: no meta line")
-        self.canonical = self.meta.get("bytes") == "canonical-be"
-        # pages.bin holds each distinct page once (both writers dedup by hash); a whole movie's store is gigabytes, so
-        # it is mapped, not read: only the 16-byte headers are touched to index it, and a page's bytes on demand.
-        with open(self.dir / "pages.bin", "rb") as store:
-            size = os.fstat(store.fileno()).st_size
-            data = mmap.mmap(store.fileno(), 0, access=mmap.ACCESS_READ) if size else b""
-        self.store = data
-        step = 16 + PAGE
-        for at in range(0, len(data) - step + 1, step):
-            self.offsets[struct.unpack_from("<Q", data, at + 8)[0]] = at + 16
-        self.offsets.setdefault(page_hash(bytes(PAGE)), None)
+
+    def index_store(self):
+        """pages.bin holds each distinct page once (both writers dedup by hash); a whole movie's store is gigabytes
+        (pp-1p-match: 10.5 GB), so it is neither mapped nor held: one chunked read keeps each record's hash as sorted
+        arrays (16 B a page, not a dict entry), and page() preads one page's bytes on demand."""
+        self.store = open(self.dir / "pages.bin", "rb")  # noqa: SIM115 - held for page() for the Side's life
+        step, heads = 16 + PAGE, array.array("Q")
+        chunk = memoryview(bytearray(step * 2048))
+        while n := self.store.readinto(chunk):
+            heads.frombytes(chunk[: n - n % step].cast("Q")[1 :: step // 8].tobytes())
+        order = sorted(range(len(heads)), key=heads.__getitem__)
+        self.hashes, self.slots = array.array("Q", map(heads.__getitem__, order)), array.array("I", order)
+
+    def poll_pages(self):
+        """Each poll line's (poll, [[page, hash hex], ...]) in file order, read again from lockstep.jsonl."""
+        with open(self.dir / "lockstep.jsonl") as stream:
+            for line in stream:
+                if '"poll"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # the last line of a run killed mid-write
+                if r.get("k") == "poll":
+                    yield r["poll"], r.get("pages", [])
 
     @staticmethod
     def movie_lines(path):
@@ -238,12 +265,12 @@ class Side:
         return kept
 
     def page(self, h):
-        at = self.offsets.get(h, -1)
-        if at is None:
+        i = bisect.bisect_left(self.hashes, h)
+        if i < len(self.hashes) and self.hashes[i] == h:
+            return os.pread(self.store.fileno(), PAGE, self.slots[i] * (16 + PAGE) + 16)
+        if h == ZERO_PAGE:
             return bytes(PAGE)
-        if at < 0:
-            raise ValueError(f"{self.dir}: page {h:016x} listed but not stored")
-        return self.store[at : at + PAGE]
+        raise ValueError(f"{self.dir}: page {h:016x} listed but not stored")
 
 
 # ---- word equivalence -------------------------------------------------------------------------------------------
@@ -273,6 +300,10 @@ class Matcher:
                 self.data.append((address, size, original))
         self.data_keys = [a for a, _, _ in self.data]
         self.stacks = ([], [])
+        # page_words' vector forms of port_function, port_data and the original function set
+        self.function_values = np.array(sorted(self.original_functions), dtype=np.int64)
+        self.exe_columns = np.array([(a, n) for a, n, *_ in self.exe], dtype=np.int64).reshape(-1, 2).T
+        self.data_columns = np.array(self.data, dtype=np.int64).reshape(-1, 3).T
 
     def set_stacks(self, oracle_sps, port_sps):
         """Every thread's stack span on each side, so a pointer to any thread's locals matches the other's."""
@@ -360,32 +391,48 @@ class Matcher:
         return f"{name}+0x{address - base:x}" if address != base else name
 
     def page_diff(self, oracle, port):
-        """Word indices of the page that differ, each with its class (value or host-pointer)."""
+        """Word indices of the page that differ, each with its class (value, fp-ulp or host-pointer)."""
+        ws, _, _, kinds = self.page_words(oracle, port)
+        return dict(zip(ws.tolist(), kinds.tolist(), strict=True))
+
+    def page_words(self, oracle, port):
+        """The differing words of a page pair as arrays (word index, oracle value, port value, class). A whole movie
+        diffs millions of page pairs (pp-1p-match: 3.4M differing words in its first 800 polls, 1.35M of them pointer
+        candidates), so every test of page_diff's word rules runs over the whole page at once."""
         if oracle == port:
-            return {}
-        swapped = array.array("I", oracle)
-        swapped.byteswap()
-        if swapped.tobytes() == port:
-            return {}
-        result = {}
-        skip = False
-        for w in range(WORDS):
-            if skip:
-                skip = False
-                continue
-            c, q = oracle[4 * w : 4 * w + 4], port[4 * w : 4 * w + 4]
-            if q == c or q == c[::-1] or q == c[1::-1] + c[2:] or q == c[:2] + c[:1:-1] or q == c[1::-1] + c[:1:-1]:
-                continue
-            ov, pv = int.from_bytes(c, "big"), int.from_bytes(q, "little")
-            if self.same_address(ov, pv):
-                continue
-            if w % 2 == 0 and w + 1 < WORDS and port[4 * w : 4 * w + 8] == oracle[4 * w : 4 * w + 8][::-1]:
-                skip = True
-                continue
-            if w % 2 == 1 and port[4 * w - 4 : 4 * w + 4] == oracle[4 * w - 4 : 4 * w + 4][::-1]:
-                continue
-            result[w] = "host-pointer" if self.host_pointer(ov, pv) else "fp-ulp" if near_float(ov, pv) else "value"
-        return result
+            return EMPTY_WORDS
+        raw, got = np.frombuffer(oracle, "<u4"), np.frombuffer(port, "<u4")
+        same = got == raw  # the same bytes, byte-reversed, or with either or both halfwords swapped
+        same |= got == raw.byteswap()
+        same |= got == ((raw & 0xFF) << 8 | (raw >> 8) & 0xFF | raw & 0xFFFF0000)
+        same |= got == ((raw & 0xFFFF) | (raw >> 8) & 0xFF0000 | (raw << 8) & 0xFF000000)
+        same |= got == ((raw & 0x00FF00FF) << 8 | (raw >> 8) & 0x00FF00FF)
+        same |= (np.frombuffer(port, "<u8") == np.frombuffer(oracle, ">u8")).repeat(2)  # a double stored reversed
+        ws = np.flatnonzero(~same)
+        if not ws.size:
+            return EMPTY_WORDS
+        ov = np.frombuffer(oracle, ">u4")[ws].astype(np.int64)
+        pv = got[ws].astype(np.int64)
+        in_ram = lambda v: (v >= RDRAM) & (v < RDRAM + self.ram)  # noqa: E731
+        function = np.zeros(ws.size, bool)  # port_function(pv) is not None
+        if self.exe_columns.size:
+            i = np.searchsorted(self.exe_columns[0], pv, "right") - 1
+            address, size = self.exe_columns[0][i], self.exe_columns[1][i]
+            function = (i >= 0) & ((pv == address) | ((size > 0) & (pv < address + size)))
+        data, original = np.zeros(ws.size, bool), np.full(ws.size, -1, np.int64)  # port_data(pv) is not None, its value
+        if self.data_columns.size:
+            i = np.searchsorted(self.data_columns[0], pv, "right") - 1
+            address = self.data_columns[0][i]
+            data = (i >= 0) & (pv <= address + self.data_columns[1][i])
+            original = np.where(data, self.data_columns[2][i] + pv - address, -1)
+        keep = ~(in_ram(ov) & (original == ov))  # same_address by data; by function below, per word
+        for k in np.flatnonzero(keep & np.isin(ov, self.function_values)).tolist():
+            keep[k] = not self.same_function(int(ov[k]), int(pv[k]))
+        host = ~in_ram(pv) & (pv > 0xFFFF) & ~function & ~data & ((ov == 0) | in_ram(ov))
+        near = (((ov ^ pv) & 0x80000000) == 0) & (np.abs(ov - pv) <= 4) & ((ov >> 23 & 0xFF) >= 0x60)
+        near &= (ov >> 23 & 0xFF) <= 0x9F
+        kinds = np.where(host, "host-pointer", np.where(near, "fp-ulp", "value")).astype(object)
+        return ws[keep], ov[keep], pv[keep], kinds[keep]
 
 
 # ---- types (gcc -aux-info over the boot units) --------------------------------------------------------------------
@@ -1104,52 +1151,59 @@ def match_calls(matcher, oracle, port, last_poll):
 
 def match_memory(matcher, oracle, port, polls, persist):
     """Words that start differing at a poll and still differ at the next persist polls (or to the movie's end).
-    Each stream keeps its own baseline, so a poll's page hashes are the previous poll's with this poll's pages."""
+    Each stream keeps its own baseline, so a poll's page hashes are the previous poll's with this poll's pages.
+    Only the pages a poll lists can change which words differ, so each poll costs its listed pages, not the RAM; each
+    word's run (differing, since which poll index, poll and values) is an array over the RAM, so a listed page updates
+    its 1024 words at once (pp-1p-match lists 2.7M value words in its first 800 polls)."""
     ram = min(oracle.meta["ram"], port.meta["ram"])
     pages = ram // PAGE
     oh, ph = [0] * pages, [0] * pages
-    cache, active, out = {}, {}, []
+    active = np.zeros((pages, WORDS), bool)
+    since, poll_of, ov_of, pv_of = (np.zeros((pages, WORDS), np.int64) for _ in range(4))
+    runs = []  # (word, start poll, oracle value, port value) arrays of each run recorded
 
-    def record(w, start):
-        c, ov, pv = start[2], start[3], start[4]
-        out.append({"poll": start[0], "address": f"{RDRAM + 4 * w:08x}", "symbol": matcher.symbol(RDRAM + 4 * w),
-                    "class": c, "oracle": f"{ov:08x}", "port": f"{pv:08x}"})  # fmt: skip
+    def listed(side):
+        """Each of polls' page list, streamed from the side's file in poll order."""
+        stream = side.poll_pages()
+        for poll in polls:
+            for got, pages in stream:
+                if got == poll:
+                    yield pages
+                    break
+            else:
+                raise ValueError(f"{side.dir}: poll {poll} missing or out of order")
 
-    for poll in polls:
-        for side, hashes in ((oracle, oh), (port, ph)):
-            for page, h in side.polls[poll]["pages"]:
+    for index, (poll, oracle_pages, port_pages) in enumerate(zip(polls, listed(oracle), listed(port), strict=True)):
+        changed = set()
+        for listing, hashes in ((oracle_pages, oh), (port_pages, ph)):
+            for page, h in listing:
                 if page < pages:
                     hashes[page] = int(h, 16)
-        now = {}
-        for pg in range(pages):
-            pair = (oh[pg], ph[pg])
-            if pair[0] == pair[1]:  # one canonical hash: the same words
-                continue
-            if pair not in cache:
-                cache[pair] = matcher.page_diff(oracle.page(pair[0]), port.page(pair[1]))
-            if cache[pair]:
-                o, p = oracle.page(pair[0]), port.page(pair[1])
-                for w, c in cache[pair].items():
-                    if c == "value":
-                        word = pg * WORDS + w
-                        now[word] = (
-                            int.from_bytes(o[4 * w : 4 * w + 4], "big"),
-                            int.from_bytes(p[4 * w : 4 * w + 4], "little"),
-                        )
-        for w in list(active):
-            if w not in now:
-                del active[w]
-        for w, (ov, pv) in now.items():
-            if w not in active:
-                active[w] = [poll, 0, "value", ov, pv]
-            else:
-                active[w][1] += 1
-                if active[w][1] == persist:
-                    record(w, active[w])
-    for w, start in active.items():
-        if start[1] < persist:
-            record(w, start)
-    return sorted(out, key=lambda r: (r["poll"], r["address"]))
+                    changed.add(page)
+        for pg in changed:
+            now = np.zeros(WORDS, bool)
+            if oh[pg] != ph[pg]:  # one canonical hash: the same words
+                ws, ovs, pvs, kinds = matcher.page_words(oracle.page(oh[pg]), port.page(ph[pg]))
+                value = kinds == "value"
+                ws, ovs, pvs = ws[value], ovs[value], pvs[value]
+                now[ws] = True
+                fresh = ~active[pg, ws]
+                ws, ovs, pvs = ws[fresh], ovs[fresh], pvs[fresh]
+            ended = np.flatnonzero(active[pg] & ~now & (index - since[pg] > persist))  # differed past persist polls
+            if ended.size:
+                runs.append((pg * WORDS + ended, poll_of[pg, ended], ov_of[pg, ended], pv_of[pg, ended]))
+            if oh[pg] != ph[pg]:
+                since[pg, ws], poll_of[pg, ws], ov_of[pg, ws], pv_of[pg, ws] = index, poll, ovs, pvs
+            active[pg] = now
+    left = np.flatnonzero(active)
+    runs.append((left, poll_of.ravel()[left], ov_of.ravel()[left], pv_of.ravel()[left]))
+    words, starts, ovs, pvs = (np.concatenate(column).tolist() for column in zip(*runs, strict=True))
+    out = []
+    for i in np.lexsort((words, starts)).tolist():
+        address = RDRAM + 4 * words[i]
+        out.append({"poll": starts[i], "address": f"{address:08x}", "symbol": matcher.symbol(address), "class": "value",
+                    "oracle": f"{ovs[i]:08x}", "port": f"{pvs[i]:08x}"})  # fmt: skip
+    return out
 
 
 def match(args):
@@ -1208,7 +1262,8 @@ def check_side(side_dir, name):
         pad = r.get("pad")
         if not isinstance(pad, list) or not pad or not all(isinstance(w, str) and HEX8.fullmatch(w) for w in pad):
             problems.append(f"lockstep/{name} poll {poll} pad: {pad!r}, expected 8-hex-digit words")
-        for entry in r.get("pages", ()):
+    for poll, listing in side.poll_pages():
+        for entry in listing:
             if not (isinstance(entry, list) and len(entry) == 2 and isinstance(entry[0], int)
                     and isinstance(entry[1], str) and HEX16.fullmatch(entry[1])):  # fmt: skip
                 problems.append(f"lockstep/{name} poll {poll} pages: {entry!r}, expected [page, 16-hex hash]")

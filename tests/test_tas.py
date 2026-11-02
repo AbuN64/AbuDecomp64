@@ -771,7 +771,7 @@ class MovieTests(unittest.TestCase):
         for sig in previous:
             with self.subTest(signal=sig):
 
-                def interrupt(process, timeout, run=None, sig=sig):
+                def interrupt(process, timeout, run=None, until=None, sig=sig):
                     signal.getsignal(sig)(sig, None)
                     tas._check_play_signal()
 

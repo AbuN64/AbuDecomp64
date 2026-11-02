@@ -21,6 +21,10 @@ same run live on the page (`/video`, `/audio`) or take the pad. You need a visio
 | `save NAME` / `play NAME` / `list` | keep the run as a movie, replay it headless, list movies |
 | `stop` | end the run |
 
+A `tas.pins` refusal names why the reference cannot be read. A corrupt pin mirror (`~/.cache/abu-decomp/pins/<hash>`) is not
+one of those causes: the first fetch that fails on it refetches into a fresh mirror, replaces it and says so on stderr,
+so never move a mirror aside by hand.
+
 **Play a section.** Pick one screen or behaviour to reach (a menu choice, a pak screen, the first race). `new`, then
 `press` a few buttons and `look`; read the frame and the sheet before the next press, and the spectrogram when sound
 matters (a silent flag where the game should make noise is a finding). A frame that is black, frozen, garbled or

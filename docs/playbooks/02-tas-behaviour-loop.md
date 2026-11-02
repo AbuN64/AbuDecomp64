@@ -60,7 +60,7 @@ When they do not, find the sources before anything else:
    untestable cases is no evidence.
 3. A wrong value: replay under gdb, record the address at the point it was right, set a hardware
    watchpoint, and let it name the writer. Then compare the writer's stores with the original asm.
-4. Lockstep (port vs oracle on the same movie) when the oracle runs: `shim/boot/lockstep.py match --oracle DIR --port DIR` keys the whole movie by poll and lists, per class (input, vi, calls, memory), the persistent divergences in poll order, the matched-through poll and the first divergence; both sides write the same `poll` line, so a matching poll is the same line byte for byte.
+4. Lockstep (port vs oracle on the same movie) when the oracle runs: `shim/boot/lockstep.py match --oracle DIR --port DIR` keys the whole movie by poll and lists, per class (input, vi, calls, memory), the persistent divergences in poll order, the matched-through poll and the first divergence; both sides write the same `poll` line, so a matching poll is the same line byte for byte. On a run record (CONTRACTS.md "Run record") use `lockstep.py match --run RUN` (writes RUN/lockstep/match.json) and `lockstep.py check RUN` before any reader trusts it.
 
 ## Port fixes are backported at once
 

@@ -489,8 +489,6 @@ class HttpTests(Base):
 
     def test_audio_has_one_path_the_ports_pcm_whatever_side_is_asked(self):
         run = self.make_run("r3", movie="boot-idle", status="done", speed=1, started=time.time() - 60)
-        (run / "audio-oracle.pcm").write_bytes(b"\x05\x00\x06\x00" * 10)
-        (run / "audio-oracle.pcm.rate").write_text("22050\n")
         (run / "audio.pcm").write_bytes(b"\x01\x00\x02\x00" * 10)
         (run / "audio.pcm.rate").write_text("32000\n")
         for path in ("/audio/r3", "/audio/r3?side=oracle"):

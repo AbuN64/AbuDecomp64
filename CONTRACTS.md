@@ -111,7 +111,7 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 | `run.json` `census` | {`fnrows` (the site's fnrows file name), `sha256` (of that file's bytes), `rows` (its line count)}: what reach.bin is a bitset over, recorded when the play names the port that file (`N64C_REACH_ROWS`) | `tas.play` (`tas.census`) | `lockstep.py check`, `lockstep.py coverage` |
 | `coverage.tsv` | the per-function parity join: `function`, `reached`, `calls`, `diverged`, `equal`, one row per census row in fnrows order | `lockstep.py coverage --run RUN` | the play cycle's covered/total |
 | `stream/<side>/<poll>.jpg`, `stream/index.json` | the pictures, sides `port` and `oracle` | `tas_stream.pack` | site_stream |
-| `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | `/audio/RUN` serves `audio.pcm` only | tas_serve |
+| `audio.pcm` (+ `.rate`) | the port's sound (the oracle's is not recorded) | `/audio/RUN` | tas_serve |
 | `<tas.runs>/feedback/<id>/feedback.json` | a human flag at a poll | site_feedback | site_feedback |
 
 `lockstep.jsonl` lines (JSON, one per line; a last line cut mid-write is dropped):

@@ -29,7 +29,7 @@ def shot(req: Any, server: Any, run: Path, query: str = "") -> None:
     return req.reply(body, "image/png")
 
 
-def diff(req: Any, server: Any, run: Path, query: str = "") -> None:
+def diff(req: Any, server: Any, run: Path) -> None:
     """Every compared poll's score: {"every", "rows": [{"poll", "diff", "drift", "vi_drift"}]}."""
     row = tas.read_record(run)
     meta = row.get("oracle") if row else None

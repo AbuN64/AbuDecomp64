@@ -1372,7 +1372,7 @@ class Reach:
 # answers through the request's reply helpers; none imports this module.
 
 
-def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
+def audio(req: Any, server: Any, run: Path) -> None:
     """The run's sound as written: a WAV header, then the PCM bytes as the port appends them, each sent when the
     file grows. A listener joins AUDIO_LEAD_SECONDS behind the live end; the stream ends with the run or the peer."""
     row = tas.read_record(run)
@@ -1411,7 +1411,7 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
                     return
 
 
-def video(req: Any, server: Any, run: Path, query: str = "") -> None:
+def video(req: Any, server: Any, run: Path) -> None:
     """One bounded latest-frame stream: a frame goes out when the run's picture file is replaced and reach records
     when they arrive, at most VIDEO_FPS times a second, independent of RTT and turbo's game clock."""
     req.stream_head("application/x-tas-frames", {"X-Video-Fps": str(VIDEO_FPS), "Connection": "close"})
@@ -1556,13 +1556,15 @@ PREFIX = {
     "data": serve_files.data,
     "static": serve_files.static,
 }
-RUN_ROUTES = {
+RUN_ROUTES = {  # (run folder)
     "video": video,
+    "diff": serve_run.diff,
+    "audio": audio,
+}
+RUN_QUERY_ROUTES = {  # (run folder, query string)
     "shot": serve_run.shot,
     "still": serve_run.still,
-    "diff": serve_run.diff,
     "log": serve_run.log,
-    "audio": audio,
 }
 
 
@@ -1582,12 +1584,14 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                     serve_files.coverage(self, server, rest, query)
                 elif head in PREFIX and rest:
                     PREFIX[head](self, server, rest, query)
-                elif head in RUN_ROUTES and rest:
+                elif (head in RUN_ROUTES or head in RUN_QUERY_ROUTES) and rest:
                     name = rest.partition("/")[0]
                     if (run := server.run_dir(name)) is None:
                         self.missing(f"no run {name}")
+                    elif head in RUN_ROUTES:
+                        RUN_ROUTES[head](self, server, run)
                     else:
-                        RUN_ROUTES[head](self, server, run, query)
+                        RUN_QUERY_ROUTES[head](self, server, run, query)
                 else:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):

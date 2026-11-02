@@ -66,7 +66,6 @@ _KEYS = frozenset(
 )
 REMOVED_KEYS = {"cpu_profile": "the oracle's CPU profile is no longer read; delete the key"}
 VIEW, LOG, DIFF = "oracle.bmp", "oracle.txt", "diff.json"
-AUDIO = "audio-oracle.pcm"  # the original's sound, as the port's audio.pcm (+ ".rate")
 PORT_TRACE, ORACLE_TRACE = "port-trace.txt", "oracle-trace.txt"
 CALLS_FIRST = (
     16  # calls per (caller, function) each side records for the per-call behaviour (RUN/lockstep/port/calls.jsonl)
@@ -287,7 +286,6 @@ def start(
         **oracle["env"],
         **movie_env(movie or run / "movie.raw", pak, pads, exit_after, None),
         "N64R_VIEW": str(run / VIEW),
-        "N64R_AUDIO_OUT": str(run / AUDIO),
         "N64R_TAS_SHOT_EVERY": str(oracle["shot_every"]),  # the host's entry-count checkpoints (behaviour) follow it
         "N64R_TAS_TRACE": str(run / ORACLE_TRACE),
         "N64R_TAS_RENDER_LEAD": str(effective_lead(oracle)),

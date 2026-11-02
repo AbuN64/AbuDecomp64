@@ -632,6 +632,19 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(ls.page_hash(native(page), native=True), h)
         self.assertNotEqual(ls.page_hash(native(page)), h)  # the old port hash over native bytes never met the oracle's
 
+    def test_real_oracle_store_holds_each_distinct_page_once_and_is_mapped_not_read(self):
+        # A whole-movie pages.bin is gigabytes (pp-1p-match: 10,491,587,072 B): Side maps it and indexes the headers.
+        oracle = ls.Side(ORACLE_POLLS, lambda r: None)
+        self.assertIsInstance(oracle.store, ls.mmap.mmap)
+        data = (ORACLE_POLLS / "pages.bin").read_bytes()
+        heads = [struct.unpack_from("<IIQ", data, at) for at in range(0, len(data), 16 + 4096)]
+        self.assertEqual(len(heads), len({h for _, _, h in heads}))  # one record per distinct page content
+        listed = {int(h, 16) for r in oracle.polls.values() for _, h in r["pages"]}
+        for h in listed:
+            self.assertEqual(ls.page_hash(oracle.page(h)), h)
+        code, report, text = self.run_match(port_from_oracle(args.work / "match-mapped"))
+        self.assertEqual(code, 0, text)
+
     def test_matching_movie_writes_equal_poll_lines_and_matches_through_the_last_poll(self):
         port = port_from_oracle(args.work / "match-same")
         self.assertEqual(poll_lines(port), poll_lines(ORACLE_POLLS))

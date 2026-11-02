@@ -45,6 +45,7 @@ import bisect
 import concurrent.futures
 import csv
 import json
+import mmap
 import os
 import pathlib
 import re
@@ -198,7 +199,11 @@ class Side:
         if self.meta is None:
             raise ValueError(f"{self.dir}: no meta line")
         self.canonical = self.meta.get("bytes") == "canonical-be"
-        data = (self.dir / "pages.bin").read_bytes()
+        # pages.bin holds each distinct page once (both writers dedup by hash); a whole movie's store is gigabytes, so
+        # it is mapped, not read: only the 16-byte headers are touched to index it, and a page's bytes on demand.
+        with open(self.dir / "pages.bin", "rb") as store:
+            size = os.fstat(store.fileno()).st_size
+            data = mmap.mmap(store.fileno(), 0, access=mmap.ACCESS_READ) if size else b""
         self.store = data
         step = 16 + PAGE
         for at in range(0, len(data) - step + 1, step):

@@ -446,6 +446,12 @@ void n64c_tas_poll(OSContPad *pad)
     if (trace) { fprintf(trace, "%ld %u\n", polls, (unsigned)osViGetRetraceCount()); fflush(trace); }
     if (shot_every > 0 && polls % shot_every == 0) atomic_store(&shot_due, polls);
     if (n64c_trace_reach_tick) n64c_trace_reach_tick(polls); /* the reach stream (boot/trace.c), if this build has one */
+    if (n64c_trace_poll_point) { /* the lockstep per-poll point (boot/trace.c), if this build has one */
+        unsigned words[MAXCONTROLLERS];
+        for (int i = 0; i < pads; i++)
+            words[i] = (unsigned)pad[i].button << 16 | (unsigned)(uint8_t)pad[i].stick_x << 8 | (uint8_t)pad[i].stick_y;
+        n64c_trace_poll_point(polls, (unsigned)osViGetRetraceCount(), words, pads);
+    }
     if (record) {
         for (int i = 0; i < pads; i++)
             fprintf(record, "%s%04x %d %d", i ? " " : "", pad[i].button, pad[i].stick_x, pad[i].stick_y);

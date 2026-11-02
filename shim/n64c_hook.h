@@ -14,10 +14,15 @@
 #define n64c_trace_event N64C_ABSENT(void (*)(const char *))
 #define n64c_trace_summary N64C_ABSENT(void (*)(void))
 #define n64c_trace_reach_tick N64C_ABSENT(void (*)(long))
+#define n64c_trace_poll_point N64C_ABSENT(void (*)(long, unsigned, const unsigned *, int))
 #else
 #define N64C_LINKED(function) ((function) != 0)
 void n64c_trace_event(const char *kind) __attribute__((weak));
 void n64c_trace_summary(void) __attribute__((weak));
 void n64c_trace_reach_tick(long poll) __attribute__((weak));
+/* The lockstep per-poll point (boot/trace.c, N64C_LOCKSTEP=1): once per guest controller poll, after the pads are final,
+ * with the poll index (1 = first), the VI retrace count and each pad's word as the guest read it
+ * (button << 16 | (u8)stick_x << 8 | (u8)stick_y). */
+void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads) __attribute__((weak));
 #endif
 #endif

@@ -124,7 +124,8 @@ NOINST static int expected_entry(void)
  * lockstep.py owns every equivalence between that and the oracle's canonical big-endian bytes. The first
  * LOCKSTEP_CALLS calls of each trace function also record 8 argument words from the frame and, through a return
  * trampoline, eax/edx/st(0) at its return. N64C_LOCKSTEP_WATCH=<addr> records every change of that RDRAM word seen
- * at an instrumented entry or exit, naming the function. Nothing here runs unless N64C_LOCKSTEP=1. */
+ * at an instrumented entry or exit, naming the function. Every guest controller poll is a point too (`poll` lines,
+ * n64c_trace_poll_point). Nothing here runs unless N64C_LOCKSTEP=1. */
 extern void *n64c_memory_ram(unsigned physical, unsigned bytes) __attribute__((weak));
 enum { LS_PAGE = 4096, LS_CALLS = 8, LS_SHADOW = 256, LS_WATCH_LINES = 20000 };
 static int ls_on, ls_log = -1, ls_store = -1;
@@ -256,7 +257,7 @@ NOINST static void ls_init(void)
             "\"hash\":\"fnv1a64-le64\",\"calls\":%u,\"trace\":%u,\"watch\":\"%08lx\"}\n", bytes, LS_PAGE, LS_CALLS,
             n64c_trace_count, ls_watch ? 0x80000000ul + (unsigned long)((const unsigned char *)ls_watch - ls_ram) : 0ul);
     ls_on = 1;
-    fprintf(stderr, "boot-lockstep: on, %u pages hashed at each first hit, files in %s\n", ls_pages, dir);
+    fprintf(stderr, "boot-lockstep: on, %u pages hashed at each first hit and each poll, files in %s\n", ls_pages, dir);
 }
 /* N64C_CALLS=DIR: DIR/calls.jsonl gets the `call` and `ret` lines of lockstep for the first N64C_CALLS_FIRST (default
  * 16) calls that each caller makes of each census function, each call also naming its caller (the logical parent
@@ -364,12 +365,10 @@ NOINST static void ca_init(void)
     ca_on = 1;
     fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
 }
-/* One point: called with the census lock held at the first hit of entry i. */
-NOINST static void ls_point(unsigned i)
+/* The pages of a point: every page whose hash changed since the previous point (hit or poll), its bytes stored once
+ * per hash in pages.bin; writes the line that p (inside ls_line) ends. Called with the census lock held. */
+NOINST static void ls_pages_out(char *p)
 {
-    char *p = ls_line;
-    p += sprintf(p, "{\"k\":\"hit\",\"n\":%u,\"order\":%u,\"fn\":\"%s\",\"thr\":%ld,\"pages\":[", ls_points++,
-                 n64c_trace_entries[i].order, entry_name(i), ls_tid());
     const char *sep = "";
     for (unsigned pg = 0; pg < ls_pages; pg++) {
         /* Only pages whose raw bytes changed since the last point are hashed: a point costs about one memcmp. */
@@ -391,6 +390,30 @@ NOINST static void ls_point(unsigned i)
     }
     p += sprintf(p, "]}\n");
     ls_write(ls_log, ls_line, (size_t)(p - ls_line));
+}
+/* One point: called with the census lock held at the first hit of entry i. */
+NOINST static void ls_point(unsigned i)
+{
+    char *p = ls_line;
+    p += sprintf(p, "{\"k\":\"hit\",\"n\":%u,\"order\":%u,\"fn\":\"%s\",\"thr\":%ld,\"pages\":[", ls_points++,
+                 n64c_trace_entries[i].order, entry_name(i), ls_tid());
+    ls_pages_out(p);
+}
+/* The per-poll point (n64c_hook.h): at every guest controller poll the poll index, the VI retrace count, the pad words the
+ * guest read and the changed pages, the same record the oracle writes at its poll (lockstep.py keys a whole movie by it). */
+NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads)
+{
+    if (!ls_on)
+        return;
+    pthread_mutex_lock(&lock);
+    char *p = ls_line;
+    p += sprintf(p, "{\"k\":\"poll\",\"n\":%u,\"poll\":%ld,\"vi\":%u,\"thr\":%ld,\"pads\":[", ls_points++, poll, vi,
+                 ls_tid());
+    for (int i = 0; i < pads && i < 4; i++)
+        p += sprintf(p, "%s\"%08x\"", i ? "," : "", pad[i]);
+    p += sprintf(p, "],\"pages\":[");
+    ls_pages_out(p);
+    pthread_mutex_unlock(&lock);
 }
 NOINST static void ls_line_out(const char *line, int n)
 {

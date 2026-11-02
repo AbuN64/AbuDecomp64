@@ -109,6 +109,7 @@ def run_record(row: dict[str, Any]) -> dict[str, Any]:
         "equal": row.get("equal"),
         "cases": row.get("cases"),
         "error": row.get("error"),
+        "input": "human" if row.get("input") == "human" else "movie",  # human: live input drives the run now
     }
 
 
@@ -130,7 +131,7 @@ def event(kind: str, at: float, lane: str, subject: str, **fields: Any) -> dict[
 def run_events(run: dict[str, Any]) -> list[dict[str, Any]]:
     """The one event a Run record shows in the feed (its id stays the same while it runs, then the run ends)."""
     common = {"lane": run["lane"], "subject": run["id"]}
-    fields = {"run": run["id"], "movie": run["movie"], "poll": run["poll"], "polls": run["polls"]}
+    fields = {key: run[key] for key in ("movie", "poll", "polls", "input")} | {"run": run["id"]}
     if run["error"]:
         return [event("run.refused", run["ended"] or run["started"], reason=run["error"], **common, **fields)]
     if run["status"] == "queued":

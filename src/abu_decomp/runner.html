@@ -106,10 +106,20 @@ async function show() {
     import("/static/site/enhanced.js").then(mod => mod.mount(status, ctx)); // its own API, independent of every other region
     return renderFeed();
   }
-  const mod = await import(`/static/site/${REGION[r.name]}.js`);
-  if (r.name === "map" && !S.contract) S.contract = await api("/api/contract"); // the map page reads the filters at mount
+  // every region reads the contract at mount: none mounts before it arrives, and a failed fetch refuses visibly
+  const [mod, refused] = await Promise.all([import(`/static/site/${REGION[r.name]}.js`), contract().then(() => null, error => error)]);
+  if (refused) return void view.replaceChildren(el("div", { class: "stub", id: "contract-refused" }, `The ${r.name} page cannot mount: ${refused.message}`));
   view.replaceChildren();
   mod.mount(view, ctx);
+}
+// The contract, fetched once: a refusal names its cause and the next route asks again.
+let contracted = null;
+function contract() {
+  contracted ||= api("/api/contract").then(got => {
+    if (!Array.isArray(got && got.feedback_categories)) throw new Error(`/api/contract answered ${(got && got.error) || "no contract"}`);
+    return S.contract = got;
+  }).catch(error => { contracted = null; throw error; });
+  return contracted;
 }
 // The shell is static: every region starts its own fetch at once and fills in when its answer lands.
 function boot() {
@@ -118,10 +128,7 @@ function boot() {
   show();
   connect();
   api("/api/feed").then(first => { for (const ev of first.events) S.events.set(ev.id, ev); renderFeed(); });
-  api("/api/contract").then(contract => {
-    S.contract = contract;
-    renderFeed();
-  });
+  contract().then(renderFeed, error => $("#feed")?.replaceChildren(el("li", { class: "empty" }, error.message)));
 }
 boot();
 </script>

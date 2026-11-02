@@ -2,6 +2,8 @@
 // mount(el, ctx): ctx = {contract, api(path, init), go(route), on(kind, fn), route: {name, arg, query}}.
 // Routes: #/play starts nothing by itself; #/play/RUN shows that run. Pictures come from /video/RUN (frames pushed by the
 // server), poll counts from the feed's run events, flags from /api/feedback and its feedback.filed events: no polling.
+// Pad input goes to /api/input only while the run's feed event says it runs with live input (fields.input "human");
+// a refused input shows its cause and holds the pad until the run's state moves or the owner presses a key again.
 const BT = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000, UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
   L: 0x0020, R: 0x0010, CUP: 0x0008, CDOWN: 0x0004, CLEFT: 0x0002, CRIGHT: 0x0001 };
 const KEYS = [["ArrowUp", "stick up"], ["ArrowDown", "stick down"], ["ArrowLeft", "stick left"], ["ArrowRight", "stick right"],
@@ -58,7 +60,7 @@ let current = null;  // the mounted view; a handler of an older mount sees it is
 
 export function mount(el, ctx) {
   current?.stop();
-  const S = { run: ctx.route.arg || null, status: null, poll: 0, keys: new Set(), last: "", lastAt: 0, seq: 0, abort: null, frame: 0, flags: new Map() };
+  const S = { run: ctx.route.arg || null, status: null, input: null, refusal: null, poll: 0, keys: new Set(), last: "", lastAt: 0, seq: 0, abort: null, frame: 0, flags: new Map() };
   const view = { stop: () => { S.abort?.abort(); cancelAnimationFrame(S.frame); removeEventListener("keydown", down); removeEventListener("keyup", up); } };
   current = view;
   const live = () => current === view;
@@ -75,13 +77,13 @@ export function mount(el, ctx) {
 
   const refresh = () => {
     const running = S.status === "running" || S.status === "queued";
-    tag.textContent = S.run ? `${S.run} · ${S.status || "?"} · poll ${S.poll.toLocaleString("en-US")}` : "";
+    tag.textContent = S.run ? `${S.run} · ${S.status || "?"} · poll ${S.poll.toLocaleString("en-US")}${S.refusal ? ` · input refused: ${S.refusal}` : ""}` : "";
     flag.disabled = !S.run; stop.disabled = !(S.run && running);
   };
   const renderFlags = () => list.replaceChildren(...[...S.flags.values()].sort((a, b) => b.at - a.at).map(flagRow));
 
   function watch(id) {
-    S.run = id; S.status = "running"; S.poll = 0; refresh();
+    S.run = id; refresh();
     if (location.hash !== `#/play/${encodeURIComponent(id)}`) history.replaceState(null, "", `#/play/${encodeURIComponent(id)}`);
     S.abort?.abort(); S.abort = new AbortController();
     video(id, S.abort.signal, canvas);
@@ -90,27 +92,36 @@ export function mount(el, ctx) {
     const got = await post(ctx, "/api/play", { label: "owner", fps_unlock: true });
     if (!got.id) return void (tag.textContent = got.error || "refused");
     if (got.refused) return void (tag.textContent = `${got.id} · refused: ${got.refused}`);
+    Object.assign(S, { status: "queued", input: null, refusal: null, poll: 0 });
     watch(got.id);
   });
   stop.addEventListener("click", () => S.run && post(ctx, "/api/stop", { id: S.run }));
   flag.addEventListener("click", () => dialog.open(S.run, S.poll));
 
   // pad input: keys and gamepad, sent on change and as a heartbeat, only while this run is the one shown
-  const driving = () => live() && S.run && S.status === "running" && !dialog.el.open;
+  const driving = () => live() && S.run && S.status === "running" && S.input === "human" && !S.refusal && !dialog.el.open;
+  const refuse = cause => { if (live() && !S.refusal) { S.refusal = cause; refresh(); } };
   const send = force => {
     if (!driving()) return;
     const pad = padState(S.keys, navigator.getGamepads ? navigator.getGamepads() : []), key = `${pad.buttons} ${pad.x} ${pad.y}`, now = performance.now();
     if (key === S.last && !force && now - S.lastAt < HEARTBEAT_MS) return;
     S.last = key; S.lastAt = now; S.seq++;
-    post(ctx, "/api/input", { id: S.run, seq: S.seq, buttons: pad.buttons, x: pad.x, y: pad.y, pad: 0 });
+    post(ctx, "/api/input", { id: S.run, seq: S.seq, buttons: pad.buttons, x: pad.x, y: pad.y, pad: 0 })
+      .then(got => got?.ok || refuse(got?.error || "no answer"), error => refuse(error.message));
   };
-  function down(e) { if (!driving() || e.ctrlKey || e.metaKey || e.altKey || !KEYS.some(k => k[0] === e.code)) return; e.preventDefault(); S.keys.add(e.code); send(true); }
+  function down(e) { if (S.refusal && !e.repeat) { S.refusal = null; refresh(); } if (!driving() || e.ctrlKey || e.metaKey || e.altKey || !KEYS.some(k => k[0] === e.code)) return; e.preventDefault(); S.keys.add(e.code); send(true); }
   function up(e) { if (S.keys.delete(e.code)) { e.preventDefault(); send(true); } }
   const loop = () => { send(false); S.frame = requestAnimationFrame(loop); };
   addEventListener("keydown", down); addEventListener("keyup", up); loop();
 
   // live state: run events move the poll and status, feedback.filed adds the row
-  const onRun = ev => { if (live() && ev.fields.run === S.run) { if (ev.kind === "run.refused") return void (tag.textContent = `${S.run} · refused: ${ev.fields.reason}`); S.status = ev.kind === "run.ended" ? "done" : ev.kind === "run.queued" ? "queued" : "running"; S.poll = ev.fields.poll; refresh(); } };
+  const onRun = ev => {
+    if (!live() || ev.fields.run !== S.run) return;
+    if (ev.kind === "run.refused") { S.status = "refused"; return void (tag.textContent = `${S.run} · refused: ${ev.fields.reason}`); }
+    const status = ev.kind === "run.ended" ? "done" : ev.kind === "run.queued" ? "queued" : "running";
+    if (status !== S.status || ev.fields.input !== S.input) S.refusal = null; // the run's state moved: the pad may try again
+    S.status = status; S.input = ev.fields.input; S.poll = ev.fields.poll; refresh();
+  };
   for (const kind of RUN_KINDS) ctx.on(kind, onRun);
   ctx.on("feedback.filed", async ev => { if (!live()) return; const rec = await ctx.api(`/api/feedback/${ev.fields.feedback}`); if (rec.id) { S.flags.set(rec.id, rec); renderFlags(); } });
   (async () => {

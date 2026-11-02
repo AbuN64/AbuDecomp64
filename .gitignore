@@ -4,6 +4,7 @@ __pycache__/
 dist/
 .venv/
 .ruff_cache/
-.abu/
+.abu/*
+!.abu/Playbooks/
 .unbake/
 unit.log

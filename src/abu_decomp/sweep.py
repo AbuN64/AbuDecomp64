@@ -617,9 +617,12 @@ class Sweep:
             offset = 0
             for number, line in enumerate(src.lines, 1):
                 m = rule.match.search(line)
-                if m and not (rule.unless and rule.unless.search(src.raw_lines[number - 1])):
-                    if not (rule.unless_type and self._typed_as(rule, src, offset + m.start(), m)):
-                        hits.append(self.hit(rule, src, number, datum=_group(m, "datum")))
+                if (
+                    m
+                    and not (rule.unless and rule.unless.search(src.raw_lines[number - 1]))
+                    and not (rule.unless_type and self._typed_as(rule, src, offset + m.start(), m))
+                ):
+                    hits.append(self.hit(rule, src, number, datum=_group(m, "datum")))
                 offset += len(line) + 1
         return hits
 

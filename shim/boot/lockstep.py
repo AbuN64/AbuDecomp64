@@ -161,7 +161,9 @@ class Side:
         self.polls, self.movie_calls, self.movie_rets = {}, {}, {}
         self.meta, self.store, self.offsets = None, None, {}
         current = None
-        for number, line in enumerate((self.dir / "lockstep.jsonl").read_text().splitlines()):
+        lines = (self.dir / "lockstep.jsonl").read_text().splitlines()
+        lines += self.movie_lines(self.dir / "calls.jsonl")
+        for number, line in enumerate(lines):
             if not line.strip():
                 continue
             try:
@@ -209,6 +211,23 @@ class Side:
         for at in range(0, len(data) - step + 1, step):
             self.offsets[struct.unpack_from("<Q", data, at + 8)[0]] = at + 16
         self.offsets.setdefault(page_hash(bytes(PAGE)), None)
+
+    @staticmethod
+    def movie_lines(path):
+        """The whole-movie call and ret lines (keyed by fn, caller, o) of the calls.jsonl a port run with both
+        N64C_LOCKSTEP and N64C_CALLS writes beside lockstep.jsonl; none when the run had no N64C_CALLS. Its meta and
+        unframed lines are not the lockstep stream's, and a line cut by a killed run is dropped."""
+        if not path.exists():
+            return []
+        kept = []
+        for line in path.read_text().splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if r.get("k") in ("call", "ret") and "o" in r:
+                kept.append(line)
+        return kept
 
     def page(self, h):
         at = self.offsets.get(h, -1)

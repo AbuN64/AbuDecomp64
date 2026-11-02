@@ -142,14 +142,15 @@ typedef struct {
 } LsStream;
 static LsStream ls_hits, ls_polls;
 static unsigned *ls_calls;
-/* Per-call capture (N64C_CALLS=DIR): the lockstep call/ret machinery without the page hashing, for whole movies. */
+/* Per-call capture (N64C_CALLS=DIR): the lockstep call/ret machinery without the page hashing, for whole movies, in its
+ * own file (ca_log), so one run gives both lockstep's per-poll lines and the whole-movie call lines. */
 enum { CA_SLOTS = 1 << 20, CA_PROBES = 64, CA_FIRST = 16 };
 typedef struct {
     uint64_t key; /* caller address << 32 | callee entry + 1; 0 = free */
     unsigned n;   /* calls from that caller to that callee so far */
 } CaSlot;
 static CaSlot *ca_table;
-static int ca_on;
+static int ca_on, ca_log = -1;
 static unsigned ls_limit = LS_CALLS; /* calls of one function recorded: LS_CALLS in lockstep, N64C_CALLS_FIRST here */
 static long reach_poll;
 static char *ls_line;
@@ -160,8 +161,12 @@ static unsigned ls_watch_lines;
 typedef struct {
     unsigned long frame, ret;
     unsigned entry, call;
+    unsigned to;          /* LS_TO_LOCKSTEP | LS_TO_CALLS: the files its call line went to, its ret line goes too */
+    unsigned ordinal;     /* calls.jsonl's key of the call (fn, caller, o), repeated on its ret line */
+    const char *caller;
     unsigned long arg[8]; /* the call's argument words as entered (cdecl area), for the return-time memory windows */
 } LsReturn;
+enum { LS_TO_LOCKSTEP = 1, LS_TO_CALLS = 2 };
 static __thread LsReturn ls_shadow[LS_SHADOW];
 static __thread unsigned ls_depth;
 NOINST static long ls_tid(void)
@@ -277,7 +282,8 @@ NOINST static void ls_init(void)
  * 16) calls that each caller makes of each census function, each call also naming its caller (the logical parent
  * frame's symbol `caller`), its ordinal `o` among that caller's calls of the function (all calls are counted, recorded
  * or not) and the poll `frame` it ran in, so a whole movie is aligned call by call with the oracle's by (function,
- * caller, ordinal) whatever phase the two sides' polls are in. Off when lockstep is on. */
+ * caller, ordinal) whatever phase the two sides' polls are in. With N64C_LOCKSTEP=1 too, both run: lockstep.jsonl
+ * keeps its own first LS_CALLS calls of each function, DIR/calls.jsonl this selection (DIR may be lockstep's). */
 NOINST static unsigned ca_ordinal(const void *caller, unsigned callee)
 {
     const uint64_t key = ((uint64_t)(uintptr_t)caller << 32) | (callee + 1);
@@ -349,19 +355,21 @@ NOINST static int ca_keeps(unsigned ordinal, unsigned first)
 NOINST static void ca_init(void)
 {
     const char *dir = getenv("N64C_CALLS"), *first = getenv("N64C_CALLS_FIRST");
-    if (!dir || !*dir || ls_on)
+    if (!dir || !*dir)
         return;
     char path[4096];
     mkdir(dir, 0777);
     snprintf(path, sizeof path, "%s/calls.jsonl", dir);
-    ls_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666);
-    ls_calls = calloc(n64c_trace_count ? n64c_trace_count : 1, sizeof *ls_calls);
+    ca_log = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_APPEND | O_CLOEXEC, 0666);
+    if (!ls_calls) /* lockstep's when it is on: one call count per function */
+        ls_calls = calloc(n64c_trace_count ? n64c_trace_count : 1, sizeof *ls_calls);
     ca_table = calloc(CA_SLOTS, sizeof *ca_table);
-    if (ls_log < 0 || !ls_calls || !ca_table) {
+    if (ca_log < 0 || !ls_calls || !ca_table) {
         fprintf(stderr, "boot-calls: off (cannot write its files)\n");
-        free(ls_calls);
+        if (ca_log >= 0)
+            close(ca_log);
+        ca_log = -1;
         free(ca_table);
-        ls_calls = NULL;
         ca_table = NULL;
         return;
     }
@@ -374,7 +382,7 @@ NOINST static void ca_init(void)
             ca_ram_hi = ca_ram_lo + b;
         }
     }
-    dprintf(ls_log, "{\"k\":\"meta\",\"side\":\"port\",\"mode\":\"calls\",\"first\":%u,\"trace\":%u,"
+    dprintf(ca_log, "{\"k\":\"meta\",\"side\":\"port\",\"mode\":\"calls\",\"first\":%u,\"trace\":%u,"
             "\"ring\":\"pow2\",\"window\":%d}\n", ls_limit, n64c_trace_count, CA_WINDOW);
     ca_on = 1;
     fprintf(stderr, "boot-calls: on, first %u calls of each function, file %s\n", ls_limit, path);
@@ -430,12 +438,12 @@ NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, i
     ls_pages_out(&ls_polls, p);
     pthread_mutex_unlock(&lock);
 }
-NOINST static void ls_line_out(const char *line, int n)
+NOINST static void ls_line_out(int fd, const char *line, int n)
 {
-    if (n <= 0)
+    if (n <= 0 || fd < 0)
         return;
     pthread_mutex_lock(&ls_lock);
-    ls_write(ls_log, line, (size_t)n);
+    ls_write(fd, line, (size_t)n);
     pthread_mutex_unlock(&ls_lock);
 }
 NOINST static void ls_watch_check(const void *fn, const char *at)
@@ -474,12 +482,17 @@ NOINST __attribute__((used, force_align_arg_pointer)) unsigned long n64c_lockste
         snprintf(st0, sizeof st0, "\"%08lx%08lx\"", block[1], block[0]);
     int n = snprintf(line, sizeof line, "{\"k\":\"ret\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"r\":[\"%08lx\","
                      "\"%08lx\"],\"st0\":%s", n64c_trace_entries[r.entry].order, r.call, ls_tid(), block[4], block[3], st0);
-    if (ca_on) {
-        line[n++] = ',';
-        n += ca_windows(line + n, sizeof line - (size_t)n, r.arg);
+    if (r.to & LS_TO_LOCKSTEP) {
+        char *end = line + n;
+        ls_line_out(ls_log, line, n + snprintf(end, sizeof line - (size_t)n, "}\n"));
     }
-    n += snprintf(line + n, sizeof line - (size_t)n, "}\n");
-    ls_line_out(line, n);
+    if (r.to & LS_TO_CALLS) {
+        n += snprintf(line + n, sizeof line - (size_t)n, ",\"fn\":\"%s\",\"caller\":\"%.160s\",\"o\":%u,",
+                      entry_name(r.entry), r.caller, r.ordinal);
+        n += ca_windows(line + n, sizeof line - (size_t)n, r.arg);
+        n += snprintf(line + n, sizeof line - (size_t)n, "}\n");
+        ls_line_out(ca_log, line, n);
+    }
     return r.ret;
 }
 __asm__(".text\n"
@@ -530,41 +543,48 @@ NOINST static void ls_call(Slot *slot, void *call_site, const unsigned long *reg
             int n = snprintf(line, sizeof line,
                              "{\"k\":\"unframed\",\"order\":%u,\"pc\":\"%08lx\"}\n",
                              n64c_trace_entries[i].order, (unsigned long)pc);
-            ls_line_out(line, n);
+            ls_line_out(ls_log, line, n);
+            ls_line_out(ca_log, line, n);
         }
         return;
     }
     const unsigned call = __atomic_fetch_add(&ls_calls[i], 1, __ATOMIC_RELAXED);
-    unsigned ordinal = 0;
+    unsigned ordinal = 0, to = ls_on && call < LS_CALLS ? LS_TO_LOCKSTEP : 0;
     const char *caller = "?";
     if (ca_on) {
         const void *parent = stack && stack->depth > 1 ? stack->frame[stack->depth - 2].fn : NULL;
         ordinal = ca_ordinal(parent, i);
-        if (!ca_keeps(ordinal, ls_limit))
-            return;
-        unsigned off;
-        if (parent && (caller = n64c_trace_symbol(parent, &off)) == NULL)
-            caller = "?";
-    } else if (call >= LS_CALLS)
+        if (ca_keeps(ordinal, ls_limit)) {
+            to |= LS_TO_CALLS;
+            unsigned off;
+            if (parent && (caller = n64c_trace_symbol(parent, &off)) == NULL)
+                caller = "?";
+        }
+    }
+    if (!to)
         return;
+    /* One line, two shapes: lockstep's is the head and the argument words; calls' adds fn, frame, caller and o. */
     unsigned long *frame = (unsigned long *)regs[3];
-    char line[640];
-    int n = snprintf(line, sizeof line, "{\"k\":\"call\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"sp\":\"%08lx\",",
-                     n64c_trace_entries[i].order, call, ls_tid(), (unsigned long)frame);
-    if (ca_on)
-        n += snprintf(line + n, sizeof line - (size_t)n,
-                      "\"fn\":\"%s\",\"frame\":%ld,\"caller\":\"%.160s\",\"o\":%u,", entry_name(i), reach_poll, caller,
-                      ordinal);
-    n += snprintf(line + n, sizeof line - (size_t)n, "\"a\":[");
+    char head[160], ca[448], args[160];
+    snprintf(head, sizeof head, "{\"k\":\"call\",\"order\":%u,\"i\":%u,\"thr\":%ld,\"sp\":\"%08lx\",",
+             n64c_trace_entries[i].order, call, ls_tid(), (unsigned long)frame);
+    int na = snprintf(args, sizeof args, "\"a\":[");
     for (int k = 0; k < 8; k++)
-        n += snprintf(line + n, sizeof line - (size_t)n, "%s\"%08lx\"", k ? "," : "", frame[2 + k]);
-    n += snprintf(line + n, sizeof line - (size_t)n, "]}\n");
-    ls_line_out(line, n);
+        na += snprintf(args + na, sizeof args - (size_t)na, "%s\"%08lx\"", k ? "," : "", frame[2 + k]);
+    na += snprintf(args + na, sizeof args - (size_t)na, "]}\n");
+    char line[768];
+    if (to & LS_TO_LOCKSTEP)
+        ls_line_out(ls_log, line, snprintf(line, sizeof line, "%s%s", head, args));
+    if (to & LS_TO_CALLS) {
+        snprintf(ca, sizeof ca, "\"fn\":\"%s\",\"frame\":%ld,\"caller\":\"%.160s\",\"o\":%u,", entry_name(i),
+                 reach_poll, caller, ordinal);
+        ls_line_out(ca_log, line, snprintf(line, sizeof line, "%s%s%s", head, ca, args));
+    }
 #if defined(__i386__)
     if (frame[1] == (unsigned long)call_site && ls_depth < LS_SHADOW) {
         LsReturn *shadow = &ls_shadow[ls_depth++];
-        *shadow = (LsReturn){(unsigned long)frame, frame[1], i, call, {0}};
-        if (ca_on)
+        *shadow = (LsReturn){(unsigned long)frame, frame[1], i, call, to, ordinal, caller, {0}};
+        if (to & LS_TO_CALLS)
             memcpy(shadow->arg, frame + 2, sizeof shadow->arg);
         frame[1] = (unsigned long)n64c_lockstep_return_i386;
     }

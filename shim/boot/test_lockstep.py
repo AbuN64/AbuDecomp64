@@ -502,11 +502,13 @@ unsigned char *ram_base = ram;
 void *n64c_memory_ram(unsigned physical, unsigned bytes) { return physical + bytes <= sizeof ram ? ram + physical : 0; }
 extern void n64c_trace_init(void);
 extern void n64c_trace_summary(void);
+extern void n64c_trace_reach_tick(long poll);
 extern int run(void);
 extern void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads);
 int main(void) { memcpy(ram + 0x2000, "\x78\x56\x34\x12", 4); n64c_trace_init();
     const unsigned pads[2][2] = {{0x80000000u, 0}, {0x1000b050u, 0x040005fbu}};
-    n64c_trace_poll_point(1, 2, pads[0], 2); int r = run(); n64c_trace_poll_point(2, 4, pads[1], 2);
+    n64c_trace_reach_tick(1); n64c_trace_poll_point(1, 2, pads[0], 2); int r = run();
+    n64c_trace_reach_tick(2); n64c_trace_poll_point(2, 4, pads[1], 2);
     n64c_trace_poll_point(3, 6, pads[1], 1); n64c_trace_summary(); fflush(stdout); return r; }
 """
 
@@ -825,6 +827,34 @@ class PortRecorderTests(unittest.TestCase):
             self.assertEqual([side.calls[9][i]["a"][0] for i in range(8)], [f"{i:08x}" for i in range(8)])
             self.assertEqual([side.rets[9][i]["r"][0] for i in range(8)], [f"{i + 3:08x}" for i in range(8)])
             self.assertEqual([w["new"] for w in side.watch], ["00000005", "00000028", "00000002"])
+            # One run, both recorders: lockstep's poll and call lines as alone, and beside them calls.jsonl's
+            # whole-movie call/ret lines keyed by (fn, caller, o) with the poll they ran in, which
+            # `lockstep.py match` reads.
+            both = path / "both"
+            env = {"N64C_LOCKSTEP": "1", "N64C_LOCKSTEP_DIR": str(both), "N64C_CALLS": str(both)}
+            env["PATH"] = "/usr/bin:/bin"
+            result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=30, env=env, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("boot-lockstep: on", result.stderr)
+            self.assertIn("boot-calls: on, first 16 calls", result.stderr)
+            lines = [json.loads(x) for x in (both / "lockstep.jsonl").read_text().splitlines()]
+            self.assertEqual([(x["poll"], x["vi"], x["pad"]) for x in lines if x["k"] == "poll"],
+                             [(x["poll"], x["vi"], x["pad"]) for x in polls])  # fmt: skip
+            alone = [json.loads(x) for x in (out / "lockstep.jsonl").read_text().splitlines()]
+            self.assertEqual([(x["k"], x["order"], x["i"]) for x in lines if x["k"] in ("call", "ret")],
+                             [(x["k"], x["order"], x["i"]) for x in alone if x["k"] in ("call", "ret")])  # fmt: skip
+            self.assertFalse([x for x in lines if "o" in x])
+            calls = [json.loads(x) for x in (both / "calls.jsonl").read_text().splitlines()]
+            self.assertEqual((calls[0]["k"], calls[0]["mode"]), ("meta", "calls"))
+            made = [x for x in calls if x["k"] == "call"]
+            self.assertGreater(len(made), 8)  # past lockstep's 8 calls of a function: calls keeps its own first 16
+            self.assertTrue(all({"fn", "caller", "o", "frame"} <= set(x) for x in made))
+            self.assertEqual({x["frame"] for x in made}, {1})  # run() is between poll 1 and poll 2
+            self.assertTrue(all({"fn", "caller", "o", "m"} <= set(x) for x in calls if x["k"] == "ret"))
+            movie = ls.Side(both, lambda r: None)
+            self.assertEqual(sorted(movie.polls), [1, 2, 3])
+            self.assertEqual(set(movie.movie_calls), {(x["fn"], x["caller"], x["o"]) for x in made})
+            self.assertTrue(movie.movie_rets and set(movie.movie_rets) <= set(movie.movie_calls))
             plain = subprocess.run(
                 [str(exe)],
                 capture_output=True,

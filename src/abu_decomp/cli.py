@@ -1550,7 +1550,7 @@ def _run_sweep(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
             raise DecompError("sweep.tree", f"--tree takes LABEL=DIR, not {item!r}")
         trees[label] = Path(directory).expanduser().resolve()
     rules = sweep.load_rules(args.rules)
-    result = sweep.run(rules, trees, only=args.rule, baseline=args.baseline)
+    result = sweep.run(rules, trees, only=args.rule, baseline=args.baseline, rewrite=args.update_baseline)
     if args.update_baseline:
         if args.baseline is None:
             raise DecompError("sweep.baseline", "--update-baseline needs --baseline FILE")

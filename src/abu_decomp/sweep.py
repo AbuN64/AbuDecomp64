@@ -39,7 +39,9 @@ A hit is {rule, tree, file, line, text, fp} plus `datum` and `in_fn` (the enclos
 call-arity hit
 names the callee as `fn` and the caller in `callers`, so it joins the bucket of a crash in that callee. Comments are
 blanked before matching. `fp` is a fingerprint of the rule, file and normalised line (not its number), so a baseline
-survives edits above a hit. `--baseline FILE` marks hits already in it as known; `--update-baseline` rewrites it.
+survives edits above a hit. `--baseline FILE` marks hits already in it as known; `--update-baseline` rewrites it. A
+baseline row of a rule that ran must name a hit found now: a row whose file is gone or whose line no longer hits is
+refused (`sweep.baseline`), so a baseline that hides nothing cannot pass for proof.
 `--findings` appends every hit to the findings feed of the profile's `tas.runs` (module tas_findings).
 """
 
@@ -728,6 +730,23 @@ def read_baseline(path: Path | None) -> set[str]:
         return set()
 
 
+def _refuse_stale(
+    unmatched: set[str], loaded: set[str], ran: set[str], trees: dict[str, Path], baseline: Path | None
+) -> None:
+    """Refuse the baseline rows that name no hit now: a rule that ran (or no loaded rule at all) whose row matched
+    nothing, because its file is gone from every tree or its line no longer hits."""
+    stale = sorted(k for k in unmatched if k.split("\t")[0] in ran or k.split("\t")[0] not in loaded)
+    if not stale:
+        return
+    gone = sum(1 for k in stale if not any((root / k.split("\t")[1]).is_file() for root in trees.values()))
+    raise DecompError(
+        "sweep.baseline",
+        f"{baseline}: {len(stale)} rows name no hit now ({gone} name a file no tree has), e.g. "
+        + "; ".join(k.replace("\t", " ") for k in stale[:3]),
+        f"rewrite it with --update-baseline after checking each row's hit was fixed or moved: {baseline}",
+    )
+
+
 def write_baseline(path: Path, hits: list[dict[str, Any]]) -> int:
     keys = sorted(fingerprints(hits))
     path.write_text(
@@ -743,9 +762,11 @@ def run(
     *,
     only: list[str] | None = None,
     baseline: Path | None = None,
+    rewrite: bool = False,
 ) -> dict[str, Any]:
     """Run the rules over the trees: {rules: [{id, kind, hits, new}], hits: [...], wall_seconds, files}. Every hit has
-    `new` (true when the baseline lacks it)."""
+    `new` (true when the baseline lacks it). A baseline row that names no hit now refuses, unless `rewrite` (the
+    caller writes the baseline afresh, dropping it)."""
     chosen = [r for r in rules if not only or r.id in only]
     if only and len(chosen) != len(set(only)):
         raise DecompError("sweep.rule", f"no such rule: {', '.join(sorted(set(only) - {r.id for r in chosen}))}")
@@ -754,10 +775,12 @@ def run(
     known = read_baseline(baseline)
     hits: list[dict[str, Any]] = []
     summary = []
+    found: set[str] = set()
     for rule in chosen:
         rows = engine.run_rule(rule)
         for h, key in zip(rows, fingerprints(rows), strict=True):
             h["new"] = key not in known
+            found.add(key)
         hits += rows
         summary.append(
             {
@@ -769,6 +792,8 @@ def run(
                 "why": rule.why,
             }
         )
+    if not rewrite:
+        _refuse_stale(known - found, {r.id for r in rules}, {r.id for r in chosen}, trees, baseline)
     return {
         "rules": summary,
         "hits": hits,

@@ -174,6 +174,32 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual([(h["line"], h["new"]) for h in again["hits"]], [(4, False), (5, True)])
         self.assertEqual(again["rules"][0]["new"], 1)
 
+    def test_a_row_that_names_no_hit_now_refuses(self):
+        # RageWarsDecomp config/sweep-baseline.tsv at 388f01f3: 206 of its 219 files were gone after the SOURCE/
+        # merges (this row's file among them) and no row matched any of the 184 hits, so it hid nothing.
+        tree = Tree({"a.c": "x = *(u32 *)p;\n", "b.c": "y = 0;\n"})
+        base = tree.root / "base.tsv"
+        sweep.write_baseline(base, tree.sweep(PATTERN)["hits"])
+        live = base.read_text()
+        base.write_text(live + "wide\tsrc/AI/NAV/800C6D64.CPP\t2e407b5860be\t0\n")
+        with self.assertRaises(DecompError) as gone:
+            tree.sweep(PATTERN, baseline=base)
+        self.assertEqual(gone.exception.key, "sweep.baseline")
+        self.assertIn("1 rows name no hit now (1 name a file no tree has)", gone.exception.detail)
+        self.assertIn("src/AI/NAV/800C6D64.CPP", gone.exception.detail)
+        base.write_text(live + "wide\tb.c\t579349e6e4bf\t0\n")
+        with self.assertRaises(DecompError) as fixed:
+            tree.sweep(PATTERN, baseline=base)
+        self.assertIn("1 rows name no hit now (0 name a file no tree has)", fixed.exception.detail)
+        # a rewrite drops the stale row; a rule that did not run keeps its rows; a row of no loaded rule refuses
+        self.assertEqual(tree.sweep(PATTERN, baseline=base, rewrite=True)["rules"][0]["new"], 0)
+        both = PATTERN + PATTERN.replace('id = "wide"', 'id = "other"')
+        base.write_text(live + "other\tgone.c\t579349e6e4bf\t0\n")
+        self.assertEqual(tree.sweep(both, baseline=base, only=["wide"])["rules"][0]["new"], 0)
+        base.write_text(live + "retired\ta.c\t579349e6e4bf\t0\n")
+        with self.assertRaises(DecompError):
+            tree.sweep(PATTERN, baseline=base)
+
     def test_identical_lines_are_numbered(self):
         hits = Tree({"a.c": "x = *(u32 *)p;\nx = *(u32 *)p;\n"}).sweep(PATTERN)["hits"]
         self.assertEqual(len(set(sweep.fingerprints(hits))), 2)
@@ -241,8 +267,12 @@ class FindingsAndCliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("wide [pattern, block]: 1 hits, 1 new", text)
         self.assertEqual(envelope["findings"][0]["key"], "sweep.wide")
+        base.write_text("wide\tgone.c\t2e407b5860be\t0\n")
+        code, envelope, _ = call([])
+        self.assertEqual((code, envelope["findings"][0]["key"]), (1, "sweep.baseline"))
         code, envelope, _ = call(["--update-baseline"])
         self.assertEqual((code, envelope["result"]["baseline_written"]), (1, 1))  # judged before it was written
+        self.assertNotIn("gone.c", base.read_text())
         code, envelope, _ = call([])
         self.assertEqual((code, envelope["result"]["rules"][0]["new"]), (0, 0))
 

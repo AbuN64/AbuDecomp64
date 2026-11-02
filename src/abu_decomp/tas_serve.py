@@ -515,9 +515,13 @@ class Server:
     def unfinished(self) -> set[Path]:
         """The run folders whose record is missing or running: the ones that still change."""
         plays = self.cfg["runs"] / "plays"
+        try:
+            runs = list(plays.iterdir())
+        except OSError:  # no plays folder (yet, or any more)
+            return set()
         return {
             run
-            for run in (plays.iterdir() if plays.is_dir() else [])
+            for run in runs
             if run.is_dir() and (tas.read_record(run) or {"status": "running"}).get("status") == "running"
         }
 
@@ -1052,7 +1056,8 @@ class Live:
         port = self.server.cfg.get("port")
         marks = (tas.RECORD, tas.TAKEN, RELEASED, "stopped", tas.PINNED)
         structural = any(path.parent == plays or path.name in marks for path, _mask in events)
-        moved = any(path.name == tas.HASH or (port is not None and path == Path(port)) for path, _mask in events)
+        ticks = (tas.HASH, "output.txt")  # poll counter; the port's output (a gate hold, a live takeover)
+        moved = any(path.name in ticks or (port is not None and path == Path(port)) for path, _mask in events)
         return structural, structural or moved
 
     def loop(self) -> None:
@@ -1150,6 +1155,29 @@ class RunReach:
         self.done = False
         self.idle = 0  # reads that timed out with nothing to receive
         self.listening = threading.Event()  # set once the socket is bound: the port's datagrams are no longer dropped
+        self.ends: dict[int, int] = {}  # read end -> write end of each wake pipe
+        self.pipes: set[int] = set()  # write ends of the viewers' wake pipes (`listen`)
+
+    def announce(self) -> None:
+        """Called with the lock held after anything changed: wake the waiters and every viewer's stream."""
+        self.changed.notify_all()
+        for fd in self.pipes:
+            with contextlib.suppress(OSError):
+                os.write(fd, b"x")
+
+    def listen(self) -> int:
+        """A pipe's read end that turns readable whenever a record arrives or the reader ends (one per viewer)."""
+        read, write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        with self.lock:
+            self.pipes.add(write)
+        self.ends[read] = write
+        return read
+
+    def unlisten(self, read: int) -> None:
+        with self.lock:
+            self.pipes.discard(self.ends[read])
+        os.close(self.ends.pop(read))
+        os.close(read)
 
     def feed(self, data: bytes) -> bool:
         """Apply one datagram. A malformed one is dropped (False), never half applied."""
@@ -1165,7 +1193,7 @@ class RunReach:
         except ValueError:
             with self.changed:
                 self.rejected += 1
-                self.changed.notify_all()
+                self.announce()
             return False
         with self.changed:
             if data[0] == 1:
@@ -1180,7 +1208,7 @@ class RunReach:
             self.size += len(data)
             while len(self.records) > REACH_KEPT_RECORDS or self.size > REACH_KEPT_BYTES:
                 self.size -= len(self.records.popleft()[1])
-            self.changed.notify_all()
+            self.announce()
         return True
 
     def snapshot(self) -> tuple[bytes, int]:
@@ -1209,7 +1237,7 @@ class RunReach:
                 tmp.replace(self.run / REACH_FILE)
         with self.changed:  # done means reach.bin is written: a waiter on it finds the file
             self.done = True
-            self.changed.notify_all()
+            self.announce()
 
     def serve(self) -> None:
         """The reader: datagrams on the run's reach socket (the input socket's name + `.reach`, abstract namespace;
@@ -1223,7 +1251,7 @@ class RunReach:
                 print(f"tas page: no reach stream for {self.run.name}: {error}", flush=True)
                 with self.changed:
                     self.done = True
-                    self.changed.notify_all()
+                    self.announce()
                 return
             sock.settimeout(REACH_READ_TIMEOUT)
             self.listening.set()
@@ -1265,6 +1293,14 @@ class ReachFeed:
             return []
         records, self.seq = self.relay.since(self.seq)
         return records
+
+    def listen(self) -> int | None:
+        """A readable fd that signals new records (None for a finished run: it has no more)."""
+        return self.relay.listen() if self.relay else None
+
+    def close(self, fd: int | None) -> None:
+        if fd is not None and self.relay:
+            self.relay.unlisten(fd)
 
 
 class Reach:
@@ -1354,8 +1390,8 @@ def audio(req: Any, server: Any, run: Path, query: str = "") -> None:
 
 
 def video(req: Any, server: Any, run: Path, query: str = "") -> None:
-    """One bounded latest-frame stream: a frame goes out when the run's picture file is replaced, at most VIDEO_FPS
-    times a second, independent of RTT and turbo's game clock."""
+    """One bounded latest-frame stream: a frame goes out when the run's picture file is replaced and reach records
+    when they arrive, at most VIDEO_FPS times a second, independent of RTT and turbo's game clock."""
     req.stream_head("application/x-tas-frames", {"X-Video-Fps": str(VIDEO_FPS), "Connection": "close"})
     # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
     req.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
@@ -1363,30 +1399,37 @@ def video(req: Any, server: Any, run: Path, query: str = "") -> None:
     stamp, sent_seq = 0, 0
     feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
     first = feed.first() if feed else None
-    with serve_wake.Wake(req.connection, 1 / VIDEO_FPS) as wake:
-        wake.watch(run, {tas.VIEW, tas.RECORD})
-        while True:
-            try:
-                current, body, seq = server.capture(run / tas.VIEW, "JPEG")
-            except (OSError, ValueError):
-                current, body, seq = stamp, b"", 0
-            changed = current != stamp
-            # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
-            records = ([first] if first else []) + (feed.pending() if feed else [])
-            first = None
-            out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
-            if changed:
-                out += VIDEO_HEADER.pack(len(body), current, seq) + body
-            if out:
+    records_fd = feed.listen() if feed else None  # a reach record wakes the stream like a new picture
+    try:
+        with serve_wake.Wake(req.connection, 1 / VIDEO_FPS) as wake:
+            wake.watch(run, {tas.VIEW, tas.RECORD})
+            if records_fd is not None:
+                wake.signal(records_fd)
+            while True:
                 try:
-                    req.wfile.write(out)
-                    req.wfile.flush()
-                except OSError:
-                    return  # disconnect/backpressure timeout: release this viewer immediately
-            if changed:
-                stamp, sent_seq = current, seq
-            if not tas.running(run) or not wake.wait():
-                return
+                    current, body, seq = server.capture(run / tas.VIEW, "JPEG")
+                except (OSError, ValueError):
+                    current, body, seq = stamp, b"", 0
+                changed = current != stamp
+                # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
+                records = ([first] if first else []) + (feed.pending() if feed else [])
+                first = None
+                out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
+                if changed:
+                    out += VIDEO_HEADER.pack(len(body), current, seq) + body
+                if out:
+                    try:
+                        req.wfile.write(out)
+                        req.wfile.flush()
+                    except OSError:
+                        return  # disconnect/backpressure timeout: release this viewer immediately
+                if changed:
+                    stamp, sent_seq = current, seq
+                if not tas.running(run) or not wake.wait():
+                    return
+    finally:
+        if feed:
+            feed.close(records_fd)
 
 
 def wall(req: Any, server: Any, query: str = "") -> None:
@@ -1404,8 +1447,27 @@ def wall(req: Any, server: Any, query: str = "") -> None:
     stamps: dict[str, int] = {}
     feeds: dict[str, Any] = {}
     plays = server.cfg["runs"] / "plays"
-    with serve_wake.Wake(req.connection, 1 / WALL_FPS) as wake:
-        wake.watch(plays, None, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+    listening: list[tuple[Any, int]] = []
+    try:
+        with serve_wake.Wake(req.connection, 1 / WALL_FPS) as wake:
+            wake.watch(plays, None, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+            wall_loop(req, server, wake, plays, index, stamps, feeds, listening)
+    finally:
+        for feed, fd in listening:
+            feed.close(fd)
+
+
+def wall_loop(
+    req: Any,
+    server: Any,
+    wake: Any,
+    plays: Path,
+    index: dict[str, int],
+    stamps: dict[str, int],
+    feeds: dict[str, Any],
+    listening: list[tuple[Any, int]],
+) -> None:
+    if True:
         while True:
             unfinished = server.unfinished()  # a run's folder is watched from its creation: no record is missed
             for run in unfinished - wake.watching():
@@ -1423,6 +1485,9 @@ def wall(req: Any, server: Any, query: str = "") -> None:
                     name = json.dumps({"id": run.name}).encode()
                     out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
                     feeds[run.name] = feed = server.reach.feed_for(run)
+                    if feed and (fd := feed.listen()) is not None:  # its reach records wake the wall too
+                        wake.signal(fd)
+                        listening.append((feed, fd))
                     first = feed.first() if feed else None
                     if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
                         out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first

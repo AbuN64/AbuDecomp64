@@ -1099,6 +1099,18 @@ class ReachTests(Base):
                     send(reach_record(2, 11, [5], [3]))
         self.assertEqual(reach, [("a", reach_record(1, 10, bitset([0, 3]))), ("a", reach_record(2, 11, [5], [3]))])
 
+    def test_a_record_wakes_the_viewers_pipe_until_it_leaves(self):
+        relay = tas_serve.RunReach(self.root)
+        fd = relay.listen()
+        self.addCleanup(lambda: fd in relay.ends and relay.unlisten(fd))
+        with self.assertRaises(BlockingIOError):
+            os.read(fd, 1)
+        relay.feed(reach_record(1, 1, bitset([2], 8)))
+        self.assertEqual(os.read(fd, 8), b"x")
+        relay.unlisten(fd)
+        relay.feed(reach_record(2, 2, [3], []))  # nobody listens: nothing to write, nothing raised
+        self.assertFalse(relay.pipes)
+
     def test_a_malformed_datagram_is_dropped_and_a_laggard_is_resynced_with_a_full_record(self):
         run = self.make_run("y", movie="boot-idle", status="running", speed=0, started=1.0, pid=os.getpid())
         self.server.reach.sync([run])

@@ -26,6 +26,19 @@ class WakeTests(unittest.TestCase):
             threading.Timer(0, lambda: (self.dir / "view.bmp").write_text("x")).start()
             self.assertTrue(wake.wait())
 
+    def test_a_signal_pipe_wakes_the_wait_with_no_file_change(self):
+        import os
+
+        read, write = os.pipe2(os.O_NONBLOCK)
+        self.addCleanup(os.close, read)
+        self.addCleanup(os.close, write)
+        with serve_wake.Wake(self.server_end) as wake:
+            wake.signal(read)
+            self.assertTrue(wake.wait())
+            threading.Timer(0, lambda: os.write(write, b"x")).start()
+            self.assertTrue(wake.wait())
+            self.assertEqual(wake.signals, [read])
+
     def test_the_peer_closing_ends_the_wait(self):
         with serve_wake.Wake(self.server_end) as wake:
             wake.watch(self.dir, {"view.bmp"})

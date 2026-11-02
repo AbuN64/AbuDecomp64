@@ -29,6 +29,7 @@ class Wake:
         self.watcher = inotify.Watcher()
         self.timer = inotify.Timer() if gap else None
         self.names: dict[Path, frozenset[str] | None] = {}
+        self.signals: list[int] = []  # pipes (another thread's "something arrived"): readable wakes, drained here
         self.seen, self.held = True, False  # the first wait returns at once: look before waiting
 
     def __enter__(self) -> Wake:
@@ -42,6 +43,10 @@ class Wake:
         if directory not in self.names:
             self.watcher.add(directory, mask)
             self.names[directory] = None if names is None else frozenset(names)
+
+    def signal(self, fd: int) -> None:
+        """Wake whenever `fd` (a pipe's read end) is readable."""
+        self.signals.append(fd)
 
     def drop(self, directory: Path) -> None:
         self.watcher.remove(directory)
@@ -59,7 +64,7 @@ class Wake:
                     self.timer.arm(self.gap)
                     self.held = True
                 return True
-            fds: list[Any] = [self.watcher.fd, self.peer]
+            fds: list[Any] = [self.watcher.fd, self.peer, *self.signals]
             if self.timer and self.held:
                 fds.append(self.timer.fd)
             ready = select.select(fds, [], [])[0]
@@ -67,6 +72,10 @@ class Wake:
                 return False
             if self.timer and self.timer.fd in ready and self.timer.expired():
                 self.held = False
+            for fd in self.signals:
+                if fd in ready:
+                    inotify.drain(fd)
+                    self.seen = True
             if self.watcher.fd in ready:
                 for path, _mask in self.watcher.read():
                     names = self.names.get(path.parent, frozenset())

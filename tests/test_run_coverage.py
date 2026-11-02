@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""lockstep.py coverage --run RUN: the per-function parity join of reach.bin (over its run.json census), the port's
+calls.jsonl and match.json (CONTRACTS.md Run record, coverage.tsv)."""
+
+import contextlib
+import hashlib
+import importlib.util
+import io
+import json
+import pathlib
+
+import pytest
+
+LOCKSTEP = pathlib.Path(__file__).resolve().parent.parent / "shim" / "boot" / "lockstep.py"
+_spec = importlib.util.spec_from_file_location("lockstep_under_test", LOCKSTEP)
+lockstep = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(lockstep)
+
+# A captured slice of the RWE-COVERAGE lane's coverage.tsv function column (fnrows order).
+NAMES = [
+    "AI_DynTurretCanSeePlayer",
+    "AI_DynTurretGetTargetInfo",
+    "AI_DynTurretOpposingPlayer",
+    "Achieve_AcknowledgeResultsEvent",
+    "Achieve_AdvanceResultModelPreview",
+    "Achieve_ApplyLevelCompletionReward",
+    "Achieve_ApplyPlayerOptionOverrides",
+    "Achieve_ApplyProfileWeaponUnlocks",
+    "Achieve_AwardAllMilestoneAchievement",
+    "Achieve_AwardCharacterCompletionUnlock",
+    "Achieve_AwardMilestoneCompletion",
+]
+FNROWS = "fnrows.0123abcd.txt"
+
+
+def bitset(rows, size):
+    bits = bytearray(size)
+    for row in rows:
+        bits[row >> 3] |= 1 << (row & 7)
+    return bytes(bits)
+
+
+def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=True, names=NAMES):
+    """<root>/runs/{site/FNROWS, plays/r}: a finished lockstep run with reach.bin, its census, calls and match."""
+    site, run = root / "runs" / "site", root / "runs" / "plays" / "r"
+    (run / "lockstep" / "port").mkdir(parents=True)
+    site.mkdir(parents=True)
+    data = "".join(n + "\n" for n in names).encode()
+    (site / FNROWS).write_bytes(data)
+    record = {"id": "r", "status": "done"}
+    if census:
+        record["census"] = {"fnrows": FNROWS, "sha256": hashlib.sha256(data).hexdigest(), "rows": len(names)}
+    (run / "run.json").write_text(json.dumps(record))
+    (run / "movie.raw").write_bytes(b"")
+    (run / "reach.bin").write_bytes(bitset(reached, (len(names) + 7) // 8))
+    if calls is None:  # fn -> call count: two calls of row 0, one of row 1, one of row 2, one of a row not reached
+        calls = {NAMES[0]: 2, NAMES[1]: 1, NAMES[2]: 1, NAMES[3]: 1}
+    lines = [json.dumps({"k": "meta", "side": "port"})]
+    for fn, n in calls.items():
+        for o in range(n):
+            lines.append(json.dumps({"k": "call", "fn": fn, "caller": "c", "o": o, "frame": o, "a": []}))
+            lines.append(json.dumps({"k": "ret", "fn": fn, "caller": "c", "o": o, "r": [0]}))
+    lines.append('{"k": "call", "fn": "cut')  # a last line cut by a killed run
+    (run / "lockstep" / "port" / "calls.jsonl").write_text("\n".join(lines))
+    if divergences is None:
+        divergences = {"input": [], "vi": [], "memory": [{"poll": 3, "address": "0x80001000"}], "calls": []}
+        divergences["calls"] = [{"fn": NAMES[1], "caller": "c", "o": 0, "poll": 0, "field": "args"}]
+    report = {"polls": {"oracle": 9, "port": 9, "common": 9}, "matched_through_poll": 2, "first": None}
+    (run / "lockstep" / "match.json").write_text(json.dumps({**report, "divergences": divergences}))
+    return run
+
+
+def run_tool(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = lockstep.main(list(argv))
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_join_writes_one_row_per_census_row_in_fnrows_order(tmp_path):
+    run = make_run(tmp_path)
+    code, out, _ = run_tool("coverage", "--run", str(run))
+    assert code == 0
+    rows = (run / "coverage.tsv").read_text().split("\n")[:-1]
+    assert rows[0] == "function\treached\tcalls\tdiverged\tequal"
+    assert [r.split("\t")[0] for r in rows[1:]] == NAMES
+    got = {r.split("\t")[0]: r.split("\t")[1:] for r in rows[1:]}
+    assert got[NAMES[0]] == ["yes", "2", "0", "yes"]  # reached, called, never diverged
+    assert got[NAMES[1]] == ["yes", "1", "1", "no"]  # a call divergence names it
+    assert got[NAMES[2]] == ["yes", "1", "0", "yes"]
+    assert got[NAMES[3]] == ["no", "1", "0", "no"]  # called but not reached: not equal
+    assert got[NAMES[4]] == ["yes", "0", "0", "no"]  # reached but never called: no parity evidence
+    sha = json.loads((run / "run.json").read_text())["census"]["sha256"]
+    assert out.splitlines()[-1] == f"census {sha} rows={len(NAMES)} reached=4 equal=2"
+
+
+def test_memory_divergences_are_movie_level_and_name_no_function(tmp_path):
+    run = make_run(tmp_path)
+    run_tool("coverage", "--run", str(run))
+    assert sum(r.endswith("\tyes") for r in (run / "coverage.tsv").read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("missing", ["lockstep/match.json", "lockstep/port/calls.jsonl", "census"])
+def test_a_missing_input_is_exit_2_and_no_join(tmp_path, missing):
+    run = make_run(tmp_path, census=missing != "census")
+    if missing != "census":
+        (run / missing).unlink()
+    code, _, err = run_tool("coverage", "--run", str(run))
+    assert code == 2 and err
+    assert not (run / "coverage.tsv").exists()

@@ -143,6 +143,53 @@ class HealthTests(unittest.TestCase):
         subprocess.run([*self.git, "commit", "-q", "--allow-empty", "-m", "newer"], check=True)
         self.assertIn("built is an ancestor of the pins", tas_health.read(self.cfg)["pins_stale"])
 
+    def test_mirror_missing_a_blob_is_replaced_by_a_fresh_fetch_naming_the_cause(self):
+        """The real case: loose objects only, fsck "missing blob", fetch "unresolved deltas left after unpacking"."""
+        history = self.git_history()
+        subprocess.run([*self.git, "commit", "-q", "--allow-empty", "-m", "newer"], check=True)
+        source = str(self.port.parent / "ports")
+        mirror, _ = tas_health.reference_head(source)
+        # corrupt the mirror: remove the commit objects of HEAD's parent chain, keeping the refs
+        subprocess.run(["git", "-C", str(mirror), "gc", "-q", "--prune=now"], check=True)
+        for pack in (mirror / "objects" / "pack").glob("*"):
+            pack.unlink()
+        for loose in mirror.glob("objects/??/*"):
+            loose.unlink()
+        self.assertNotEqual(subprocess.run(["git", "-C", str(mirror), "fsck", "-q"], capture_output=True).returncode, 0)
+        real = tas_health._git
+        failed = subprocess.CompletedProcess([], 128, "", "fatal: unresolved deltas left after unpacking\n")
+
+        def broken_fetch(*args):
+            return failed if args[:2] == ("-C", str(mirror)) and "fetch" in args else real(*args)
+
+        with mock.patch.object(tas_health, "_git", broken_fetch), mock.patch("sys.stderr") as err:
+            got, head = tas_health.reference_head(source)
+        self.assertEqual((got, head), (mirror, subprocess.run(
+            [*self.git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()))
+        said = "".join(c.args[0] for c in err.write.call_args_list)
+        self.assertIn("replaced the pin mirror", said)
+        self.assertIn("unresolved deltas left after unpacking", said)
+        self.assertEqual(subprocess.run(["git", "-C", str(mirror), "fsck", "-q"], capture_output=True).returncode, 0)
+        self.assertFalse(mirror.with_name(mirror.name + ".fresh").exists())
+        self.assertIn(history.old, subprocess.run(
+            ["git", "-C", str(mirror), "rev-list", "refs/mirror/head"], capture_output=True, text=True).stdout)
+
+    def test_mirror_that_cannot_be_refetched_stays_and_the_refusal_names_both_causes(self):
+        self.git_history()
+        source = str(self.port.parent / "ports")
+        mirror, _ = tas_health.reference_head(source)
+        failed = subprocess.CompletedProcess([], 128, "", "fatal: first\n")
+        real = tas_health._git
+
+        def broken_fetch(*args):
+            return failed if "fetch" in args else real(*args)
+
+        with mock.patch.object(tas_health, "_git", broken_fetch), self.assertRaises(DecompError) as refused:
+            tas_health.reference_head(source)
+        self.assertIn("fatal: first (first fetch: fatal: first)", refused.exception.detail)
+        self.assertTrue(mirror.is_dir())
+        self.assertFalse(mirror.with_name(mirror.name + ".fresh").exists())
+
     def test_pins_source_keeps_a_url_and_resolves_a_path(self):
         profile = mock.MagicMock()
         profile.path.return_value = Path("/resolved")

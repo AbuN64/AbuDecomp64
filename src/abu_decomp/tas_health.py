@@ -11,7 +11,7 @@ reported; every other marker is left over from a build without that unit: it is 
 Nothing here blocks a play. Whether a shared port seat may run at all is tas_seat's rule (stamped repo, SHA and shim pin
 against the project's current main); `pins_stale` only reports a port build older than its tree: "pins" is the stamp
 the build writes ({<pins_key>: sha}); "pins_repo" is the reference, a git URL or path whose HEAD is mirrored into a bare
-repo under the user's cache directory (fetched on every check) and compared by git ancestry: a build is stale only when
+repo under the user's cache directory (fetched on every check; a mirror whose fetch fails is refetched once into a fresh one that replaces it) and compared by git ancestry: a build is stale only when
 its sha is an ancestor of the reference's HEAD (and differs) or unrelated to it. A reference that cannot be fetched
 refuses with its cause; it never falls back to comparing equality.
 """
@@ -22,7 +22,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -121,20 +123,57 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
 
 
-def reference_head(source: str) -> tuple[Path, str]:
-    """Fetch every branch and HEAD of `source` into its bare mirror: (mirror, the sha of the source's HEAD). Refuses,
-    naming the cause, when the mirror cannot be made or the source cannot be fetched."""
-    mirror = mirror_path(source)
-    mirror.parent.mkdir(parents=True, exist_ok=True)
+def _cause(run: subprocess.CompletedProcess[str]) -> str:
+    """The last line git said, or its exit code when it said nothing."""
+    lines = run.stderr.strip().splitlines()
+    return lines[-1] if lines else f"exit {run.returncode}"
+
+
+def _mirror_fetch(mirror: Path, source: str) -> subprocess.CompletedProcess[str]:
+    """Make `mirror` a bare repo when it is not one, then fetch every branch and HEAD of `source` into it."""
     made = _git("init", "--bare", "-q", str(mirror))
-    fetched = made if made.returncode else _git(
+    if made.returncode:
+        return made
+    return _git(
         "-C", str(mirror), "fetch", "-q", "--prune", "--no-tags", source,
         "+refs/heads/*:refs/mirror/heads/*", "+HEAD:refs/mirror/head",
     )  # fmt: skip
+
+
+def _heal_mirror(mirror: Path, source: str, cause: str) -> subprocess.CompletedProcess[str]:
+    """Refetch `source` into a fresh mirror beside `mirror` once and, when that works, replace `mirror` with it, saying
+    on stderr why. A mirror that cannot be refetched is left as it was: the refetch's result is returned."""
+    fresh = mirror.with_name(mirror.name + ".fresh")
+    shutil.rmtree(fresh, ignore_errors=True)
+    fetched = _mirror_fetch(fresh, source)
+    if fetched.returncode:
+        shutil.rmtree(fresh, ignore_errors=True)
+        return fetched
+    shutil.rmtree(mirror)
+    fresh.rename(mirror)
+    print(f"tas.pins: replaced the pin mirror {mirror} with a fresh fetch of {source}: {cause}", file=sys.stderr)
+    return fetched
+
+
+def reference_head(source: str) -> tuple[Path, str]:
+    """Fetch every branch and HEAD of `source` into its bare mirror: (mirror, the sha of the source's HEAD). A fetch that
+    fails on an existing mirror (a corrupt object store: missing blob, unresolved deltas) is refetched once into a
+    fresh mirror that replaces it, the cause named on stderr. Refuses, naming the cause, when the mirror cannot be made
+    or the source cannot be fetched."""
+    mirror = mirror_path(source)
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    existed = mirror.exists()
+    fetched = _mirror_fetch(mirror, source)
+    if fetched.returncode and existed:
+        first = _cause(fetched)
+        fetched = _heal_mirror(mirror, source, first)
+        if fetched.returncode:
+            raise DecompError(
+                "tas.pins", f"cannot read the reference {source}: {_cause(fetched)} (first fetch: {first})"
+            )
     head = _git("-C", str(mirror), "rev-parse", "refs/mirror/head") if not fetched.returncode else fetched
     if head.returncode or not head.stdout.strip():
-        cause = (head.stderr or fetched.stderr).strip().splitlines()
-        raise DecompError("tas.pins", f"cannot read the reference {source}: {cause[-1] if cause else 'no HEAD'}")
+        raise DecompError("tas.pins", f"cannot read the reference {source}: {_cause(head) if head.returncode else 'no HEAD'}")
     return mirror, head.stdout.strip()
 
 

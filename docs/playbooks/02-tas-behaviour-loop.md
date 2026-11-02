@@ -51,6 +51,10 @@ When they do not, find the sources before anything else:
 - every clock the game reads (Count, osGetTime, VI count): in the port these must be the virtual clock,
   never wall time;
 - thread order: the port's scheduler must run one guest thread at a time in a fixed order.
+- host behaviour: nothing the host does (options screen, speed, frame-rate unlock or cap, live take/release) may
+  feed the guest a pad, a poll or a retrace the recomp would not see; the options screen holds the guest (the frame
+  loop presents only: no poll, no VI, no clock) instead of feeding it a neutral pad. Prove each with the
+  `N64C_TAS_HASH` trace byte-identical with and without the behaviour on one movie.
 
 ## Finding the cause, in order of cost
 

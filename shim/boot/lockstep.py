@@ -9,6 +9,7 @@ changed pages' bytes, and the arguments and return of the first 8 calls of each 
     lockstep.py match --oracle DIR --port DIR [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N] [--json out]
     lockstep.py match --run RUN [--symbols symbol_addrs.txt] [--port-exe EXE] [--persist N]
     lockstep.py check RUN
+    lockstep.py coverage --run RUN
     lockstep.py compare --oracle DIR --port DIR --trace boot-trace.tsv [--symbols symbol_addrs.txt]
                         [--port-exe rage_decomp_boot] [--types types.tsv] [--ignore ignore.tsv] [--oracle2 DIR]
                         [--rom baserom.z64] [--json out.json]
@@ -37,6 +38,8 @@ call/ret lines keyed by fn, caller, ordinal: missing, other poll, args, return) 
 poll and the next --persist polls); matched_through_poll is the last poll before the first divergence of any class.
 match --run RUN reads the run record (CONTRACTS.md "Run record"): RUN/lockstep/{oracle,port}/ in, RUN/lockstep/match.json
 out. check RUN validates a run record field by field against that contract; exit 0 when it holds, 1 when a field breaks it.
+coverage --run RUN joins reach.bin (over its run.json census), lockstep/port/calls.jsonl and match.json into
+RUN/coverage.tsv, one row per function; exit 2 when an input is missing.
 """  # noqa: E501
 
 import argparse
@@ -44,6 +47,7 @@ import array
 import bisect
 import concurrent.futures
 import csv
+import hashlib
 import json
 import mmap
 import os
@@ -1235,6 +1239,109 @@ def check_match(path):
     return problems
 
 
+RUN_REACH, RUN_RECORD, RUN_COVERAGE = "reach.bin", "run.json", "coverage.tsv"
+COVERAGE_HEADER = ("function", "reached", "calls", "diverged", "equal")
+
+
+def run_site(run):
+    """The baked site a run under <tas.runs>/plays/RUN maps its reach to: <tas.runs>/site."""
+    return pathlib.Path(run).resolve().parent.parent / "site"
+
+
+def read_census(run):
+    """(census, fnrows rows, reach bits) of a run, or ValueError naming what breaks it: run.json's census
+    {fnrows, sha256, rows} over the site's fnrows file of that name with that sha256 and row count, and reach.bin a
+    bare bitset of ceil(rows/8) bytes with no bit set past the last row. reach.bin without a census is a refusal."""
+    run = pathlib.Path(run)
+    reach = run / RUN_REACH
+    try:
+        census = json.loads((run / RUN_RECORD).read_text()).get("census")
+    except (OSError, ValueError, AttributeError) as error:
+        raise ValueError(f"{RUN_RECORD}: {error}") from error
+    if census is None:
+        raise ValueError(f"{RUN_RECORD} census: missing" + (f" beside {RUN_REACH}" if reach.exists() else ""))
+    if not isinstance(census, dict) or sorted(census) != ["fnrows", "rows", "sha256"]:
+        raise ValueError(f"{RUN_RECORD} census: {census!r}, expected {{fnrows, sha256, rows}}")
+    rows_path = run_site(run) / census["fnrows"]
+    try:
+        data = rows_path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"census fnrows: {error}") from error
+    if hashlib.sha256(data).hexdigest() != census["sha256"]:
+        raise ValueError(f"census sha256 {census['sha256']}: the site's {census['fnrows']} no longer has it")
+    names = data.decode().splitlines()
+    if len(names) != census["rows"]:
+        raise ValueError(f"census rows {census['rows']}: the site's {census['fnrows']} has {len(names)}")
+    try:
+        bits = reach.read_bytes()
+    except OSError as error:
+        raise ValueError(f"{RUN_REACH}: {error}") from error
+    if len(bits) != (len(names) + 7) // 8:
+        raise ValueError(f"{RUN_REACH}: {len(bits)} bytes, expected ceil({len(names)}/8) = {(len(names) + 7) // 8}")
+    if len(names) % 8 and bits[-1] >> (len(names) % 8):
+        raise ValueError(f"{RUN_REACH}: pad bits set past row {len(names)}")
+    return census, names, bits
+
+
+def check_census(run):
+    """The problems of RUN/reach.bin and its run.json census; a run that never wrote reach.bin has none to check."""
+    run = pathlib.Path(run)
+    record = run / RUN_RECORD
+    try:
+        has_census = "census" in json.loads(record.read_text()) if record.exists() else False
+    except ValueError as error:
+        return [f"{RUN_RECORD}: {error}"]
+    if not (run / RUN_REACH).exists() and not has_census:
+        return []
+    try:
+        read_census(run)
+    except ValueError as error:
+        return [str(error)]
+    return []
+
+
+def coverage(run):
+    """The per-function parity join (CONTRACTS.md Run record, coverage.tsv): one row per census row in fnrows order,
+    reached from reach.bin, calls the lockstep/port/calls.jsonl `call` lines naming it, diverged the match.json
+    divergences.calls entries naming it, equal `yes` only when reached, calls > 0 and diverged = 0. Memory, vi and
+    input divergences are movie-level and named by no function. ValueError when an input is missing: no empty join."""
+    run = pathlib.Path(run)
+    census, names, bits = read_census(run)
+    lockstep = run / RUN_LOCKSTEP
+    calls_path, match_path = lockstep / "port" / "calls.jsonl", lockstep / RUN_MATCH
+    for path in (calls_path, match_path):
+        if not path.is_file():
+            raise ValueError(f"{path.relative_to(run)}: missing")
+    report = json.loads(match_path.read_text())
+    calls, diverged = {}, {}
+    for line in calls_path.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # a last line cut by a killed run
+        if r.get("k") == "call" and "o" in r:
+            calls[r["fn"]] = calls.get(r["fn"], 0) + 1
+    for row in report["divergences"]["calls"]:
+        diverged[row["fn"]] = diverged.get(row["fn"], 0) + 1
+    rows = []
+    for index, name in enumerate(names):
+        hit = bool(bits[index >> 3] >> (index & 7) & 1)
+        n, d = calls.get(name, 0), diverged.get(name, 0)
+        rows.append((name, "yes" if hit else "no", n, d, "yes" if hit and n and not d else "no"))
+    return census, rows
+
+
+def write_coverage(run):
+    """RUN/coverage.tsv from `coverage`; returns its summary line `census <sha256> rows=<n> reached=<r> equal=<e>`."""
+    census, rows = coverage(run)
+    text = "\t".join(COVERAGE_HEADER) + "\n" + "".join("\t".join(map(str, row)) + "\n" for row in rows)
+    tmp = pathlib.Path(run) / (RUN_COVERAGE + ".tmp")
+    tmp.write_text(text)
+    tmp.replace(pathlib.Path(run) / RUN_COVERAGE)
+    reached, equal = sum(r[1] == "yes" for r in rows), sum(r[4] == "yes" for r in rows)
+    return f"census {census['sha256']} rows={len(rows)} reached={reached} equal={equal}"
+
+
 def check_run(run):
     """{run, problems}: the run record under RUN checked field by field; an empty list is a run that holds."""
     run = pathlib.Path(run)
@@ -1244,6 +1351,7 @@ def check_run(run):
     for name in RUN_SIDES:
         problems += check_side(run / RUN_LOCKSTEP / name, name)
     problems += check_match(run / RUN_LOCKSTEP / RUN_MATCH)
+    problems += check_census(run)
     return {"run": str(run), "problems": problems}
 
 
@@ -1297,6 +1405,8 @@ def build_parser():
     m.add_argument("--json")
     k = sub.add_parser("check", help="a run record validated field by field (CONTRACTS.md Run record)")
     k.add_argument("run")
+    v = sub.add_parser("coverage", help="the per-function parity join of a run: RUN/coverage.tsv (CONTRACTS.md)")
+    v.add_argument("--run", required=True, help="a run record with reach.bin, its census, calls.jsonl and match.json")
     return parser
 
 
@@ -1313,6 +1423,10 @@ def main(argv=None):
                 print(f"lockstep check: {problem}")
             print(f"lockstep check: {args.run}: {'holds' if not result['problems'] else 'breaks the contract'}")
             return 1 if result["problems"] else 0
+        if args.command == "coverage":
+            print(f"lockstep coverage: {pathlib.Path(args.run) / RUN_COVERAGE}")
+            print(write_coverage(args.run))
+            return 0
         if args.command == "match":
             if args.run:
                 if args.oracle or args.port or args.json:

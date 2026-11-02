@@ -1275,6 +1275,13 @@ def reach_rows(cfg: dict[str, Any]) -> Path | None:
         return None
 
 
+def census(rows: Path) -> dict[str, Any]:
+    """The census of a run's reach.bin: the fnrows file it is a bitset over (`fnrows` its name in the site), the
+    sha256 of that file's bytes and its row count (one function name per line). OSError when the file is gone."""
+    data = rows.read_bytes()
+    return {"fnrows": rows.name, "sha256": hashlib.sha256(data).hexdigest(), "rows": len(data.splitlines())}
+
+
 def human_movie_name(now: datetime | None = None) -> str:
     return "play-" + (now or datetime.now(UTC)).strftime("%Y%m%d-%H%M%S")
 

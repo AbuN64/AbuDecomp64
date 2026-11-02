@@ -106,6 +106,9 @@ run field by field (exit 0 holds, 1 breaks it); a field not built yet is listed 
 | `lockstep/port/calls.jsonl` | the whole-movie `call`/`ret` lines keyed by (`fn`, `caller`, `o`), `frame` the poll (trace.c, `N64C_CALLS=` the same directory, set by every `tas` play beside `N64C_LOCKSTEP=1`; the oracle's calls for per-call behaviour are `lockstep/oracle/lockstep.jsonl`) | port | `Side.movie_lines` (class `calls`) |
 | `lockstep/<side>/pages.bin` | each distinct page content once (both writers dedup by hash): `<u32 page><u32 0><u64 hash>` + 4096 bytes; read mapped, never whole | the side | `Side.page` |
 | `lockstep/match.json` | `lockstep.py match --run RUN`: the divergence list | lockstep.py | `tas_oracle.read_match` (`/api/stream/RUN` `match`: counts per class, matched-through poll, first; null until it exists), play cycle |
+| `reach.bin` | the functions the port entered: a bare bitset over the census fnrows rows (row r is bit r&7 of byte r>>3), ceil(rows/8) bytes, pad bits clear | `tas_serve.RunReach.finish` when the run ends | `tas_serve` (`/video` reach records), `lockstep.py coverage` |
+| `run.json` `census` | {`fnrows` (the site's fnrows file name), `sha256` (of that file's bytes), `rows` (its line count)}: what reach.bin is a bitset over, written beside reach.bin | `tas_serve.RunReach.finish` (`tas.census`) | `lockstep.py check`, `lockstep.py coverage` |
+| `coverage.tsv` | the per-function parity join: `function`, `reached`, `calls`, `diverged`, `equal`, one row per census row in fnrows order | `lockstep.py coverage --run RUN` | the play cycle's covered/total |
 | `stream/<side>/<poll>.jpg`, `stream/index.json` | the pictures, sides `port` and `oracle` | `tas_stream.pack` | site_stream |
 | `audio.pcm` (+ `.rate`), `audio-oracle.pcm` | the sound, port and oracle | `/audio/RUN` serves `audio.pcm` only | tas_serve |
 | `<tas.runs>/feedback/<id>/feedback.json` | a human flag at a poll | site_feedback | site_feedback |

@@ -166,3 +166,5 @@ body.feed-hidden .feedpane { display: none; }
   .wall { grid-template-columns: minmax(0, 1fr); }
   .feedpane { position: static; max-height: none; border-left: 0; border-top: 1px solid var(--line); padding: var(--gutter) 0 0; }
 }
+.sitemap .scope { margin: 0 0 8px; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.sitemap .scope[hidden] { display: none; }

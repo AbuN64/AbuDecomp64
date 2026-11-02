@@ -10,6 +10,21 @@
 export const LIVE_KINDS = ["function.matched", "case.diffed", "feedback.filed", "run.ended"]; // events that move the rows
 export const VIEW_KEY = "map.view"; // localStorage key of the chosen view
 export const LOCKED = { play: "behaviour" }; // routes that show one view only: playing builds up the behaviour grid
+export const SESSION = { play: true }; // routes whose grid counts only the rows the owner's own session reached
+
+// The owner's session: /api/map rows (fns.json order) the port reached in the runs this page load watched. Kept in
+// memory only, so a reload starts an empty grid. play.js adds rows from its runs' reach records; the grid redraws.
+const session = new Set(), sessionWatchers = new Set();
+export function sessionReach(rows) {
+  const before = session.size;
+  for (const r of rows) session.add(r);
+  if (session.size !== before) for (const fn of sessionWatchers) fn();
+  return session.size - before;
+}
+// The rows as the session grid shows them: Behaviour stays at "Not exercised" until the session reached the row, then
+// shows its proven step, at least "Exercised, differs" (reached, not yet proven equal).
+export const sessionRows = (rows, reached) =>
+  rows.map((row, i) => { const out = row.slice(); out[3] = reached.has(i) ? Math.max(row[3], 1) : 0; return out; });
 
 // The location hash split into its route and query (`#/stream/7?fn=x` -> {path: "stream/7", query: {fn: "x"}}).
 export function parseHash(hash) {
@@ -54,29 +69,34 @@ const h = (tag, attrs = {}, ...kids) => {
 const fmt = n => n.toLocaleString("en-US");
 
 export function mount(el, ctx) {
-  let data = null, version = null, view = null, cells = [];
+  let data = null, version = null, view = null, scope = null, cells = [];
   el.classList.add("sitemap");
   const toggle = h("div", { class: "seg", role: "tablist", "aria-label": "map view" });
   const legend = h("ol", { class: "legend" });
   const grid = h("div", { class: "groups" }, h("p", { class: "dim" }, "Loading the map"));
   const tip = h("div", { class: "tip", role: "tooltip", hidden: "" });
-  el.replaceChildren(h("div", { class: "key" }, toggle, legend), grid, tip);
+  const title = h("p", { class: "scope", hidden: "" }, "This session");
+  el.replaceChildren(h("div", { class: "key" }, title, toggle, legend), grid, tip);
 
   const route = () => parseHash(location.hash).path.split("/")[0];
   function setView() {
     const next = viewFor(route(), localStorage.getItem(VIEW_KEY), data.views);
     const locked = Boolean(LOCKED[route()]);
     toggle.hidden = locked;
-    if (next === view && toggle.dataset.locked === String(locked)) return;
-    view = next;
+    const scoped = Boolean(SESSION[route()]), mark = scoped ? `session ${session.size}` : "all";
+    if (next === view && mark === scope && toggle.dataset.locked === String(locked)) return;
+    view = next; scope = mark;
     toggle.dataset.locked = String(locked);
     el.dataset.view = view;
+    el.dataset.scope = scoped ? "session" : "all";
+    title.hidden = !scoped;
     for (const b of toggle.children) b.setAttribute("aria-selected", String(b.dataset.view === view));
-    const spec = data.views.find(v => v.key === view), counts = tally(data.rows, view);
+    const rows = scoped ? sessionRows(data.rows, session) : data.rows;
+    const spec = data.views.find(v => v.key === view), counts = tally(rows, view);
     legend.replaceChildren(...spec.steps.map((label, s) =>
       h("li", {}, h("i", { class: `sq s${s}` }), h("span", {}, label), h("b", {}, fmt(counts[s])))));
     const at = column(view);
-    cells.forEach((cell, i) => { cell.className = `sq s${data.rows[i][at]}`; });
+    cells.forEach((cell, i) => { cell.className = `sq s${rows[i][at]}`; });
   }
   function draw() {
     toggle.replaceChildren(...data.views.map(v => h("button", { role: "tab", "data-view": v.key }, v.label)));
@@ -106,7 +126,8 @@ export function mount(el, ctx) {
   grid.addEventListener("pointerover", e => {
     const i = e.target.dataset && e.target.dataset.i;
     if (i == null) return void (tip.hidden = true);
-    const row = data.rows[i], g = data.groups[row[4]], spec = data.views.find(v => v.key === view);
+    const row = SESSION[route()] ? sessionRows([data.rows[i]], new Set(session.has(Number(i)) ? [0] : []))[0] : data.rows[i];
+    const g = data.groups[row[4]], spec = data.views.find(v => v.key === view);
     tip.replaceChildren(h("b", {}, row[0]), h("span", {}, `${spec.steps[row[column(view)]]} · ${fmt(row[1])} bytes`),
       h("span", { class: "dim" }, g.members.length > 1 ? `${g.label} group: ${g.members.join(", ")}` : g.label));
     const r = e.target.getBoundingClientRect();
@@ -121,6 +142,7 @@ export function mount(el, ctx) {
   });
   addEventListener("hashchange", () => { if (data) setView(); syncModal(ctx); });
   for (const kind of LIVE_KINDS) ctx.on(kind, () => { if (el.isConnected) load(); });
+  sessionWatchers.add(() => { if (data && el.isConnected) setView(); });
   load();
   syncModal(ctx);
 }

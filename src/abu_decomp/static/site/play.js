@@ -4,6 +4,7 @@
 // server), poll counts from the feed's run events, flags from /api/feedback and its feedback.filed events: no polling.
 // Pad input goes to /api/input only while the run's feed event says it runs with live input (fields.input "human");
 // a refused input shows its cause and holds the pad until the run's state moves or the owner presses a key again.
+import { sessionReach } from "./map.js";
 const BT = { A: 0x8000, B: 0x4000, Z: 0x2000, START: 0x1000, UP: 0x0800, DOWN: 0x0400, LEFT: 0x0200, RIGHT: 0x0100,
   L: 0x0020, R: 0x0010, CUP: 0x0008, CDOWN: 0x0004, CLEFT: 0x0002, CRIGHT: 0x0001 };
 const KEYS = [["ArrowUp", "stick up"], ["ArrowDown", "stick down"], ["ArrowLeft", "stick left"], ["ArrowRight", "stick right"],
@@ -40,8 +41,8 @@ export function padState(keys, gamepads) {
   return { buttons, x: clamp(x), y: clamp(y) };
 }
 
-// Video framing: u32 BE length (top bit = reach record), u64 BE stamp, u32 BE seq, then the JPEG.
-export function framer(onFrame) {
+// Video framing: u32 BE length (top bit = reach record), u64 BE stamp, u32 BE seq, then the JPEG or the reach record.
+export function framer(onFrame, onReach = () => {}) {
   let buf = new Uint8Array(0);
   return chunk => {
     const joined = new Uint8Array(buf.length + chunk.length); joined.set(buf); joined.set(chunk, buf.length); buf = joined;
@@ -49,11 +50,51 @@ export function framer(onFrame) {
     while (buf.length - o >= 16) {
       const raw = new DataView(buf.buffer, buf.byteOffset + o, 4).getUint32(0), n = raw & 0x7fffffff;
       if (buf.length - o < 16 + n) break;
-      if (!(raw & 0x80000000)) onFrame(buf.slice(o + 16, o + 16 + n));
+      (raw & 0x80000000 ? onReach : onFrame)(buf.slice(o + 16, o + 16 + n));
       o += 16 + n;
     }
     buf = buf.slice(o);
   };
+}
+
+// The fns.json rows one reach record names (tas_serve RunReach.feed): type 1 is u8 1, u32 LE poll, then a bitset over
+// the rows; type 2 is u8 2, u32 LE poll, then the fresh and the hot row lists, each a LEB128 count and LEB128 deltas.
+// A malformed record names no rows.
+export function reachRows(rec) {
+  if (rec.length < 5 || (rec[0] !== 1 && rec[0] !== 2)) return [];
+  const out = [];
+  if (rec[0] === 1) {
+    for (let b = 5; b < rec.length; b++) for (let k = 0; k < 8; k++) if (rec[b] & (1 << k)) out.push((b - 5) * 8 + k);
+    return out;
+  }
+  let pos = 5;
+  const varint = () => {
+    let v = 0, mul = 1;
+    for (;;) {
+      if (pos >= rec.length) throw new RangeError("cut off");
+      const byte = rec[pos++]; v += (byte & 127) * mul; mul *= 128;
+      if (byte < 128) return v;
+    }
+  };
+  try {
+    for (let list = 0; list < 2; list++) { let row = 0; for (let n = varint(); n > 0; n--) { row += varint(); out.push(row); } }
+  } catch { return []; }
+  return pos === rec.length ? out : [];
+}
+
+// The controls that reach the game: the keyboard keys and the standard-mapping gamepad buttons padState reads.
+export function controls() {
+  const keyName = code => code.replace(/^Key/, "").replace(/^Arrow/, "");
+  const by = new Map();
+  for (const [code, what] of KEYS) by.set(what, [...(by.get(what) || []), keyName(code)]);
+  const PADNAME = { 0: "A (bottom)", 1: "B (right)", 2: "X (left)", 3: "Y (top)", 4: "LB", 5: "RB", 6: "LT", 7: "RT", 9: "Start", 12: "D-pad up", 13: "D-pad down", 14: "D-pad left", 15: "D-pad right" };
+  const pad = new Map();
+  for (const [i, what] of PAD) pad.set(what, [...(pad.get(what) || []), PADNAME[i]]);
+  const LABEL = { "stick up": "Stick up", "stick down": "Stick down", "stick left": "Stick left", "stick right": "Stick right",
+    A: "A", B: "B", Z: "Z", START: "Start", L: "L", R: "R", CUP: "C up", CDOWN: "C down", CLEFT: "C left", CRIGHT: "C right",
+    UP: "D-pad up", DOWN: "D-pad down", LEFT: "D-pad left", RIGHT: "D-pad right" };
+  const stick = ["stick up", "stick down", "stick left", "stick right"];
+  return Object.keys(LABEL).map(what => [LABEL[what], (by.get(what) || []).join(" / "), stick.includes(what) ? "Left stick" : (pad.get(what) || []).join(" / ")]);
 }
 
 let current = null;  // the mounted view; a handler of an older mount sees it is no longer current and does nothing
@@ -72,7 +113,12 @@ export function mount(el, ctx) {
   const canvas = node("canvas", { id: "play-stage", width: "640", height: "480" });
   const list = node("ul", { class: "feed", id: "play-flags" });
   const dialog = flagDialog(ctx, S, () => live());
-  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag), canvas, node("h2", {}, "Flags"), list, dialog.el);
+  const blurb = node("details", { class: "controls", id: "play-controls", open: "" }, node("summary", {}, "Controls"),
+    node("p", { class: "dim" }, "Click the page first so it has the keyboard. A gamepad works once you press any of its buttons."),
+    node("table", {}, node("thead", {}, node("tr", {}, node("th", {}, "N64"), node("th", {}, "Keyboard"), node("th", {}, "Gamepad"))),
+      node("tbody", {}, ...controls().map(([n64, key, pad]) => node("tr", {}, node("td", {}, n64), node("td", { class: "mono" }, key || "-"), node("td", {}, pad || "-"))))));
+  el.replaceChildren(node("h2", {}, "Play"), node("div", { class: "playbar" }, start, flag, stop, tag),
+    node("div", { class: "playarea" }, canvas, blurb), node("h2", {}, "Flags"), list, dialog.el);
   addStyle();
 
   const refresh = () => {
@@ -178,7 +224,7 @@ async function video(id, signal, canvas) {
     if (!res.ok || !res.body) return;
     const reader = res.body.getReader();
     let newest = null;
-    const feed = framer(frame => { newest = frame; });
+    const feed = framer(frame => { newest = frame; }, rec => sessionReach(reachRows(rec)));
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -194,7 +240,14 @@ function addStyle() {
 .playbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .btn.alt { background: var(--raised); color: var(--text); }
 .btn[disabled] { opacity: .4; cursor: default; }
-#play-stage { width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: #000; border-radius: var(--radius); image-rendering: pixelated; }
+.playarea { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; margin-bottom: 16px; }
+.controls { flex: 1 1 260px; max-width: 420px; font-size: 13px; }
+.controls summary { cursor: pointer; font: 600 12px var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--dim); }
+.controls p { margin: 8px 0; }
+.controls table { width: 100%; border-collapse: collapse; }
+.controls th, .controls td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line); }
+.controls th { font-weight: 600; color: var(--dim); font-size: 12px; }
+#play-stage { flex: 1 1 320px; width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: #000; border-radius: var(--radius); image-rendering: pixelated; }
 #play-dialog { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; min-width: 360px; }
 #play-dialog::backdrop { background: rgba(0, 0, 0, .55); }
 #play-dialog .cats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 12px 0; }

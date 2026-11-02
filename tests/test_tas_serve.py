@@ -21,7 +21,7 @@ from unittest import mock
 
 from PIL import Image
 
-from abu_decomp import DecompError, tas, tas_oracle, tas_serve
+from abu_decomp import DecompError, serve_audio, serve_files, serve_pages, serve_video, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
 
 
@@ -286,7 +286,7 @@ class ServeTests(Base):
         self.assertFalse(tas_serve.realtime(run, row))
 
     def test_wav_header_is_a_stereo_s16_stream(self):
-        head = tas_serve.wav_header(22050)
+        head = serve_audio.wav_header(22050)
         self.assertEqual((head[:4], head[8:16], head[36:40], len(head)), (b"RIFF", b"WAVEfmt ", b"data", 44))
         channels, rate, _, align, bits = struct.unpack("<HIIHH", head[22:36])
         self.assertEqual((channels, rate, align, bits), (2, 22050, 4, 16))
@@ -363,7 +363,7 @@ class HttpTests(Base):
         self.server.deployed = "a" * 40
         _, _, body = self.get("/")
         self.assertIn(b'<meta name="deployed-sha" content="' + b"a" * 40 + b'">', body)
-        self.assertNotIn(tas_serve.SHA_MARK.encode(), body)
+        self.assertNotIn(serve_pages.SHA_MARK.encode(), body)
 
     def test_page_state_frame_and_log(self):
         status, kind, body = self.get("/")
@@ -724,7 +724,7 @@ class HttpTests(Base):
             kind, body = reply.headers["Content-Type"], reply.read()
         self.assertEqual(started, ["d-aa"])
         self.assertEqual(kind, "audio/wav")
-        self.assertEqual(body[:44], tas_serve.wav_header(display.AUDIO_RATE))
+        self.assertEqual(body[:44], serve_audio.wav_header(display.AUDIO_RATE))
         self.assertEqual(body[44:], pcm)
 
     def test_a_missing_display_or_run_is_a_404_naming_it(self):
@@ -785,14 +785,14 @@ class HttpTests(Base):
         with (
             mock.patch.object(self.server, "capture", side_effect=[(1, png, 7), (1, png, 7), (3, png, 9)]),
             mock.patch.object(tas, "running", side_effect=[True, True, False]),
-            mock.patch.object(tas_serve.time, "monotonic", side_effect=[0, 0.001, 0.034]),
-            mock.patch.object(tas_serve.time, "sleep") as wait,
+            mock.patch.object(serve_video.time, "monotonic", side_effect=[0, 0.001, 0.034]),
+            mock.patch.object(serve_video.time, "sleep") as wait,
         ):
-            h.video(run)
+            serve_video.video(h, self.server, run)
         data = h.wfile.getvalue()
         n = len(png)
-        self.assertEqual(tas_serve.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
-        self.assertEqual(tas_serve.VIDEO_HEADER.unpack(data[n + 16 : n + 32]), (n, 3, 9))
+        self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[:16]), (n, 1, 7))
+        self.assertEqual(serve_video.VIDEO_HEADER.unpack(data[n + 16 : n + 32]), (n, 3, 9))
         self.assertEqual(len(data), 2 * (n + 16))
         self.assertEqual(wait.call_count, 2)
         self.assertEqual(wait.call_args_list[1].args[0], 0.002)
@@ -805,7 +805,7 @@ class HttpTests(Base):
         h.connection, h.wfile = mock.Mock(), mock.Mock()
         h.wfile.write.side_effect = BrokenPipeError
         with mock.patch.object(self.server, "capture", return_value=(1, b"png", 7)) as grab:
-            h.video(run)
+            serve_video.video(h, self.server, run)
         grab.assert_called_once()
 
 
@@ -905,7 +905,7 @@ class WallTests(Base):
             )
             (run / "view.bmp").write_bytes(bmp)
         self.make_run("old", movie="boot-idle", status="done", started=0.5, outcome="ok")
-        wall = Stream(f"http://127.0.0.1:{http.server_address[1]}", "/wall", tas_serve.VIDEO_HEADER)
+        wall = Stream(f"http://127.0.0.1:{http.server_address[1]}", "/wall", serve_video.VIDEO_HEADER)
         self.addCleanup(wall.close)
         names, shown = {}, set()
         while len(shown) < 12:
@@ -969,7 +969,7 @@ class ReachTests(Base):
         send(reach_record(1, 10, bitset([0, 1])))
         send(reach_record(2, 11, [9], [0]))
         self.reached(relay, lambda: relay.count == 2)
-        video = Stream(self.base, "/video/x", tas_serve.VIDEO_HEADER)
+        video = Stream(self.base, "/video/x", serve_video.VIDEO_HEADER)
         self.addCleanup(video.close)
         flagged, (_length, _stamp, _seq), body = video.record()
         self.assertTrue(flagged)
@@ -1023,12 +1023,12 @@ class ReachTests(Base):
         self.assertTrue(relay.listening.wait(5))
         send(reach_record(1, 10, bitset([0, 3])))
         self.until(lambda: relay.count == 1)
-        wall = Stream(self.base, "/wall", tas_serve.VIDEO_HEADER)
+        wall = Stream(self.base, "/wall", serve_video.VIDEO_HEADER)
         self.addCleanup(wall.close)
         names, reach = {}, []
         while len(reach) < 2:
             flagged, (_length, _stamp, index), body = wall.record()
-            if index == tas_serve.WALL_KEEPALIVE_INDEX:
+            if index == serve_video.WALL_KEEPALIVE_INDEX:
                 continue
             if flagged and body.startswith(b"{"):
                 names[index] = json.loads(body)["id"]
@@ -1093,7 +1093,7 @@ class DataTests(Base):
             return error.code, error.headers, error.read()
 
     def test_static_files_of_the_page_are_typed_gzipped_and_confined(self):
-        with mock.patch.object(tas_serve, "STATIC", self.root / "static"):
+        with mock.patch.object(serve_files, "STATIC", self.root / "static"):
             (self.root / "static").mkdir()
             (self.root / "static" / "u.js").write_text("var u;" * 500)
             (self.root / "static" / "icons.svg").write_text("<svg>" + "<path/>" * 500 + "</svg>")

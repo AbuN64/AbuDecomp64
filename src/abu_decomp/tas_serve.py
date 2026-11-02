@@ -11,6 +11,8 @@ latest picture (`view.bmp`), its log and its sound (`audio.pcm`, served as a gro
 The page is static files: `/data/*` serves `<tas.runs>/site/` (module tas_bake writes it; a `.gz` sibling goes out to
 a client that accepts gzip, hashed names are immutable). The one file serve writes there is `live.json`: the running,
 queued and newest finished runs, rewritten from an inotify watch on the run folders (class Live), never per request.
+(Each route is a module `serve_*`: pages, files, api, phase, run, video, audio, feed, actions; this module holds
+the Server, Live and Reach they read, the route tables and `serve`.)
 `/video/RUN` is the run's sampled JPEG stream; `/wall` one multiplexed stream of 192 px thumbs of every running run;
 the live reach stream (class Reach, GAME-RUNNER 10a) arrives from the port as datagrams on `<input socket>.reach`, is
 kept as a cumulative bitset, written to RUN/reach.bin at run end, and rides in-band on `/video` (a record whose length
@@ -30,7 +32,6 @@ scores (/diff/<id>).
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -43,11 +44,9 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 import zlib
 from collections import OrderedDict, deque
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -60,12 +59,20 @@ from abu_decomp import (
     display,
     evidence,
     inotify,
+    serve_actions,
+    serve_api,
+    serve_audio,
+    serve_feed,
+    serve_files,
+    serve_http,
+    serve_pages,
+    serve_phase,
+    serve_run,
+    serve_video,
     site_core,
     site_enhanced,
-    site_frame,
     site_live,
     site_map,
-    site_stream,
     tas,
     tas_board,
     tas_corpus,
@@ -76,9 +83,9 @@ from abu_decomp import (
     tas_points,
     tas_seat,
     tas_triage,
-    viewer,
 )
 from abu_decomp.config import Profile
+from abu_decomp.serve_pace import RELEASED, clock, driven, realtime
 
 _SERVE_KEYS = frozenset(
     {
@@ -101,29 +108,13 @@ _SERVE_KEYS = frozenset(
 )
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
 HISTORY_PAGE = 60  # runs per /api/runs page
-# /<route>/<run>: a run that is not there is a 404 naming it
-RUN_ROUTES = frozenset({"video", "frame", "oracle", "shot", "diff", "log", "audio"})
-CACHE_SECONDS = 30.0
-GZIP_MIN = 1024  # smaller bodies go out as they are
 GZIP_KEPT = 16  # compressed bodies kept by tag, so a repeat fetch of an unchanged body costs no compression
-TEXT_KINDS = ("application/json", "text/html", "text/css", "text/javascript", "image/svg+xml")
+CACHE_SECONDS = 30.0
 ARCHIVE_SECONDS = 3600.0  # how often old runs are archived
 GATE_CHECK_SECONDS = 60.0  # how often serve looks for a port build the regression corpus has not been gated on
 STOP_GRACE = 3.0  # seconds a stopped run gets before its process group is killed
-VIDEO_FPS = 30  # latest frame sampled at wall pace; no backlog or replay of missed pictures
-VIDEO_HEADER = struct.Struct(">IQI")  # JPEG length, capture stamp (microseconds), input sequence
-AUDIO_LEAD_SECONDS = 0.25  # a listener joins this far behind the live end of the sound
-PAGE = Path(__file__).with_name("runner.html").read_text  # the page file
-SHA_MARK = "__DEPLOYED_SHA__"  # in the page file: replaced by the commit the toolkit was deployed at
 UNDEPLOYED = "undeployed"  # the mark of a server started from a source tree, not from a deployed toolkit
-STATIC = Path(__file__).with_name("static")  # the page's icon sprite and region modules (site/), at /static/NAME
-REACH_FLAG = 0x80000000  # set in a /video header's length field: the body is a reach record, not a JPEG
-WALL_TABLE = REACH_FLAG  # set in a /wall header's length field: the body is JSON {"id": run id} naming run index `seq`
-WALL_KEEPALIVE_INDEX = 0xFFFFFFFF  # a flagged, empty /wall record: nothing to show, but a closed client is noticed
-WALL_FPS = 4
 WALL_WIDTH = 192
-WALL_KEEPALIVE_SECONDS = 10.0
-FEED_KEEPALIVE_SECONDS = 15.0  # an idle /api/feed/stream sends a comment this often, so a closed client is noticed
 LIVE_SECONDS = 0.5  # while a run goes, live.json is refreshed at least this often (poll ticks)
 LIVE_GAP_SECONDS = 0.2  # live.json is rewritten at most this often: a change shows well inside 0.5 s
 LIVE_IDLE_SECONDS = 60.0  # with nothing running, live.json is refreshed this often (its clock, an abandoned run)
@@ -134,53 +125,6 @@ REACH_MAX_ROW = 1 << 17
 REACH_KEPT_RECORDS = 2048  # records a slow /video client may lag behind before it is given a fresh full record
 REACH_KEPT_BYTES = 1 << 20
 REACH_RUNS_KEPT = 64  # finished runs whose relay stays in memory
-HASHED_NAME = re.compile(r"\.[0-9a-f]{6,}\.[a-z]+$")  # fns.1a2b3c4d.json: the content hash is in the name
-NO_STORE_DATA = frozenset({"live.json", "manifest.json"})
-DATA_KINDS = {
-    ".json": "application/json",
-    ".txt": "text/plain; charset=utf-8",
-    ".bin": "application/octet-stream",
-    ".jpg": "image/jpeg",
-    ".html": "text/html; charset=utf-8",
-    ".css": "text/css",
-    ".js": "text/javascript",
-}
-
-
-def wav_header(rate: int) -> bytes:
-    """A RIFF/WAVE header for s16 stereo of unknown length (sizes at their maximum), for a live stream."""
-    size = 0xFFFFFFFF
-    fmt = struct.pack("<HHIIHH", 1, 2, rate, rate * 4, 4, 16)
-    return (
-        b"RIFF"
-        + struct.pack("<I", size)
-        + b"WAVEfmt "
-        + struct.pack("<I", len(fmt))
-        + fmt
-        + b"data"
-        + struct.pack("<I", size - 36)
-    )
-
-
-RELEASED = "released"  # in a taken run's folder once given back: the run stays a take, live input drives it no more
-
-
-def driven(run: Path) -> bool:
-    """Whether live input drives the run now: taken and not given back since."""
-    return (run / tas.TAKEN).exists() and not (run / RELEASED).exists()
-
-
-def realtime(run: Path, record: dict[str, Any]) -> bool:
-    """The actual pacing, including a turbo prefix and a live takeover, shared by state and audio."""
-    if record.get("speed") == 1:
-        return True
-    # TAKEN is written before a retry's prefix starts. Only the port's acknowledgement means 1x.
-    if not driven(run):
-        return False
-    try:
-        return "live input took over at poll " in (run / "output.txt").read_text(errors="replace")
-    except OSError:
-        return False
 
 
 def picture(data: bytes, kind: str = "PNG") -> tuple[bytes, int]:
@@ -283,7 +227,7 @@ class Server:
             profile, self.cfg, self.pin_dir, self.table, float(serve.get("phase_frame_minutes", 10))
         )
         self.oracles: dict[str, tuple[int, Any]] = {}  # run id -> (record mtime, summary) of finished runs
-        self.pool = ThreadPoolExecutor(max_workers=max(1, self.jobs))
+        self.pool = worker_pool(self.jobs)
         self.lock = threading.Lock()
         self.queued: dict[str, dict[str, Any]] = {}  # id -> placeholder row until the run writes its record
         self.refused: dict[str, dict[str, Any]] = {}  # id -> the row of a play refused at once (newest RECENT_SHOWN)
@@ -302,10 +246,10 @@ class Server:
 
     def _cached(self, key: Any, make: Any, seconds: float = CACHE_SECONDS) -> Any:
         hit = self.cache.get(key)
-        if hit and time.monotonic() - hit[0] < seconds:
+        if hit and clock() - hit[0] < seconds:
             return hit[1]
         value = make()
-        self.cache[key] = (time.monotonic(), value)
+        self.cache[key] = (clock(), value)
         return value
 
     def gzipped(self, tag: str, body: bytes) -> bytes:
@@ -561,7 +505,7 @@ class Server:
             "running", lambda: [run for run, row in tas.run_rows(self.cfg) if row.get("status") == "running"], 1.0
         )
 
-    def history(self, before: float | None, limit: int) -> dict[str, Any]:
+    def history(self, before: float | None, limit: int | None = None) -> dict[str, Any]:
         """Finished runs newest first, older than `before` (a `started` time), `limit` at most; `more` when older
         ones remain."""
         rows = [
@@ -569,7 +513,7 @@ class Server:
             for run, row in reversed(tas.run_rows(self.cfg))
             if row.get("status") != "running" and (before is None or float(row.get("started") or 0) < before)
         ]
-        limit = max(1, min(limit, HISTORY_PAGE))
+        limit = max(1, min(limit or HISTORY_PAGE, HISTORY_PAGE))
         return {"runs": [self.row(run, row) for run, row in rows[:limit]], "more": len(rows) > limit}
 
     def movies(
@@ -1098,13 +1042,13 @@ class Live:
         self.sync()
         dirty, written = True, -LIVE_IDLE_SECONDS
         while True:
-            now = time.monotonic()
+            now = clock()
             beat = LIVE_SECONDS if self.running else LIVE_IDLE_SECONDS
             if (dirty and now - written >= LIVE_GAP_SECONDS) or now - written >= beat:
                 self.sync()  # also finds a run that died without a record, and drops watches of finished ones
                 self.write()
                 dirty, written = False, now
-            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - time.monotonic())
+            wait = max(0.0, written + (LIVE_GAP_SECONDS if dirty else beat) - clock())
             ready = select.select([self.watcher.fd, self.wake_r], [], [], wait)[0]
             if self.wake_r in ready:
                 inotify.drain(self.wake_r)
@@ -1335,163 +1279,60 @@ class Reach:
         return ReachFeed(None, reach_full(int(record.get("polls_reached") or 0), bits))
 
 
-def body_tag(body: bytes) -> str:
-    return '"' + hashlib.blake2b(body, digest_size=10).hexdigest() + '"'
-
-
-def tag_matches(header: str | None, tag: str) -> bool:
-    """An If-None-Match header (a list, weak tags allowed) names `tag`."""
-    return bool(header) and any(part.strip().removeprefix("W/") in (tag, "*") for part in str(header).split(","))
+# Routes: an exact path, a first path segment (+ the rest), and a run's folder (video, frame ...). A route module
+# answers through the request's reply helpers; none imports this module.
+EXACT = {
+    "/": serve_pages.index,
+    "/live": serve_pages.live,
+    "/watch": serve_pages.watch,
+    "/wall": serve_video.wall,
+    "/api/feed/stream": serve_feed.stream,
+    "/api/coverage": serve_api.coverage,
+    "/api/pool": serve_api.pool,
+    "/api/runs": serve_api.runs,
+    "/api/phase": serve_phase.phase,
+    "/phase/shot": serve_phase.shot,
+    "/phase/frame.png": serve_phase.frame,
+}
+PREFIX = {
+    "viewer": serve_pages.viewer_page,
+    "data": serve_files.data,
+    "static": serve_files.static,
+    "stream": serve_run.stream,
+}
+RUN_ROUTES = {
+    "video": serve_video.video,
+    "frame": serve_video.frame,
+    "oracle": serve_video.oracle,
+    "shot": serve_run.shot,
+    "diff": serve_run.diff,
+    "log": serve_run.log,
+    "audio": serve_audio.audio,
+}
 
 
 def handler(server: Server) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-
-        def setup(self) -> None:
-            super().setup()
-            # A frame/PCM fragment must not wait for a delayed ACK on HTTP/1.1 phones.
-            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-        def log_message(self, *args: Any) -> None:
-            pass
-
-        def reply(
-            self,
-            body: bytes,
-            kind: str,
-            status: int = HTTPStatus.OK,
-            tag: str | None = None,
-            extra: dict[str, str] | None = None,
-        ) -> None:
-            """Send a body. Text kinds carry an ETag (`tag`, else a hash of the body): a matching If-None-Match gets
-            a 304 with no body, and a client that accepts gzip gets the compressed body. Others are sent as they are."""
-            headers = dict(extra or {})
-            text = kind.split(";")[0] in TEXT_KINDS and status == HTTPStatus.OK
-            if text:
-                tag = tag or body_tag(body)
-                headers["ETag"] = tag
-                headers["Vary"] = "Accept-Encoding"
-                if tag_matches(self.headers.get("If-None-Match"), tag):
-                    self.send_response(HTTPStatus.NOT_MODIFIED)
-                    for name, value in headers.items():
-                        self.send_header(name, value)
-                    self.send_header("Cache-Control", "no-cache")
-                    self.end_headers()
-                    return
-                if len(body) >= GZIP_MIN and "gzip" in self.headers.get("Accept-Encoding", ""):
-                    body = server.gzipped(tag, body)
-                    headers["Content-Encoding"] = "gzip"
-            self.send_response(status)
-            self.send_header("Content-Type", kind)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-cache" if text else "no-store")
-            for name, value in headers.items():
-                self.send_header(name, value)
-            self.end_headers()
-            self.wfile.write(body)
-
-        def json(self, value: Any, status: int = HTTPStatus.OK) -> None:
-            self.reply(json.dumps(value).encode(), "application/json", status)
-
-        def missing(self, what: str = "not found") -> None:
-            self.json({"error": what}, HTTPStatus.NOT_FOUND)
-
-        def need_id(self, body: dict[str, Any], noun: str = "run") -> str:
-            """The `id` a POST names; a body without one is refused saying so (an empty id names nothing)."""
-            found = str(body.get("id") or "")
-            if not found:
-                raise DecompError("tas.request", f'the body names no {noun}: send {{"id": ...}}')
-            return found
-
-        def viewer_socket(self, subject: str) -> None:
-            """Upgrade to a WebSocket and carry the display's RFB until either side closes."""
-            key = self.headers.get("Sec-WebSocket-Key")
-            record = display.load(server.displays, subject)
-            if not key or self.headers.get("Upgrade", "").lower() != "websocket":
-                raise DecompError("viewer.upgrade", "the viewer socket needs a WebSocket upgrade")
-            self.close_connection = True
-            viewer.serve_socket(self.connection, key, record, display.connect_address)
-
-        def viewer_audio(self, subject: str) -> None:
-            """The display's sound as one growing WAV (s16le stereo), from this viewer's request until it leaves."""
-            capture = display.backend(server.displays).audio(subject)
-            try:
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "audio/wav")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("X-Accel-Buffering", "no")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.close_connection = True
-            except BaseException:
-                capture.kill()
-                capture.wait()
-                raise
-            viewer.stream_audio(self.wfile, capture, wav_header(display.AUDIO_RATE))
+    class Handler(serve_http.Replies):
+        site = server
 
         def do_GET(self) -> None:
             path, _, query = self.path.partition("?")
-            head, _, run_id = path[1:].partition("/")
+            head, _, rest = path[1:].partition("/")
             try:
-                if path == "/":
-                    self.reply(PAGE().replace(SHA_MARK, server.deployed).encode(), "text/html; charset=utf-8")
-                elif path == "/api/feed/stream":
-                    self.feed_stream()
+                if path in EXACT:
+                    EXACT[path](self, server, query)
                 elif (site := site_core.answer(server, "GET", path, query, b"")) is not None:
                     self.json(site[1], site[0])
-                elif path == "/watch":
-                    self.reply(b"", "text/plain", HTTPStatus.FOUND, extra={"Location": server.keeper.watch()})
-                elif path == "/live":
-                    self.reply(viewer.live_page(display.records(server.displays)).encode(), "text/html; charset=utf-8")
-                elif head == "viewer" and run_id.endswith("/audio"):
-                    self.viewer_audio(run_id[:-6])
-                elif head == "viewer" and run_id.endswith("/ws"):
-                    self.viewer_socket(run_id[:-3])
-                elif head == "viewer" and run_id:
-                    page = viewer.viewer_page(display.load(server.displays, run_id))
-                    self.reply(page.encode(), "text/html; charset=utf-8")
-                elif head in RUN_ROUTES and run_id and server.run_dir(run_id.partition("/")[0]) is None:
-                    self.missing(f"no run {run_id.partition('/')[0]}")
-                elif path == "/api/coverage":
-                    self.json(server.coverage())
-                elif path == "/api/pool":
-                    self.json(server.slot_pool())
-                elif path == "/api/runs":
-                    args = dict(part.partition("=")[::2] for part in query.split("&") if part)
-                    before = float(args["before"]) if args.get("before") else None
-                    self.json(server.history(before, int(args.get("limit") or HISTORY_PAGE)))
-                elif path == "/api/phase":
-                    self.json(*server.phase.phase())
-                elif path == "/phase/shot":
-                    self.phase_shot(query)
-                elif path == "/phase/frame.png":
-                    self.phase_frame(query)
-                elif head == "data" and run_id:
-                    self.data(run_id)
-                elif path == "/wall":
-                    self.wall()
-                elif head == "static" and run_id:
-                    self.static(STATIC, run_id)
                 elif head == "coverage":
-                    self.static(server.cfg["runs"] / tas_coverage.HTML, run_id or "index.html", report=True)
-                elif head == "stream" and run_id:
-                    status, payload, kind = site_stream.frame(server, run_id)
-                    self.reply(payload if isinstance(payload, bytes) else json.dumps(payload).encode(), kind, status)
-                elif head == "video" and run_id:
-                    self.video(server.run_dir(run_id))
-                elif head == "frame" and run_id:
-                    self.frame(server.run_dir(run_id))
-                elif head == "oracle" and run_id:
-                    self.frame(server.run_dir(run_id), tas_oracle.VIEW)
-                elif head == "shot" and run_id:
-                    self.shot(server.run_dir(run_id), query)
-                elif head == "diff" and run_id:
-                    self.diff(server.run_dir(run_id))
-                elif head == "log" and run_id:
-                    self.log(server.run_dir(run_id), query)
-                elif head == "audio" and run_id:
-                    self.audio(server.run_dir(run_id), query)
+                    serve_files.coverage(self, server, rest, query)
+                elif head in PREFIX and rest:
+                    PREFIX[head](self, server, rest, query)
+                elif head in RUN_ROUTES and rest:
+                    name = rest.partition("/")[0]
+                    if (run := server.run_dir(name)) is None:
+                        self.missing(f"no run {name}")
+                    else:
+                        RUN_ROUTES[head](self, server, run, query)
                 else:
                     self.missing()
             except (BrokenPipeError, ConnectionResetError):
@@ -1499,311 +1340,6 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
             except DecompError as error:  # a refusal answers (a missing display is a 404 naming it), never a hang
                 status = HTTPStatus.NOT_FOUND if error.key.endswith("notfound") else HTTPStatus.BAD_REQUEST
                 self.json({"error": str(error)}, status)
-
-        def feed_stream(self) -> None:
-            """Server-Sent Events: a `hello` with the feed's version and a `feed` event for every event it holds (a page
-            that read /api/feed before Live's first publish misses nothing), then one `feed` event per new or changed
-            event when the feed changes (the Live watch's signal); a comment every FEED_KEEPALIVE_SECONDS when idle."""
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Accel-Buffering", "no")
-            self.end_headers()
-            self.close_connection = True
-            version, held = server.feed.snapshot()
-            self.wfile.write(site_core.sse("hello", {"version": version}))
-            self.wfile.write(b"".join(site_core.sse("feed", item) for item in held))
-            self.wfile.flush()
-            while True:
-                version, items = server.feed.since(version, FEED_KEEPALIVE_SECONDS)
-                self.wfile.write(b"".join(site_core.sse("feed", item) for item in items) or b": keepalive\n\n")
-                self.wfile.flush()
-
-        def phase_shot(self, query: str) -> None:
-            platform = dict(p.partition("=")[::2] for p in query.split("&") if p).get("platform") or ""
-            found = server.phase.shot(platform)
-            if found is None:
-                self.json({"error": "no screenshot for that platform"}, HTTPStatus.NOT_FOUND)
-            else:
-                self.reply(found[0], found[1])
-
-        def phase_frame(self, query: str) -> None:
-            version = dict(p.partition("=")[::2] for p in query.split("&") if p).get("version") or server.phase.focus()
-            image, why = server.phase.frame(version) if version else (None, "no version")
-            if image is None:
-                self.json({"error": why}, HTTPStatus.NOT_FOUND)
-            else:
-                self.reply(image, "image/png")
-
-        def static(self, root: Path, name: str, report: bool = False) -> None:
-            """A file below `root` (the gcovr HTML report, the page's static files); a name that leaves it is a 404."""
-            path = (root / name).resolve()
-            if root.resolve() not in path.parents or not path.is_file():
-                return self.missing()
-            kind = {
-                ".html": "text/html; charset=utf-8",
-                ".css": "text/css",
-                ".js": "text/javascript",
-                ".svg": "image/svg+xml",
-            }
-            body = path.read_bytes()
-            if report and path.suffix == ".html":
-                body = site_frame.wrap_report(body)  # the generated report links the site stylesheet too
-            self.reply(body, kind.get(path.suffix, "application/octet-stream"))
-
-        def frame(self, run: Path | None, name: str = tas.VIEW) -> None:
-            path = run / name if run else None
-            try:
-                stamp, body, seq = server.capture(path)  # type: ignore[arg-type]
-            except (OSError, AttributeError, ValueError):
-                return self.missing()
-            return self.reply(body, "image/png", extra={"X-Frame": str(stamp), "X-Input-Seq": str(seq)})
-
-        def video(self, run: Path | None) -> None:
-            """One bounded latest-frame stream: 30 samples/s, independent of RTT and turbo's game clock."""
-            if not run:
-                return self.missing()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/x-tas-frames")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Video-Fps", str(VIDEO_FPS))
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            # A stalled phone cannot accumulate seconds of pictures in the server's socket buffer.
-            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
-            self.connection.settimeout(5)
-            stamp, deadline, sent_seq = 0, time.monotonic(), 0
-            feed = server.reach.feed_for(run)  # the run's reach records (section 10a), None when it has none
-            first = feed.first() if feed else None
-            while True:
-                try:
-                    current, body, seq = server.capture(run / tas.VIEW, "JPEG")
-                except (OSError, ValueError):
-                    current, body, seq = stamp, b"", 0
-                changed = current != stamp
-                # Reach records go out ahead of the picture they belong to; a new viewer's first bytes are a full one.
-                records = ([first] if first else []) + (feed.pending() if feed else [])
-                first = None
-                out = b"".join(VIDEO_HEADER.pack(len(r) | REACH_FLAG, current, sent_seq) + r for r in records)
-                if changed:
-                    out += VIDEO_HEADER.pack(len(body), current, seq) + body
-                if out:
-                    try:
-                        self.wfile.write(out)
-                        self.wfile.flush()
-                    except OSError:
-                        return  # disconnect/backpressure timeout: release this viewer immediately
-                if changed:
-                    stamp, sent_seq = current, seq
-                if not tas.running(run):
-                    return
-                now = time.monotonic()
-                if changed:
-                    deadline = max(deadline + 1 / VIDEO_FPS, now)
-                # When the producer is late, wait for its next capture without losing another whole period.
-                time.sleep(max(0.002, deadline - now))
-
-        def wall(self) -> None:
-            """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, WALL_FPS a second. A frame is
-            VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
-            shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
-            per connection and never reused. Each run's reach records (section 10a) ride flagged under its index too, a
-            full one first: the body of a flagged record is the table when it starts with "{", else a reach record.
-            Browsers allow six connections per host, so twelve per-tile streams would stall."""
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/x-tas-wall")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Wall-Fps", str(WALL_FPS))
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.connection.settimeout(5)
-            index: dict[str, int] = {}
-            stamps: dict[str, int] = {}
-            feeds: dict[str, ReachFeed | None] = {}
-            quiet = due = time.monotonic()
-            while True:
-                out = b""
-                for run in server.running_runs():
-                    try:
-                        stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
-                    except (OSError, ValueError):
-                        continue
-                    if run.name not in index and len(index) < WALL_KEEPALIVE_INDEX:
-                        index[run.name] = len(index)
-                        name = json.dumps({"id": run.name}).encode()
-                        out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
-                        feeds[run.name] = feed = server.reach.feed_for(run)
-                        first = feed.first() if feed else None
-                        if first and any(first[5:]):  # a run that lit nothing yet costs the wall no record
-                            out += VIDEO_HEADER.pack(len(first) | REACH_FLAG, stamp, index[run.name]) + first
-                    feed = feeds.get(run.name)
-                    for record in feed.pending() if feed else []:
-                        out += VIDEO_HEADER.pack(len(record) | REACH_FLAG, stamp, index[run.name]) + record
-                    if run.name in index and stamps.get(run.name) != stamp:
-                        stamps[run.name] = stamp
-                        out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
-                now = time.monotonic()
-                if not out and now - quiet >= WALL_KEEPALIVE_SECONDS:
-                    out = VIDEO_HEADER.pack(WALL_TABLE, 0, WALL_KEEPALIVE_INDEX)
-                if out:
-                    quiet = now
-                    try:
-                        self.wfile.write(out)
-                        self.wfile.flush()
-                    except OSError:
-                        return
-                due = max(due + 1 / WALL_FPS, time.monotonic())  # a round's own work does not slow the pace
-                time.sleep(max(0.0, due - time.monotonic()))
-
-        def data(self, name: str) -> None:
-            """A file of the baked site (`<tas.runs>/site/`). A client that accepts gzip gets the `.gz` sibling the bake
-            wrote (else a body over GZIP_MIN is compressed once per tag); hashed names are immutable, live.json and
-            manifest.json are never stored, the rest revalidate by ETag."""
-            rel = urllib.parse.unquote(name)
-            root = server.site.resolve()
-            target = (root / rel).resolve()
-            if root not in target.parents or target.suffix == ".gz" or not target.is_file():
-                return self.missing()
-            kind = DATA_KINDS.get(target.suffix, "application/octet-stream")
-            zipped = target.with_name(target.name + ".gz")
-            packed = "gzip" in self.headers.get("Accept-Encoding", "") and zipped.is_file()
-            try:
-                info = (zipped if packed else target).stat()
-                body = (zipped if packed else target).read_bytes()
-            except OSError:
-                return self.missing()
-            tag = f'"{info.st_mtime_ns:x}-{info.st_size:x}{"z" if packed else ""}"'
-            headers = {"ETag": tag, "Vary": "Accept-Encoding"}
-            if target.name in NO_STORE_DATA:
-                headers["Cache-Control"] = "no-store"
-            elif HASHED_NAME.search(target.name):
-                headers["Cache-Control"] = "public, max-age=31536000, immutable"
-            else:
-                headers["Cache-Control"] = "no-cache"
-            if tag_matches(self.headers.get("If-None-Match"), tag):
-                self.send_response(HTTPStatus.NOT_MODIFIED)
-                for key, value in headers.items():
-                    self.send_header(key, value)
-                self.end_headers()
-                return
-            if packed:
-                headers["Content-Encoding"] = "gzip"
-            elif (
-                kind.split(";")[0] in TEXT_KINDS
-                and len(body) >= GZIP_MIN
-                and "gzip" in self.headers.get("Accept-Encoding", "")
-            ):
-                body = server.gzipped(f"data{tag}{target.name}", body)
-                headers["Content-Encoding"] = "gzip"
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", kind)
-            self.send_header("Content-Length", str(len(body)))
-            for key, value in headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-            self.wfile.write(body)
-
-        def shot(self, run: Path | None, query: str) -> None:
-            """One side's picture at one compared poll: ?side=port|oracle&poll=N."""
-            args = dict(part.partition("=")[::2] for part in query.split("&"))
-            side, poll = args.get("side", ""), args.get("poll", "")
-            if not run or side not in tas_oracle.SIDES or not poll.isdigit():
-                return self.missing()
-            meta = (tas.read_record(run) or {}).get("oracle")
-            if side == "oracle" and (cause := tas_oracle.gate_cause(meta)):
-                return self.reply(cause.encode(), "text/plain; charset=utf-8", HTTPStatus.CONFLICT)
-            try:
-                _, body, _ = server.capture(run / tas_oracle.SHOTS / side / f"poll-{int(poll):06d}.ppm")
-            except (OSError, ValueError):
-                return self.missing()
-            return self.reply(body, "image/png")
-
-        def diff(self, run: Path | None) -> None:
-            """Every compared poll's score: {"every", "rows": [{"poll", "diff", "drift", "vi_drift"}]}."""
-            row = tas.read_record(run) if run else None
-            meta = row.get("oracle") if row else None
-            if not run or not isinstance(meta, dict):
-                return self.missing()
-            summary = tas_oracle.summary(run, row) or {}
-            every = int(meta.get("every") or 1)
-            try:
-                rows = tas_oracle.compare(run, every, summary.get("status") == "done", meta)
-            except DecompError as error:
-                return self.json({"every": every, "rows": [], "refused": error.detail})
-            return self.json({"every": every, "rows": rows})
-
-        def log(self, run: Path | None, query: str) -> None:
-            if not run:
-                return self.missing()
-            start = 0
-            for part in query.split("&"):
-                key, _, value = part.partition("=")
-                if key == "from" and value.isdigit():
-                    start = int(value)
-            try:
-                with (run / "output.txt").open("rb") as handle:
-                    handle.seek(start)
-                    body = handle.read(1 << 20)
-            except OSError:
-                body = b""
-            self.reply(body, "text/plain; charset=utf-8")
-
-        def audio(self, run: Path | None, query: str = "") -> None:
-            row = tas.read_record(run) if run else None
-            if not run or not row:
-                return self.missing()
-            if not realtime(run, row):
-                return self.reply(b"", "audio/wav", HTTPStatus.NO_CONTENT, extra={"X-Audio-Muted": "not-realtime"})
-            name = tas_oracle.AUDIO if "side=oracle" in query.split("&") else tas.AUDIO
-            pcm, rate_file = run / name, run / (name + ".rate")
-            deadline = time.monotonic() + 10
-            while not rate_file.is_file() or not pcm.is_file():
-                if not tas.running(run) or time.monotonic() > deadline:
-                    return self.missing()
-                time.sleep(0.05)
-            rate = int(rate_file.read_text().strip() or 32000)
-            if not 8000 <= rate <= 192000:
-                return self.missing()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "audio/wav")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Accel-Buffering", "no")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.close_connection = True
-            self.connection.settimeout(5)
-            self.wfile.write(wav_header(rate))
-            oracle = name == tas_oracle.AUDIO
-
-            def due() -> int:
-                return int(max(0.0, time.time() - float(row.get("started") or 0)) * rate) * 4
-
-            end = min(due(), pcm.stat().st_size) if oracle else pcm.stat().st_size
-            offset = max(0, end - int(rate * AUDIO_LEAD_SECONDS) * 4) // 4 * 4
-            # Even a producer that writes in bursts gets one steady wall-paced stream. Initial lead covers jitter.
-            began, sent = time.monotonic(), 0
-            with pcm.open("rb") as handle:
-                while True:
-                    allowance = int((time.monotonic() - began + AUDIO_LEAD_SECONDS) * rate) * 4 - sent
-                    count = min(max(0, allowance), int(rate * 0.05) * 4)
-                    if oracle:
-                        count = min(count, max(0, due() - offset))
-                    handle.seek(offset)
-                    chunk = handle.read(count)
-                    chunk = chunk[: len(chunk) // 4 * 4]
-                    if chunk:
-                        self.wfile.write(chunk)
-                        self.wfile.flush()
-                        offset += len(chunk)
-                        sent += len(chunk)
-                    elif not tas.running(run) and (offset >= pcm.stat().st_size or (oracle and offset >= due())):
-                        return
-                    time.sleep(0.02)
 
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
@@ -1813,55 +1349,11 @@ def handler(server: Server) -> type[BaseHTTPRequestHandler]:
                 if (site := site_core.answer(server, "POST", path, query, raw)) is not None:
                     return self.json(site[1], site[0])
                 body = json.loads(raw or b"{}")
-                if self.path == "/api/play":
-                    self.json(
-                        server.play(
-                            str(body.get("movie") or ""),
-                            int(body.get("speed", 0)),
-                            str(body.get("port") or "") or None,
-                            str(body.get("label") or "") or None,
-                            str(body.get("pak") or "") or None,
-                            bool(body.get("oracle", False)),
-                            str(body.get("cpak") or "") or None,
-                            str(body.get("from") or "") or None,
-                            int(body["at"]) if body.get("at") is not None else None,
-                            bool(body.get("fps_unlock", False)),
-                            str(body.get("start") or "") or None,
-                            bool(body.get("take", False)),
-                            int(body["hold_at"]) if body.get("hold_at") is not None else None,
-                        )
-                    )
-                elif self.path == "/api/stop":
-                    self.json(server.stop(self.need_id(body)))
-                elif self.path == "/api/pin":
-                    self.json(server.keep(self.need_id(body), bool(body.get("pinned", True))))
-                elif self.path == "/api/take":
-                    self.json(server.take(self.need_id(body)))
-                elif self.path.startswith("/api/display/") and self.path.endswith("/input"):
-                    # the runner page's keyboard and gamepad: the same display Input the CLI and the live proof use
-                    shown = self.path[len("/api/display/") : -len("/input")]
-                    self.json(display.backend(server.displays).input(shown, body.get("events")))
-                elif self.path == "/api/input" and body.get("gate"):
-                    self.json(
-                        server.gate(
-                            self.need_id(body),
-                            str(body["gate"]),
-                            int(body["count"]) if body.get("count") is not None else None,
-                        )
-                    )
-                elif self.path == "/api/input" and body.get("release"):
-                    self.json(server.release(self.need_id(body)))
-                elif self.path == "/api/input":
-                    self.json(
-                        server.input(
-                            self.need_id(body),
-                            int(body.get("seq", 0)),
-                            int(body.get("buttons", 0)),
-                            int(body.get("x", 0)),
-                            int(body.get("y", 0)),
-                            int(body.get("pad", 0)),
-                        )
-                    )
+                prefix, suffix = serve_actions.DISPLAY_INPUT
+                if path in serve_actions.ACTIONS:
+                    serve_actions.ACTIONS[path](self, server, body)
+                elif path.startswith(prefix) and path.endswith(suffix):
+                    serve_actions.display_input(self, server, body, path[len(prefix) : -len(suffix)])
                 else:
                     self.missing()
             except (DecompError, ValueError, TypeError) as error:

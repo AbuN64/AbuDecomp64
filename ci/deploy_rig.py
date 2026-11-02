@@ -7,9 +7,8 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
   name       the engine's `decomp tools name` answers the build's NAME, a digest of every package commit the new toolkit
              holds (the live toolkit's, with abu-decomp-64 at the landed SHA), never the SHA alone: a toolkit
              build holds several packages (unbake, recipemaker and cake-taste-64 are carried as installed: CakeUnbake64
-             deploys its own toolkit, never this one), so the name digests all of them. It also makes the sealed old
-             builds `<toolkit>.<x>` except the live one (the current `.previous` included: the activation deletes it)
-             writable (u+w, recursively) so the activation can delete them; the deploy itself deletes nothing;
+             deploys its own toolkit, never this one), so the name digests all of them. The deploy deletes nothing:
+             the activation prunes old builds, sealed ones included;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
              SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every other package of the live
              toolkit carried over as installed (`--carry-from` the live link; BUILD, the link the engine swaps, starts
@@ -50,7 +49,6 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 from collections.abc import Callable
@@ -277,26 +275,6 @@ def bash(script: str, *args: str, capture: bool = False) -> tuple[int, str]:
     return done.returncode, done.stdout or ""
 
 
-def unseal_old_builds(toolkit: str) -> list[str]:
-    """Make every sealed build `<toolkit>.<x>` writable by its owner (u+w on every file and folder, recursively) except
-    the one the live toolkit link resolves to, so the activation can delete them: it deletes the current `.previous`
-    too, when it moves the live build into `.previous`. Returns the folders opened. The deploy removes nothing itself:
-    the activation owns pruning."""
-    home, base = os.path.split(toolkit)
-    live = os.path.realpath(toolkit)
-    opened = set()
-    for entry in sorted(os.listdir(home)):
-        folder = os.path.realpath(os.path.join(home, entry))
-        if not entry.startswith(f"{base}.") or folder == live or not os.path.isdir(folder):
-            continue
-        for here, dirs, files in os.walk(folder):
-            for leaf in [here, *(os.path.join(here, n) for n in dirs + files)]:
-                if not os.path.islink(leaf):
-                    os.chmod(leaf, os.stat(leaf).st_mode | stat.S_IWUSR)
-        opened.add(folder)
-    return sorted(opened)
-
-
 def last_line(text: str, default: object) -> str:
     return text.strip().splitlines()[-1] if text.strip() else str(default)
 
@@ -437,8 +415,6 @@ def install_login_defaults(home: Path, commands_dir: str, profile: Path) -> list
 
 def step_name(sha: str, toolkit: str, run: Bash, environ: dict[str, str]) -> None:
     revision = name(sha, toolkit, run, environ)
-    opened = unseal_old_builds(toolkit)  # a stuck activation cannot delete a sealed read-only build
-    sys.stdout.write(f"unseal: {len(opened)} old builds writable for the activation\n")
     sys.stdout.write(f"name: {revision}\n")
     sys.stdout.flush()
 

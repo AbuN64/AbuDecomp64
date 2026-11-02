@@ -156,75 +156,8 @@ class StepTests(unittest.TestCase):
         self.assertTrue(os.access(Path(__file__).parent.parent / "ci" / "deploy_rig.py", os.X_OK))
 
 
-class UnsealTests(unittest.TestCase):
-    """The name step on a mocked home: every sealed build but the live one becomes writable, `.previous` included."""
-
-    def setUp(self):
-        self.home = Path(tempfile.mkdtemp(prefix="deploy-rig-unseal-"))
-        self.addCleanup(shutil.rmtree, self.home, ignore_errors=True)
-        self.addCleanup(subprocess.run, ["chmod", "-R", "u+w", str(self.home)], check=False)  # sealed builds kept
-        self.toolkit = str(self.home / "venv-decomp")
-        for name in ("live0", "prev0", "old1", "old2-2"):
-            self.build(f"venv-decomp.{name}")
-        os.symlink(self.home / "venv-decomp.old1", self.home / "venv-decomp.1111")  # the link of an old build
-        os.symlink(self.home / "venv-decomp.live0", self.toolkit)
-        os.symlink(self.home / "venv-decomp.prev0", self.toolkit + ".previous")
-        self.build("venv-decomp-w3.361f")  # a sibling toolkit sharing the prefix
-
-    def build(self, name, sealed=True):
-        path = self.home / name
-        (path / "lib" / "deep").mkdir(parents=True)
-        (path / "lib" / "mod.py").write_text("x = 1\n")
-        (path / "lib" / "deep" / "leaf.py").write_text("y = 2\n")
-        os.symlink("missing", path / "lib" / "dangling")
-        if sealed:
-            os.chmod(path / "lib" / "deep" / "leaf.py", 0o444)
-            os.chmod(path / "lib" / "deep", 0o555)
-            os.chmod(path / "lib" / "mod.py", 0o444)
-            os.chmod(path / "lib", 0o555)
-            os.chmod(path, 0o555)
-
-    def writable(self, name):
-        path = self.home / name
-        return all(os.access(path / sub, os.W_OK) for sub in ("", "lib", "lib/mod.py", "lib/deep", "lib/deep/leaf.py"))
-
-    def name_step(self):
-        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit, "HOME": str(self.home)}
-        bash = Bash((0, ENVELOPE))
-        with redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
-            code = deploy_rig.main(["name"], environ, bash)
-        return code, out.getvalue()
-
-    def test_name_opens_every_old_build_previous_included_and_keeps_live_and_siblings_sealed(self):
-        code, out = self.name_step()
-        self.assertEqual(code, 0)
-        self.assertIn("unseal: 3 old builds", out)
-        self.assertIn(f"name: {NAME}", out)
-        olds = ("venv-decomp.prev0", "venv-decomp.old1", "venv-decomp.old2-2")
-        self.assertEqual([self.writable(n) for n in olds], [True, True, True])
-        self.assertEqual([self.writable(n) for n in ("venv-decomp.live0", "venv-decomp-w3.361f")], [False, False])
-        for old in olds:  # what the activation does next
-            shutil.rmtree(self.home / old)
-        self.assertEqual(sorted(os.listdir(self.home / "venv-decomp.live0" / "lib")), ["dangling", "deep", "mod.py"])
-
-    def test_a_build_in_progress_beside_it_is_left_as_it_is_and_nothing_is_removed(self):
-        self.build("venv-decomp.progress", sealed=False)
-        before = sorted(os.listdir(self.home))
-        self.assertEqual(self.name_step()[0], 0)
-        self.assertEqual(sorted(os.listdir(self.home)), before)
-        self.assertTrue((self.home / "venv-decomp.progress" / "lib" / "mod.py").is_file())
-
-    def test_the_live_toolkit_stays_sealed_when_it_is_also_the_previous_link(self):
-        os.unlink(self.toolkit + ".previous")
-        os.symlink(self.home / "venv-decomp.live0", self.toolkit + ".previous")
-        self.assertEqual(self.name_step()[0], 0)
-        self.assertFalse(self.writable("venv-decomp.live0"))
-
-    def test_a_failed_name_opens_nothing(self):
-        environ = {deploy_rig.ENV: "1" * 40, "TOOLKIT": self.toolkit, "HOME": str(self.home)}
-        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(deploy_rig.main(["name"], environ, Bash((1, ""))), 1)
-        self.assertFalse(self.writable("venv-decomp.old1"))
+class ReadbackTests(unittest.TestCase):
+    """The readback step publishes the command and the login block; the deploy itself never prunes."""
 
     def test_readback_publishes_decomp_by_name_and_the_login_block_names_only_the_command_dir(self):
         home = Path(HOME)

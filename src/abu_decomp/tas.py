@@ -1644,9 +1644,10 @@ def play(
         "N64C_INPUT": input_address(run),
         "N64C_AUDIO_OUT": str(run / AUDIO),
     }
-    rows = reach_rows(cfg)
+    rows, reach_census = reach_rows(cfg), None
     if rows and rows.is_file():
         env["N64C_REACH_ROWS"] = str(rows)  # the port streams the functions the run enters (reach_address)
+        reach_census = census(rows)  # what its reach.bin is a bitset over: the file the port loads, not a later bake
     if pads > 1:
         env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
     if human:
@@ -1692,6 +1693,8 @@ def play(
         record[tas_select.PINS] = pins  # what the port was built from: the next selective replay diffs against it
     if pads > 1:
         record["pads"] = pads
+    if reach_census:
+        record["census"] = reach_census
     if shots_every:  # the port's pictures' interval: the stream's clock step (tas_stream.every)
         record[SHOTS] = {"every": shots_every}
     if started[0]:

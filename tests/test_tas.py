@@ -335,6 +335,9 @@ class MovieTests(unittest.TestCase):
         with self.port("1 aa\n", seen):
             result = tas.play(self.profile, "m", now=T0)
         self.assertEqual(seen[0]["N64C_REACH_ROWS"], str(site / "fnrows.abc.txt"))
+        sha = hashlib.sha256(b"main\nfoo\n").hexdigest()  # the census of the file the port loaded, from the start
+        census = {"fnrows": "fnrows.abc.txt", "sha256": sha, "rows": 2}
+        self.assertEqual(tas.read_record(Path(result["run"]))["census"], census)
         self.assertEqual(tas.reach_address(Path(result["run"])), seen[0]["N64C_INPUT"] + ".reach")
 
     def reach_play(self, records):
@@ -397,8 +400,9 @@ class MovieTests(unittest.TestCase):
         self.movie()
         seen = []
         with self.port("1 aa\n", seen):
-            tas.play(self.profile, "m", now=T0)
+            result = tas.play(self.profile, "m", now=T0)
         self.assertNotIn("N64C_REACH_ROWS", seen[0])
+        self.assertNotIn("census", tas.read_record(Path(result["run"])))
 
     def test_the_run_records_the_explicit_ports_executable_source_and_shim(self):
         self.movie()

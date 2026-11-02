@@ -4,8 +4,9 @@ region a module under static/site. The record contract, the live feed and the re
 (`/api/contract`, `/api/feed`, `/api/feed/stream` Server-Sent Events, `/api/map|fn|stream|feedback/...`); the feed
 is fed from the same run rows live.json holds, at the moment Live writes them.
 Section `tas.serve`: {"listen": "HOST:PORT", "jobs": N, "inbox": path, "states": path, "pin": path, "keep_days": days,
-"phase_frame_minutes": m, "port_source": path, "stream_every": polls}; `lanes`, `invocations` and `claims` are still
-accepted (the bake reads the last two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a
+"phase_frame_minutes": m, "port_source": path, "stream_every": polls, "wall_finished": N (required: the finished
+runs the /wall stream opens with)}; `lanes`, `invocations` and `claims` are still accepted (the bake reads the last
+two). Every run (started here, by `tas play` in a shell, or by `play --all`) is a
 folder under `runs/plays` whose `run.json` the port's run writes (module tas); the page sees all of them: the port's own
 latest picture (`view.bmp`), its log and its sound (`audio.pcm`, served as a growing WAV).
 The page is static files: `/data/*` serves `<tas.runs>/site/` (module tas_bake writes it; a `.gz` sibling goes out to
@@ -112,6 +113,7 @@ _SERVE_KEYS = frozenset(
         "port_source",
         "enhanced",
         "stream_every",
+        "wall_finished",
     }
 )
 RECENT_SHOWN = 24  # newest finished runs in live.json (all running and queued ones are always there)
@@ -204,6 +206,12 @@ class Server:
         self.stream_every = int(serve.get("stream_every", 0))
         if self.stream_every < 0:
             raise DecompError("tas.serve", f"stream_every is a poll count >= 0, not {self.stream_every}")
+        # The /wall stream opens with the last thumb of this many newest finished runs (declared, no default).
+        if "wall_finished" not in serve:
+            raise DecompError("tas.serve", "wall_finished is not declared (how many finished runs the wall opens with)")
+        self.wall_finished = int(serve["wall_finished"])
+        if self.wall_finished < 0:
+            raise DecompError("tas.serve", f"wall_finished is a run count >= 0, not {self.wall_finished}")
         self.inbox = profile.path("tas.serve.inbox", serve["inbox"]) if "inbox" in serve else None
         self.states = profile.path("tas.serve.states", serve["states"]) if "states" in serve else None
         self.pin_dir = profile.path("tas.serve.pin", serve["pin"]) if "pin" in serve else None
@@ -1429,7 +1437,8 @@ def video(req: Any, server: Any, run: Path, query: str = "") -> None:
 
 def wall(req: Any, server: Any, query: str = "") -> None:
     """One multiplexed stream of WALL_WIDTH px JPEG thumbs of every running run, at most WALL_FPS a second, each
-    round woken by a run's picture file or a run starting or ending. A frame is
+    round woken by a run's picture file or a run starting or ending. It opens with the last thumb of the newest
+    `tas.serve.wall_finished` finished runs, oldest first (a finished run's picture does not change). A frame is
     VIDEO_HEADER (length, stamp, run index in the place of the input sequence) + JPEG. The first time a run
     shows, a record with WALL_TABLE set in its length (body: JSON {"id": run id}) names its index; indices are
     per connection and never reused. Each run's reach records (section 10a) ride flagged under its index too, a
@@ -1445,10 +1454,30 @@ def wall(req: Any, server: Any, query: str = "") -> None:
     try:
         with serve_wake.Wake(req.connection, 1 / WALL_FPS) as wake:
             wake.watch(plays, None, inotify.CREATE | inotify.MOVED_TO | inotify.DELETE)
+            if (opening := finished_thumbs(server, index, stamps)) and not wake.send(opening):
+                return
             wall_loop(req, server, wake, plays, index, stamps, feeds, listening)
     finally:
         for feed, fd in listening:
             feed.close(fd)
+
+
+def finished_thumbs(server: Any, index: dict[str, int], stamps: dict[str, int]) -> bytes:
+    """The wall's opening frames: the table record and last thumb of each of the newest `wall_finished` finished
+    runs (a run without a picture is named and shows none), oldest first."""
+    finished = [run for run, row in tas.run_rows(server.cfg) if row.get("status") != "running"]
+    out = b""
+    for run in finished[len(finished) - server.wall_finished :] if server.wall_finished else []:
+        index[run.name] = len(index)
+        name = json.dumps({"id": run.name}).encode()
+        out += VIDEO_HEADER.pack(len(name) | WALL_TABLE, 0, index[run.name]) + name
+        try:
+            stamp, body, _ = server.capture(run / tas.VIEW, "THUMB")
+        except (OSError, ValueError):
+            continue
+        stamps[run.name] = stamp
+        out += VIDEO_HEADER.pack(len(body), stamp, index[run.name]) + body
+    return out
 
 
 def wall_loop(

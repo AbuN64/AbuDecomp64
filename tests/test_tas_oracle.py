@@ -614,7 +614,14 @@ class ServeTests(unittest.TestCase):
         (root / "port").write_text("bin")
         (root / "movies").mkdir()
         seat = root / "seat.json"
-        table = {"movies": "movies", "runs": "runs", "port": "port", "rom": "game.z64", "args": []}
+        table = {
+            "movies": "movies",
+            "runs": "runs",
+            "port": "port",
+            "rom": "game.z64",
+            "args": [],
+            "serve": {"wall_finished": 0},
+        }
         seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         self.server = tas_serve.Server(load_profile(seat))
         self.run = root / "runs" / "plays" / "r1"

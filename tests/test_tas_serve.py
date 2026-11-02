@@ -182,7 +182,13 @@ class Base(unittest.TestCase):
             "port": "port",
             "rom": "game.z64",
             "args": [],
-            "serve": {"listen": "127.0.0.1:0", "inbox": "inbox.md", "states": "states.json", **serve},
+            "serve": {
+                "listen": "127.0.0.1:0",
+                "inbox": "inbox.md",
+                "states": "states.json",
+                "wall_finished": 2,
+                **serve,
+            },
         }
         self.seat.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         return load_profile(self.seat)
@@ -1027,7 +1033,7 @@ class LiveTests(Base):
 
 class WallTests(Base):
     def test_one_connection_carries_a_thumb_of_every_running_run(self):
-        server = tas_serve.Server(self.profile())
+        server = tas_serve.Server(self.profile(wall_finished=0))
         http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(server))
         http.daemon_threads = True
         threading.Thread(target=http.serve_forever, daemon=True).start()
@@ -1054,6 +1060,28 @@ class WallTests(Base):
                 shown.add(index)
         self.assertEqual(sorted(names.values()), [f"w{n:02d}" for n in range(12)])
         self.assertEqual(shown, set(names))  # every index was named before its first picture
+
+    def test_wall_opens_with_the_newest_finished_runs_oldest_first(self):
+        http = ThreadingHTTPServer(("127.0.0.1", 0), tas_serve.handler(tas_serve.Server(self.profile(wall_finished=2))))
+        threading.Thread(target=http.serve_forever, daemon=True).start()
+        self.addCleanup(http.server_close)
+        self.addCleanup(http.shutdown)
+        bmp, _ = capture_bmp(320, 240)
+        for n in range(4):  # more finished runs than the setting: only f2 and f3 come through
+            run = self.make_run(f"f{n}", movie="boot-idle", status="done", speed=0, started=float(n), outcome="ok")
+            (run / "view.bmp").write_bytes(bmp)
+        run = self.make_run("live", movie="boot-idle", status="running", speed=0, started=9.0, pid=os.getpid())
+        (run / "view.bmp").write_bytes(bmp)
+        wall = Stream(f"http://127.0.0.1:{http.server_address[1]}", "/wall", serve_video.VIDEO_HEADER)
+        self.addCleanup(wall.close)
+        names, order = {}, []
+        while len(order) < 3:
+            flagged, (_length, _stamp, index), body = wall.record()
+            if flagged:
+                names[index] = json.loads(body)["id"]
+            else:
+                order.append(names[index])
+        self.assertEqual(order, ["f2", "f3", "live"])  # the newest two finished, oldest first, then the running one
 
 
 REACH_BOUND = 60  # seconds a failing wait on the relay gives up after; a passing one never waits on it

@@ -131,7 +131,7 @@ class Routes(unittest.TestCase):
                     "name": "t",
                     "tas": {
                         "movies": "movies", "runs": "runs", "port": "port", "rom": "game.z64", "args": [],
-                        "serve": {"listen": "127.0.0.1:0", "pin": "pin", "phase_frame_minutes": 1},
+                        "serve": {"listen": "127.0.0.1:0", "pin": "pin", "phase_frame_minutes": 1, "wall_finished": 0},
                     },
                 }
             )

@@ -31,6 +31,7 @@
       "keep_days": 3,
       "jobs": 4,
       "stream_every": 25,
+      "wall_finished": 8,
       "inbox": "${home}/rig-state/tas/inbox.md",
       "states": "${home}/rig-state/progress/progress-states.json",
       "pin": "${home}/rig-state/tas/fetch/rage_decomp_source-src",

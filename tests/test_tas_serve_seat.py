@@ -21,7 +21,7 @@ class NoSeatTests(unittest.TestCase):
         (root / "game.z64").write_bytes(b"rom")
         (root / "movies").mkdir()
         profile = root / "seat.json"
-        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": []}
+        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": [], "serve": {"wall_finished": 0}}
         profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         self.server = tas_serve.Server(load_profile(profile))
 
@@ -65,7 +65,14 @@ class StartFailureTests(unittest.TestCase):
         (root / "movies").mkdir()
         (root / "port").write_bytes(b"bin")
         profile = root / "seat.json"
-        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": [], "port": "port"}
+        table = {
+            "movies": "movies",
+            "runs": "runs",
+            "rom": "game.z64",
+            "args": [],
+            "port": "port",
+            "serve": {"wall_finished": 0},
+        }
         profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         self.server = tas_serve.Server(load_profile(profile))
         for target in ("abu_decomp.tas_seat.check", "abu_decomp.tas.reconcile_runs"):
@@ -126,7 +133,14 @@ class SeatFlipTests(unittest.TestCase):
             (root / build / "ragewars").write_bytes(build.encode())
         (root / "port").symlink_to(root / "port.old")
         profile = root / "seat.json"
-        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": [], "port": "port/ragewars"}
+        table = {
+            "movies": "movies",
+            "runs": "runs",
+            "rom": "game.z64",
+            "args": [],
+            "port": "port/ragewars",
+            "serve": {"wall_finished": 0},
+        }
         profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         server = tas_serve.Server(load_profile(profile))
         self.assertEqual(server.cfg["port"], root / "port.old" / "ragewars")
@@ -169,7 +183,7 @@ class PortExitTests(unittest.TestCase):
         (root / "game.z64").write_bytes(b"rom")
         (root / "movies").mkdir()
         profile = root / "seat.json"
-        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": []}
+        table = {"movies": "movies", "runs": "runs", "rom": "game.z64", "args": [], "serve": {"wall_finished": 0}}
         profile.write_text(json.dumps({"schema_version": 1, "name": "t", "tas": table}))
         server = tas_serve.Server(load_profile(profile))
         run = root / "runs" / "plays" / "20261101T101210Z-play-20261101-101210"

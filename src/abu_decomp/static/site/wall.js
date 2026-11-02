@@ -1,7 +1,8 @@
 // The home wall: every playthrough as a tile, three columns (one at phone width), rows growing as pages load from
-// /api/wall when the sentinel below the last row comes into view. Only tiles on screen stream: a visible tile shows its
-// run's newest frame and moves on each feed event of that run (the feed's signal, never a clock); a tile off screen
-// keeps the last frame it showed. The wall's data-streams and data-visible attributes are the measured counts.
+// /api/wall when the sentinel below the last row comes into view. The pictures are the server's one /wall stream (a
+// thumb of every running run, each frame naming its run by index): a visible tile shows the newest thumb it was sent,
+// a tile off screen keeps the last one. The stream is reopened by a run event when it has ended (the feed's signal,
+// never a clock). The wall's data-streams and data-visible attributes are the measured counts.
 export const PAGE = 12;
 
 /** Merge a wall page into the tile order: ids already shown keep their place, new ids append. */
@@ -10,10 +11,23 @@ export function merge(order, tiles) {
   return order.concat(tiles.map(t => t.id).filter(id => !seen.has(id)));
 }
 
-/** The frame a tile shows: the newest recorded poll of its stream index, else null (no picture yet). */
-export function frameUrl(run, index) {
-  const polls = (index && index.polls) || [];
-  return polls.length ? `/still/${encodeURIComponent(run)}?side=port&poll=${polls[polls.length - 1]}` : null;
+/** /wall framing: u32 BE length (top bit set: a run table or a reach record), u64 BE stamp, u32 BE run index, then the
+ * body. A flagged body starting "{" names the index ({"id": run}); other flagged bodies are reach records, not read here. */
+export function wallFramer(onTable, onThumb) {
+  let buf = new Uint8Array(0);
+  return chunk => {
+    const joined = new Uint8Array(buf.length + chunk.length); joined.set(buf); joined.set(chunk, buf.length); buf = joined;
+    let o = 0;
+    while (buf.length - o >= 16) {
+      const view = new DataView(buf.buffer, buf.byteOffset + o, 16), raw = view.getUint32(0), n = raw & 0x7fffffff;
+      if (buf.length - o < 16 + n) break;
+      const body = buf.slice(o + 16, o + 16 + n), index = view.getUint32(12);
+      if (!(raw & 0x80000000)) onThumb(index, body);
+      else if (body[0] === 0x7b) onTable(index, JSON.parse(new TextDecoder().decode(body)).id);
+      o += 16 + n;
+    }
+    buf = buf.slice(o);
+  };
 }
 
 export function mount(el, ctx) {
@@ -26,12 +40,29 @@ export function mount(el, ctx) {
   const count = () => { grid.dataset.visible = visible.size; grid.dataset.streams = [...visible].filter(id => tiles.get(id).streaming).length; };
 
   // A tile streams only once its frame has loaded on screen: the count measures pictures shown, not requests made.
-  async function paint(id) {
+  function paint(id) {
     const tile = tiles.get(id);
-    const index = await ctx.api(`/api/stream/${encodeURIComponent(id)}`).catch(() => null);
-    const url = frameUrl(id, index);
-    if (url && visible.has(id) && tile.img.src !== url) tile.img.src = url;
-    tile.node.dataset.still = url ? "" : "empty";
+    if (tile.url && visible.has(id) && tile.img.src !== tile.url) tile.img.src = tile.url;
+    tile.node.dataset.still = tile.url ? "" : "empty";
+  }
+  // The one /wall stream: a thumb of every running run. Reads until the server ends it; `open` starts it again.
+  const names = new Map(), latest = new Map(); // stream index -> run; run -> the newest thumb's object URL
+  let reading = false;
+  async function open() {
+    if (reading || !grid.isConnected) return;
+    reading = true; names.clear();
+    const take = wallFramer((index, id) => names.set(index, id), (index, jpeg) => {
+      const id = names.get(index), blobs = ctx.URL || URL;
+      if (latest.has(id)) blobs.revokeObjectURL(latest.get(id));
+      latest.set(id, blobs.createObjectURL(new Blob([jpeg], { type: "image/jpeg" })));
+      if (tiles.has(id)) { tiles.get(id).url = latest.get(id); paint(id); }
+    });
+    try {
+      const res = await (ctx.fetch || fetch)("/wall", { cache: "no-store" });
+      const reader = res.body.getReader();
+      for (;;) { const { done, value } = await reader.read(); if (done) break; take(value); }
+    } catch { /* the stream ended: a run event opens it again */ }
+    reading = false;
   }
   const seen = new Observer(entries => {
     for (const e of entries) {
@@ -48,7 +79,7 @@ export function mount(el, ctx) {
     const shown = ok => { const it = tiles.get(t.id); it.streaming = ok && visible.has(t.id); if (!ok) node.dataset.still = "empty"; count(); };
     img.onload = () => shown(true); img.onerror = () => shown(false);
     node.append(img, cap);
-    tiles.set(t.id, { node, img, cap, streaming: false });
+    tiles.set(t.id, { node, img, cap, streaming: false, url: latest.get(t.id) || null });
     seen.observe(node);
     return node;
   }
@@ -77,10 +108,11 @@ export function mount(el, ctx) {
   const onRun = ev => {
     const id = ev.fields && ev.fields.run;
     if (!id || !grid.isConnected) return;
+    open();
     if (!tiles.has(id)) { next = 0; return void load(); }
     label({ id, lane: ev.lane, movie: ev.fields.movie, status: ev.kind === "run.ended" ? "done" : "running", poll: ev.fields.poll || 0 });
-    if (visible.has(id)) paint(id);
   };
   for (const kind of ["run.started:tas", "run.started:tas-target", "run.started:unit", "run.started:set", "run.ended"]) ctx.on(kind, onRun);
+  open();
   return load();
 }

@@ -88,9 +88,28 @@ class PlayEventsTest(unittest.TestCase):
 class WallJsTest(unittest.TestCase):
     def test_paging_merge_frames_and_streams_equal_visible_tiles(self):
         script = f"""
-import {{ merge, frameUrl, mount }} from {json.dumps(WALL_JS.as_uri())};
+import {{ merge, wallFramer, mount }} from {json.dumps(WALL_JS.as_uri())};
 const out = {{ merge: merge(["a", "b"], [{{id: "b"}}, {{id: "c"}}]),
-  frame: frameUrl("r 1", {{polls: [0, 60, 120]}}), none: frameUrl("r", {{polls: []}}) }};
+  tables: [], thumbs: [] }};
+const head = (flagged, index, len) => {{
+  const b = new Uint8Array(16), v = new DataView(b.buffer);
+  v.setUint32(0, (flagged ? 0x80000000 : 0) | len); v.setBigUint64(4, 5n); v.setUint32(12, index);
+  return b;
+}};
+const frame = (flagged, index, body) => {{
+  const h = head(flagged, index, body.length), o = new Uint8Array(16 + body.length);
+  o.set(h); o.set(body, 16); return o;
+}};
+const text = new TextEncoder();
+const wire = [
+  frame(true, 0, text.encode('{{"id":"r0"}}')), frame(true, 0, new Uint8Array([2, 1, 0, 0, 0])),
+  frame(false, 0, new Uint8Array([0xff, 0xd8, 1])),
+  frame(true, 3, text.encode('{{"id":"r3"}}')), frame(false, 3, new Uint8Array([0xff, 0xd8, 3])),
+];
+const whole = new Uint8Array(wire.reduce((n, f) => n + f.length, 0));
+let at = 0; for (const f of wire) {{ whole.set(f, at); at += f.length; }}
+const split = wallFramer((i, id) => out.tables.push([i, id]), (i, jpeg) => out.thumbs.push([i, jpeg.length]));
+split(whole.slice(0, 20)); split(whole.slice(20, 61)); split(whole.slice(61));  // frames cut anywhere reassemble
 class Node {{
   constructor() {{ this.dataset = {{}}; this.kids = []; this.isConnected = true; }}
   append(...k) {{ this.kids.push(...k); }}
@@ -111,10 +130,22 @@ const api = async path => {{
     const o = +q.get("offset"), l = +q.get("limit");
     return {{ total: 30, offset: o, tiles: tiles.slice(o, o + l), next: o + l < 30 ? o + l : null }};
   }}
-  return {{ polls: [0, 60] }};
+  throw new Error("the wall reads no other endpoint: " + path);
+}};
+const made = [], revoked = [];
+const fakeURL = {{
+  createObjectURL: blob => {{ made.push(blob.size); return "blob:" + made.length; }},
+  revokeObjectURL: u => revoked.push(u),
+}};
+let opened = 0;
+const fetchWall = async path => {{
+  opened++; out.fetched = path;
+  let sent = false;
+  const read = async () => sent ? {{ done: true }} : (sent = true, {{ done: false, value: whole }});
+  return {{ body: {{ getReader: () => ({{ read }}) }} }};
 }};
 const host = new Node();
-await mount(host, {{ api, on: () => {{}}, doc, Observer: Obs }});
+await mount(host, {{ api, on: () => {{}}, doc, Observer: Obs, fetch: fetchWall, URL: fakeURL }});
 const [grid, more] = host.kids, tileObs = observers[0], moreObs = observers[1];
 moreObs.fn([{{ isIntersecting: true, target: more }}]); await new Promise(r => setTimeout(r, 0));
 const shown = grid.kids.slice(0, 6);
@@ -123,18 +154,23 @@ out.before = grid.dataset.streams;  // requested, no frame loaded yet: nothing s
 shown.slice(0, 5).forEach(t => t.kids[0].onload()); shown[5].kids[0].onerror();  // five frames load, one fails
 tileObs.fn(shown.slice(0, 2).map(t => ({{ isIntersecting: false, target: t }})));
 out.tiles = grid.kids.length; out.visible = grid.dataset.visible; out.streams = grid.dataset.streams;
-out.src = shown[3].kids[0].src; out.offscreenSrc = shown[0].kids[0].src;
+await new Promise(r => setTimeout(r, 0));
+out.src = shown[3].kids[0].src; out.offscreenSrc = shown[0].kids[0].src; out.opened = opened;
+out.r0 = shown[0].kids[0].src; out.made = made;
 console.log(JSON.stringify(out));
 """
         run = subprocess.run(["node", "--input-type=module", "-e", script], capture_output=True, text=True, check=True)
         got = json.loads(run.stdout)
         self.assertEqual(got["merge"], ["a", "b", "c"])
-        self.assertEqual((got["frame"], got["none"]), ("/still/r%201?side=port&poll=120", None))
+        self.assertEqual(got["tables"], [[0, "r0"], [3, "r3"]])  # reach records on the wall are not tables
+        self.assertEqual(got["thumbs"], [[0, 3], [3, 3]])
+        self.assertEqual((got["fetched"], got["opened"]), ("/wall", 1))  # one stream for the whole wall
         self.assertEqual(got["tiles"], 24)  # two pages: the first on mount, the second when the sentinel shows
         self.assertEqual(got["before"], 0)  # a request alone is not a stream
         self.assertEqual((got["visible"], got["streams"]), (4, 3))  # streams: visible tiles whose frame loaded
-        self.assertEqual(got["src"], "/still/r3?side=port&poll=60")
-        self.assertEqual(got["offscreenSrc"], "/still/r0?side=port&poll=60")  # an off-screen tile keeps its still frame
+        self.assertEqual(got["src"], "blob:2")  # tile r3 shows the thumb the stream named by its index
+        self.assertEqual(got["offscreenSrc"], "blob:1")  # an off-screen tile keeps the last thumb it showed
+        self.assertEqual(got["made"], [3, 3])
 
 
 if __name__ == "__main__":

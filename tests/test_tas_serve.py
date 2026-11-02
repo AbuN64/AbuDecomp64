@@ -1187,7 +1187,7 @@ class ReachTests(Base):
         self.assertEqual(reach, [("a", reach_record(1, 10, bitset([0, 3]))), ("a", reach_record(2, 11, [5], [3]))])
 
     def test_a_record_wakes_the_viewers_pipe_until_it_leaves(self):
-        relay = tas_serve.RunReach(self.root)
+        relay = tas_serve.RunReach(self.root, lambda: None)  # no site fnrows: no census
         fd = relay.listen()
         self.addCleanup(lambda: fd in relay.ends and relay.unlisten(fd))
         with self.assertRaises(BlockingIOError):

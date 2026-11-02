@@ -1424,8 +1424,9 @@ def main(argv=None):
             print(f"lockstep check: {args.run}: {'holds' if not result['problems'] else 'breaks the contract'}")
             return 1 if result["problems"] else 0
         if args.command == "coverage":
+            summary = write_coverage(args.run)  # a refusal writes no join and names none
             print(f"lockstep coverage: {pathlib.Path(args.run) / RUN_COVERAGE}")
-            print(write_coverage(args.run))
+            print(summary)
             return 0
         if args.command == "match":
             if args.run:

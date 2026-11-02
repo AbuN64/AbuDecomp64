@@ -14,7 +14,7 @@ class DiskFloorTest(unittest.TestCase):
         for patcher in (
             mock.patch.dict(os.environ, {"ABU_SLOTS_DIR": self.dir, "ABU_SLOT_HELD": "", "ABU_SLOTS_OFF": ""}),
             mock.patch.object(slots, "capacity", return_value=8),
-            mock.patch.object(slots, "DISK_FLOOR_GIB", 40.0),
+            mock.patch.object(slots, "DISK_GIB", 40.0),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -22,9 +22,19 @@ class DiskFloorTest(unittest.TestCase):
     def free(self, gib: float):
         return mock.patch.object(slots, "disk_free_gib", return_value=gib)
 
-    def test_configure_reads_the_floor(self) -> None:
-        slots.configure({"disk_floor_gib": 55})
-        self.assertEqual(slots.DISK_FLOOR_GIB, 55.0)
+    def test_configure_reads_the_per_slot_need(self) -> None:
+        slots.configure({"disk_gib": 55})
+        self.assertEqual(slots.DISK_GIB, 55.0)
+
+    def test_the_need_grows_with_the_slots_a_job_holds(self) -> None:
+        with self.free(70.0):
+            slots.check_disk("batch", 1)
+            with self.assertRaises(slots.DiskFloorError):
+                slots.check_disk("batch", 2)
+
+    def test_no_declared_need_is_no_floor(self) -> None:
+        with self.free(0.1), mock.patch.object(slots, "DISK_GIB", 0.0):
+            slots.check_disk("batch", 8)
 
     def test_refused_below_the_floor_without_queueing(self) -> None:
         with self.free(12.5), self.assertRaises(slots.DiskFloorError) as caught:

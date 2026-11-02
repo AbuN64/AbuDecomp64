@@ -5,6 +5,7 @@ hung test, and faulthandler kills the run at 1.5x the limit if the handler canno
 import atexit
 import faulthandler
 import os
+import runpy
 import shutil
 import signal
 import sys
@@ -58,6 +59,14 @@ def source_first():
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))
 
 
+def host_seam():
+    """Unit tests never read the host's free disk or memory: tests/host_seam/sitecustomize.py stands in for them in this
+    process and, leading PYTHONPATH, in every python the tests start (what conftest.py does for pytest)."""
+    seam = Path(__file__).resolve().parents[1] / "tests/host_seam"
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [str(seam), os.environ.get("PYTHONPATH")]))
+    runpy.run_path(str(seam / "sitecustomize.py"))
+
+
 def hermetic_git():
     """Tests build their own repos: a host's `init.templatedir` (the rig's carries commit-msg and pre-push hooks and no
     info/) must not shape them, so every git the tests run starts from an empty template."""
@@ -81,6 +90,7 @@ def hermetic_slots():
 def main(start="tests", *names):
     """Every test under `start`, or only the named test modules (`test_tas_coverage`) when given."""
     source_first()
+    host_seam()
     hermetic_git()
     hermetic_slots()
     signal.signal(signal.SIGALRM, expired)

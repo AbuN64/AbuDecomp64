@@ -254,6 +254,7 @@
     },
     "slots": {
       "floor_gib": 6,
+      "disk_gib": 2,
       "stamp_gib": 4.5,
       "stamp_jobs": 4,
       "reserve_cores": 2

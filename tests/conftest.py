@@ -6,12 +6,21 @@ live rig pool that the lanes build through."""
 
 import atexit
 import os
+import runpy
 import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 import pytest
+
+_HERE = Path(__file__).resolve().parent
+# The host's free disk and memory are stand-ins here and in every python a test starts (see host_seam/sitecustomize.py).
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    filter(None, [str(_HERE / "host_seam"), str(_HERE.parent / "src"), os.environ.get("PYTHONPATH")])
+)
+runpy.run_path(str(_HERE / "host_seam/sitecustomize.py"))
 
 _EMPTY = tempfile.mkdtemp(prefix="git-template-")
 os.environ["GIT_TEMPLATE_DIR"] = _EMPTY
@@ -40,7 +49,4 @@ def _stand_in_seat(request, monkeypatch):
 @pytest.fixture(autouse=True)
 def _isolated_rig(tmp_path, monkeypatch):
     monkeypatch.setenv("ABU_SLOTS_DIR", str(tmp_path / "slots"))
-    from abu_decomp import slots
-
-    monkeypatch.setattr(slots, "DISK_FLOOR_GIB", 0.0)  # the real disk's free space decides no unrelated test
     monkeypatch.setattr(subprocess, "run", _run_without_gcovr)

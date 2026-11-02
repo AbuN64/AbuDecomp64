@@ -39,8 +39,8 @@ from . import DecompError
 
 CLASSES = ("owner", "interactive", "batch", "background")
 RESERVE_CORES = float(os.environ.get("ABU_SLOT_RESERVE", "2"))  # cores left for the OS, the page and ssh
-MEM_FLOOR_GIB = float(os.environ.get("ABU_SLOT_MEM_FLOOR", "6"))  # never admit below this much free memory
-DISK_FLOOR_GIB = float(os.environ.get("ABU_SLOT_DISK_FLOOR", "40"))  # refuse a new heavy job below this much free disk
+MEM_FLOOR_GIB = 0.0  # never admit below this much free memory (seat profile land.slots.floor_gib); 0: no floor
+DISK_GIB = 0.0  # measured disk one slot's job writes (land.slots.disk_gib); a job needs this times its slots; 0: none
 RSS_GIB = float(os.environ.get("ABU_SLOT_RSS_GIB", "0.75"))  # measured per-slot RSS (a port play ~0.25, a compile ~1)
 REQUEUE_GRACE = 900.0  # seconds after a ticket left unserved that the same request keeps its queue time
 WINDOW = 0.5  # seconds a first CPU reading spans
@@ -57,12 +57,12 @@ CANCEL = None  # a callable that raises when the caller was told to stop (tas se
 
 
 def configure(section: dict | None) -> None:
-    """Apply the seat profile's `land.slots` (floor_gib, stamp_gib, stamp_jobs, reserve_cores): project facts live in
-    the profile, the pool only reads them. Absent keys keep the pool's own defaults."""
-    global RESERVE_CORES, MEM_FLOOR_GIB, STAMP_GIB, STAMP_JOBS, DISK_FLOOR_GIB
+    """Apply the seat profile's `land.slots` (floor_gib, disk_gib, stamp_gib, stamp_jobs, reserve_cores): project facts
+    live in the profile, the pool only reads them. Absent keys keep the pool's own defaults."""
+    global RESERVE_CORES, MEM_FLOOR_GIB, STAMP_GIB, STAMP_JOBS, DISK_GIB
     if not section:
         return
-    DISK_FLOOR_GIB = float(section.get("disk_floor_gib", DISK_FLOOR_GIB))
+    DISK_GIB = float(section.get("disk_gib", DISK_GIB))
     RESERVE_CORES = float(section.get("reserve_cores", RESERVE_CORES))
     MEM_FLOOR_GIB = float(section.get("floor_gib", MEM_FLOOR_GIB))
     STAMP_GIB = float(section.get("stamp_gib", STAMP_GIB))
@@ -83,15 +83,17 @@ def disk_free_gib() -> float:
     return usage.f_bavail * usage.f_frsize / 2**30
 
 
-def check_disk(klass: str = "batch") -> None:
-    """Refuse (before queueing) a job that would start below the disk floor. The owner's watched play is exempt."""
+def check_disk(klass: str = "batch", weight: int = 1) -> None:
+    """Refuse (before queueing) a job whose own need (DISK_GIB per slot it holds) does not fit the free disk. The
+    owner's watched play is exempt."""
+    need = DISK_GIB * weight
     free = disk_free_gib()
-    if klass != "owner" and free < DISK_FLOOR_GIB:
+    if klass != "owner" and need and free < need:
         raise DiskFloorError(
             "slots.disk_floor",
-            f"only {free:.1f} GiB free on the disk under {pool_dir()} (floor {DISK_FLOOR_GIB:.0f} GiB): "
+            f"only {free:.1f} GiB free on the disk under {pool_dir()} (a {weight}-slot job needs {need:.0f} GiB): "
             f"new {klass} job refused so running jobs do not hit ENOSPC",
-            "free disk (decomp worktree prune; pool-mint.sh --release LANE) or lower land.slots.disk_floor_gib",
+            "free disk (decomp worktree prune; pool-mint.sh --release LANE) or correct land.slots.disk_gib",
         )
 
 
@@ -351,10 +353,10 @@ def acquire(
 ) -> Grant:
     rank = CLASSES.index(klass)
     root, tickets = _paths()
-    check_disk(klass)
     weight = max(1, min(int(weight), cores()))
     soft = capacity()
     weight = min(weight, soft if rank else cores())
+    check_disk(klass, weight)
     limit = soft if rank else cores()
     began = time.time()
     key = hashlib.sha1(f"{os.getppid()}:{label}".encode()).hexdigest()[:20]  # the same parent asking for the same work
@@ -500,7 +502,7 @@ def status() -> dict:
         "stamp_slots": stamp_slots(),
         "stamp_gib": STAMP_GIB,
         "mem_floor_gib": MEM_FLOOR_GIB,
-        "disk_floor_gib": DISK_FLOOR_GIB,
+        "disk_gib": DISK_GIB,
         "disk_free_gib": round(disk_free_gib(), 1),
         "used": sum(len(r["slots"]) for r in held.values()),
         "busy_cores": round(busy_cores(), 1),

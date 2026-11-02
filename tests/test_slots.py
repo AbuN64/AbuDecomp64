@@ -191,9 +191,9 @@ class SlotsTest(unittest.TestCase):
         slots.acquire("batch", 2, "after", timeout=2).release()
 
     def test_refused_child_exits_without_running_the_inherited_suite(self) -> None:
-        # Real failing slice: a /tmp pool had 29.3 GiB against the unchanged 40 GiB floor.
+        # Real failing slice: a /tmp pool had 29.3 GiB free against a 40 GiB need.
         with (
-            mock.patch.object(slots, "DISK_FLOOR_GIB", 40.0),  # the conftest zeroes the floor for unrelated tests
+            mock.patch.object(slots, "DISK_GIB", 20.0),  # a 2-slot job needs 40 GiB
             mock.patch.object(slots, "disk_free_gib", return_value=29.3),
         ):
             self.assertEqual(child_status(lambda: slots.acquire("batch", 2, "refused")), 1)

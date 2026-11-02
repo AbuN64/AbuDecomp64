@@ -16,9 +16,9 @@ from abu_decomp import slots, tas_seat
 class Scratch(unittest.TestCase):
     def test_all_test_pools_share_workspace_storage_and_registered_cleanup(self):
         runner = runpy.run_path(str(Path(__file__).resolve().parents[1] / "ci/run_tests.py"))
-        floor = 40.0
+        per_slot = 20.0
         with (
-            mock.patch.object(slots, "DISK_FLOOR_GIB", floor),  # the conftest zeroes the floor for unrelated tests
+            mock.patch.object(slots, "DISK_GIB", per_slot),
             tempfile.TemporaryDirectory() as workspace,
             mock.patch.dict(os.environ),
             mock.patch.object(tempfile, "tempdir", None),
@@ -33,12 +33,12 @@ class Scratch(unittest.TestCase):
             self.assertEqual(Path(os.environ["ABU_SLOTS_DIR"]).parent, scratch)
             self.assertEqual(Path(tempfile.mkdtemp(prefix="slots-mem-")).parent, scratch)
             register.assert_called_once_with(shutil.rmtree, str(scratch), ignore_errors=True)
-            self.assertEqual(slots.DISK_FLOOR_GIB, floor)
+            self.assertEqual(slots.DISK_GIB, per_slot)
             with (
                 mock.patch.object(slots, "disk_free_gib", return_value=29.3),
                 self.assertRaises(slots.DiskFloorError),
             ):
-                slots.check_disk()
+                slots.check_disk("batch", 2)
 
 
 class SourceFirst(unittest.TestCase):

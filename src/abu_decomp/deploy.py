@@ -592,7 +592,8 @@ def deploy(
     revision, text = requirements_of(project, remote, branch, project_sha)
     packages = project_requirements(text, f"{project} requirements.txt at {revision[:12]}")
     specs = [requirement(package, sha), *packages]
-    fetch = tree_fetch(package, source_tree(package, sha, run))
+    # only this repository's own package is served by the tree; another tool's commit lives in its own repository
+    fetch = tree_fetch(package, source_tree(package, sha, run)) if package == tools.DISTRIBUTION else None
     result: dict[str, Any] = {
         "package": package,
         "sha": sha,

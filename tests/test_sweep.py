@@ -398,19 +398,24 @@ match = '\b(?:[A-Za-z_]\w*?_[0-9A-Fa-f]{8}|(?:D|unk|func)_[0-9A-Fa-f]+|\w*Linker
 class AddressNameTests(unittest.TestCase):
     # Lines cut from RageWarsDecomp at cefb9e91 (DECOMP-STOCK census 11-02: 1,957 address-named identifiers).
     def test_address_named_identifiers_hit_and_a_new_one_is_new(self):
-        tree = Tree({
-            "src/POOL.CPP": "unsigned int g_earlierPoolWords_8015ADB0[2] = { 0, 0x25BE20 };\n"
-                            "if (object->unk_0x086C == 4420) {\n"
-                            "unsigned int g_gameSettings[2] = { 0x800D36E8, 0 };\n",
-            "src/FILL.H": "RestLinkerAlignmentFill12 g_GControllerbuttonremapBlock2LinkerAlignmentFill381 = {\n",
-            "versions/us/symbol_addrs.txt": "D_95A8 = 0x000095A8; //\nPlayer_PlacePlayerForRound = 0x80012345;\n",
-        })
+        tree = Tree(
+            {
+                "src/POOL.CPP": "unsigned int g_earlierPoolWords_8015ADB0[2] = { 0, 0x25BE20 };\n"
+                "if (object->unk_0x086C == 4420) {\n"
+                "unsigned int g_gameSettings[2] = { 0x800D36E8, 0 };\n",
+                "src/FILL.H": "RestLinkerAlignmentFill12 g_GControllerbuttonremapBlock2LinkerAlignmentFill381 = {\n",
+                "versions/us/symbol_addrs.txt": "D_95A8 = 0x000095A8; //\nPlayer_PlacePlayerForRound = 0x80012345;\n",
+            }
+        )
         base = tree.root / "base.tsv"
         first = tree.sweep(ADDRESS_NAME)
-        self.assertEqual(sorted((h["file"], h["line"]) for h in first["hits"]),
-                         [("src/FILL.H", 1), ("src/POOL.CPP", 1), ("versions/us/symbol_addrs.txt", 1)])
+        self.assertEqual(
+            sorted((h["file"], h["line"]) for h in first["hits"]),
+            [("src/FILL.H", 1), ("src/POOL.CPP", 1), ("versions/us/symbol_addrs.txt", 1)],
+        )
         sweep.write_baseline(base, first["hits"])
-        (tree.root / "src/POOL.CPP").write_text("unsigned int g_earlierPoolWords_8015ADB0[2] = { 0, 0x25BE20 };\n"
-                                                "extern s32 func_80012345(void);\n")
+        (tree.root / "src/POOL.CPP").write_text(
+            "unsigned int g_earlierPoolWords_8015ADB0[2] = { 0, 0x25BE20 };\nextern s32 func_80012345(void);\n"
+        )
         again = tree.sweep(ADDRESS_NAME, baseline=base, rewrite=False)
         self.assertEqual([(h["file"], h["line"]) for h in again["hits"] if h["new"]], [("src/POOL.CPP", 2)])

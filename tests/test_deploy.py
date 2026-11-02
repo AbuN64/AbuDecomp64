@@ -421,6 +421,12 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(result["requirements"][0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}")
         self.assertEqual(sum(bool(e) for e in self.envs), 1)  # only the package's own pip run is steered
 
+    def test_another_tool_is_fetched_as_before_the_tree_is_not_its_repository(self):
+        self.heads[deploy.PACKAGES["unbake"]] = U3
+        self.deploy(package="unbake", sha=U3)
+        self.assertEqual(sum(bool(e) for e in self.envs), 0)
+        self.assertFalse([c for c in self.commands if "rev-parse" in c or "cat-file" in c])
+
     def test_a_tree_that_does_not_hold_the_commit_refuses_before_anything_is_built(self):
         self.fail_on = "cat-file"
         with self.assertRaises(deploy.DeployError) as caught:

@@ -818,9 +818,9 @@ def _bake(inputs: Inputs, what: set[str] | None, movie: str | None) -> dict[str,
     want = set(WHAT) if what is None else what
     index = _index_of(site)
     if want == {"movie"}:
-        if index:
-            return {**bake_movies(inputs, movie, index), "wrote": ["movie"]}
-        want = set(WHAT)  # no baked site to add a movie to yet: bake all of it
+        # A replay publishes its movie even before the function site exists. Reach bits need that site's
+        # row index; posters and movie results do not. Only an explicit full bake builds the function site.
+        return {**bake_movies(inputs, movie, index), "wrote": ["movie"]}
     if not inputs.table.get("functions"):
         raise DecompError("tas.bake", "no coverage table yet: run `decomp tas coverage` first")
     body = inputs.map_body()

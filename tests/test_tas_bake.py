@@ -384,11 +384,25 @@ class Movies(Fixture):
         self.assertEqual(self.manifest()["fns"], fns)
         self.assertEqual(result["movies"], 2)
 
-    def test_movie_bake_with_no_site_bakes_everything(self):
+    def test_movie_bake_without_site_or_coverage_publishes_only_the_movie(self):
+        inputs = self.inputs()
+        inputs.table = {}  # rig profile before its first coverage union
+        inputs.map_body = mock.Mock(side_effect=AssertionError("movie bake must not build the function map"))
+        shutil.rmtree(self.units)
         with self.patched():
-            result = self.bake({"movie"}, "m-one")
-        self.assertEqual(result["fns"], len(MAP["fns"]))
-        self.assertTrue((self.runs / "site" / "movies.json").is_file())
+            result = tas_bake._bake(inputs, {"movie"}, "m-one")
+            tas_bake._bake(inputs, {"movie"}, "m-two")
+        self.assertEqual(result, {"movies": 1, "posters": 0, "reach": 0, "wrote": ["movie"]})
+        rows = json.loads((inputs.site / "movies.json").read_text())["rows"]
+        self.assertEqual([row[0] for row in rows], ["m-one", "m-two"])
+        self.assertFalse((inputs.site / "manifest.json").exists())
+        inputs.map_body.assert_not_called()
+
+    def test_full_bake_still_requires_coverage(self):
+        inputs = self.inputs()
+        inputs.table = {}
+        with self.assertRaisesRegex(DecompError, "no coverage table yet"):
+            tas_bake._bake(inputs, None, None)
 
     def test_unknown_movie_refuses(self):
         index = {"a": 0}

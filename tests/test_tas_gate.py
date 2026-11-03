@@ -1,6 +1,7 @@
 """The poll gate seen from the package: its datagrams, the held poll read back from the port's log, the supervisor
 that leaves a gated run alone, and the original replaying the prefix of a run held at a poll."""
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,18 +55,23 @@ class SupervisorTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         run = Path(directory.name)
         (run / tas.GATED).write_text("hold\n")
-        process = mock.Mock(pid=4242)
-        clock = [0.0]  # moves only when the supervisor sleeps: 5 s of held time per pass, against a 1 s timeout
-        waits = iter([(0, 0, None), (0, 0, None), (4242, 0, mock.Mock(ru_utime=1.0, ru_stime=0.5))])
+        process = subprocess.Popen(["true"], start_new_session=True)
+        bounds = []  # the select timeout of every pass: a held gate waits on the exit alone, with no bound
+
+        def select(inputs, *rest):
+            bounds.append(rest[-1])
+            return real_select(inputs[:1], [], [], None)
+
+        real_select = tas.select.select
         with (
-            mock.patch.object(tas.time, "monotonic", lambda: clock[0]),
-            mock.patch.object(tas.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + 5.0)),
-            mock.patch.object(tas.os, "wait4", lambda pid, flags: next(waits)),
+            mock.patch.object(tas.select, "select", select),
             mock.patch.object(tas.os, "killpg", side_effect=AssertionError("a gated run is never killed")),
             mock.patch.object(tas, "_check_play_signal"),
         ):
-            code, cpu = tas._wait(process, 1.0, run)
-        self.assertEqual((code, cpu), (0, 1.5))
+            code, cpu = tas._wait(process, 0.001, run)
+        self.assertEqual(code, 0)
+        self.assertIsInstance(cpu, float)
+        self.assertEqual(bounds, [None])
 
 
 if __name__ == "__main__":

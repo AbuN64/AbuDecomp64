@@ -145,13 +145,16 @@ class SanitizerRunTests(unittest.TestCase):
         sha = hashlib.sha1(b"rom").hexdigest()
         (self.root / "movies").mkdir()
         (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *2\n")
-        patch = mock.patch.object(tas, "_wait", lambda process, timeout, run=None: (process.wait(timeout), 1.5))
+        patch = mock.patch.object(
+            tas, "_wait", lambda process, timeout, run=None, until=None: (process.wait(timeout), 1.5)
+        )
         patch.start()
         self.addCleanup(patch.stop)
 
     def port(self, text, seen):
         class Port:
             pid = 1
+            returncode = None
             stdin = io.StringIO()
 
             def __init__(self, argv, env, stdout, **kwargs):
@@ -161,6 +164,7 @@ class SanitizerRunTests(unittest.TestCase):
                 stdout.write(text + "n64c-tas: done polls=2\n")
 
             def wait(self, timeout=None):
+                self.returncode = 0
                 return 0
 
         return mock.patch.object(tas.subprocess, "Popen", Port)

@@ -71,6 +71,18 @@ class EntriesTests(unittest.TestCase):
         with self.assertRaisesRegex(DecompError, "no coverage table yet"):
             tas_entries.run(profile, "monkey-1-3000", "4800:4895", FNS[0], port, self.manifest, self.root / "pair")
 
+    def test_no_selected_functions_refuses(self):
+        with self.assertRaisesRegex(DecompError, "none of the requested functions"):
+            tas_entries.compare(
+                FIXTURE / "oracle",
+                FIXTURE / "port",
+                (FIXTURE / "nm").read_text(),
+                self.manifest,
+                ["UncalledFunction"],
+                4800,
+                4802,
+            )
+
     def test_windows(self):
         self.assertEqual(tas_entries.window("0:2"), (0, 2))
         for value in ("3:2", "-1:2", "1", "1:2:3", "a:3"):

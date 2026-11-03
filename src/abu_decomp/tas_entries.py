@@ -67,6 +67,9 @@ def compare(oracle: Path, port: Path, nm: str, manifest: Path, functions: list[s
     missing = [sorted(set(range(lo, hi + 1)) - covered) for covered in coverage]
     if any(missing):
         raise DecompError("tas.entries", f"trace does not cover window; missing oracle/port retraces: {missing}")
+    for side, seq in zip(("oracle", "port"), sequences, strict=True):
+        if not any(seq.values()):
+            raise DecompError("tas.entries", f"{side} trace contains none of the requested functions in the window")
     rows, totals, differing = [], {}, 0
     for vi in range(lo, hi + 1):
         o, p = (collections.Counter(seq[vi]) for seq in sequences)

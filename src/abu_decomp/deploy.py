@@ -1,8 +1,8 @@
 """`decomp tools deploy`: install ONE named package at one commit into a toolkit venv.
 
 No repository pins another of our tools by commit, so the deploy of a package (`--package`, `--sha`) installs that
-package at that commit, moves every other tool of ours the live venv holds (`PACKAGES`) to the commit its source has
-landed at (`landed_commit`, installed with its dependencies: a tool's own land deploys its own toolkit, never this
+package at that commit, moves every other tool of ours the live venv holds (`sources.PACKAGES`) to its source commit
+(`sources.landed_commit`, installed with its dependencies: each tool's land deploys its own toolkit, never this
 one, so a tool carried as installed would never move), and carries every other package as it is installed (the
 exact commit of a git install, the exact version of the rest). The package is installed from a git commit only
 (`name @ git+URL@SHA`, a full 40-hex SHA; a wheel or a branch is refused), so a venv's provenance is
@@ -33,7 +33,7 @@ a deployer that must name the build before the activation (`content_name` is the
 
 The package's own commit is the one Land has just pushed to Gitea, which fans it out to the GitHub mirror some time
 later, so pip must not fetch it from there: the requirement and the recorded provenance stay `name @ git+URL@SHA`
-(the PACKAGES URL), but the pip run that installs it has git rewrite that one URL to the tree this deploy runs from
+(the source URL), but the pip run that installs it rewrites that URL to this deploy's tree
 (`tree_fetch`; the activation job's checkout at the landed revision). No wait, no retry.
 
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
@@ -70,20 +70,10 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tools
+from abu_decomp import DecompError, sources, tools
 from abu_decomp.config import ConfigError, Profile
 
-DECOMP_URL = "https://github.com/AbuN64/abu-decomp-64"
-# Distribution name -> its repository: the packages a deploy can install, each by its own commit.
-PACKAGES = {
-    "abucache": "https://github.com/AbuN64/cache-64",
-    tools.DISTRIBUTION: DECOMP_URL,
-    "unbake": "https://github.com/AbuN64/cake-unbake-64",
-    "recipemaker": "https://github.com/AbuN64/recipe-maker-64",
-    "cake-taste-64": "https://github.com/AbuN64/cake-taste-64",
-}
 SHA = re.compile(r"[0-9a-f]{40}")
-_HEAD = re.compile(r"^([0-9a-f]{40})\tHEAD$", re.MULTILINE)
 _EXACT = re.compile(r"^[A-Za-z0-9._-]+(\[[A-Za-z0-9._,-]+\])?==[A-Za-z0-9.!+_*-]+$")
 
 
@@ -121,35 +111,11 @@ def run_command(argv: Sequence[str], cwd: Path | None = None, env: Mapping[str, 
     return done.returncode, (done.stdout + done.stderr)[-200_000:]
 
 
-def landed_commit(url: str, run: Run = run_command) -> str:
-    """The commit a tool's source repository is at now (its HEAD), the one place that says where a tool has landed."""
-    code, output = run(["git", "ls-remote", url, "HEAD"], None)
-    found = _HEAD.search(output)
-    if code or not found:
-        raise DeployError("deploy.landed", f"{url}: git ls-remote HEAD failed: {output.strip()[-300:] or 'no HEAD'}")
-    return found[1]
-
-
 def landed_tools(run: Run = run_command) -> dict[str, str]:
-    """Distribution name -> landed commit for every tool of ours but this package (the same read for a clean
-    environment and for the deploy's readback, so the two can never name different commits)."""
-    return {name: landed_commit(url, run) for name, url in PACKAGES.items() if name != tools.DISTRIBUTION}
-
-
-def clean_requirements(dependencies: Sequence[str], run: Run = run_command) -> list[str]:
-    """`dependencies` for a clean install: each bare name of our tools becomes `name @ git+URL@landed commit`, so pip
-    can fetch it; every other row stays as written. The repository pins no tool by commit (a pin drifts each time a
-    tool lands and strands the next deploy), so a tool is only ever named."""
-    rows: list[str] = []
-    landed: dict[str, str] = {}
-    for row in dependencies:
-        name = row.strip()
-        if name in PACKAGES:
-            if name not in landed:
-                landed[name] = landed_commit(PACKAGES[name], run)
-            row = f"{name} @ git+{PACKAGES[name]}@{landed[name]}"
-        rows.append(row)
-    return rows
+    """Landed commits for every sibling tool, including AbuCache64."""
+    return {
+        name: sources.landed_commit(url, run) for name, url in sources.PACKAGES.items() if name != tools.DISTRIBUTION
+    }
 
 
 def check_sha(label: str, value: str) -> str:
@@ -227,7 +193,7 @@ def landed_carry(carry: Sequence[str], package: str, run: Run) -> tuple[list[str
     """(tools, rest) of the `carry` rows: each tool of ours but `package` becomes `name @ git+URL@landed commit` (found
     11-02: venv-decomp kept unbake and cake-taste-64 at the commits a past deploy installed, 48 and more behind their
     main, because the carry reinstalled them as installed); every other row stays as installed."""
-    ours = {re.sub(r"[-_.]+", "-", name).lower(): name for name in PACKAGES if name != package}
+    ours = {re.sub(r"[-_.]+", "-", name).lower(): name for name in sources.PACKAGES if name != package}
     selected: set[str] = set()
     rest: list[str] = []
     for row in carry:
@@ -237,10 +203,10 @@ def landed_carry(carry: Sequence[str], package: str, run: Run) -> tuple[list[str
         else:
             rest.append(row)
     # A new decomp checkout may declare tools the live toolkit has never held. Resolve the same declared sibling
-    # set as its clean environment, in PACKAGES dependency order (abucache before unbake).
+    # set as its clean environment, in sources.PACKAGES dependency order (abucache before unbake).
     if package == tools.DISTRIBUTION:
         selected.update(ours.values())
-    moved = clean_requirements([name for name in PACKAGES if name in selected], run)
+    moved = sources.clean_requirements([name for name in sources.PACKAGES if name in selected], run)
     return moved, rest
 
 
@@ -261,7 +227,7 @@ def on_main(url: str, commit: str, run: Run = run_command) -> bool:
 def source_tree(package: str, commit: str, run: Run = run_command) -> Path:
     """The git tree this deploy runs from (the one holding this module: the activation job's checkout at the landed
     revision), which must hold `commit`: pip fetches the package's own commit from it, never from the mirror of
-    `PACKAGES[package]`, which Gitea fans out to some time after Land pushes."""
+    `sources.PACKAGES[package]`, which Gitea fans out to some time after Land pushes."""
     here = str(Path(__file__).resolve().parent)
     code, output = run(["git", "-C", here, "rev-parse", "--show-toplevel"], None)
     if code or not output.strip():
@@ -274,20 +240,20 @@ def source_tree(package: str, commit: str, run: Run = run_command) -> Path:
 
 
 def tree_fetch(package: str, tree: Path) -> dict[str, str]:
-    """The environment of the one pip subprocess that installs `package`: git rewrites `PACKAGES[package]` to `tree`
+    """The environment of the one pip subprocess that installs `package`: git rewrites the package source URL to `tree`
     (`url.<tree>.insteadOf`), so the requirement and the provenance pip records stay `git+URL@SHA` while the fetch of
     that commit is served by `tree`. Nothing else is rewritten and nothing is written to any git config file."""
     return {
         "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_KEY_0": f"url.{tree}.insteadOf",
-        "GIT_CONFIG_VALUE_0": PACKAGES[package],
+        "GIT_CONFIG_VALUE_0": sources.PACKAGES[package],
     }
 
 
 def requirement(package: str, commit: str) -> str:
     """The pip requirement of `package` at `commit`, with its `dev` extra (the suite a deploy gates on runs from it; pip
     only warns when a package has no such extra)."""
-    return f"{package}[dev] @ git+{PACKAGES[package]}@{commit}"
+    return f"{package}[dev] @ git+{sources.PACKAGES[package]}@{commit}"
 
 
 def content_name(specs: Sequence[str], carry: Sequence[str]) -> str:
@@ -548,8 +514,8 @@ def name(
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     """`decomp tools name`: the build name a deploy of `package` at `sha` over the packages `source` holds would give;
     builds nothing."""
-    if package not in PACKAGES:
-        raise DeployError("deploy.package", f"--package must be one of {sorted(PACKAGES)}, got {package!r}")
+    if package not in sources.PACKAGES:
+        raise DeployError("deploy.package", f"--package must be one of {sorted(sources.PACKAGES)}, got {package!r}")
     check_sha("--sha", sha)
     if project_sha:
         check_sha("--project-sha", project_sha)
@@ -579,8 +545,8 @@ def deploy(
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     """`decomp tools deploy`; `expect_name` is the build name the caller read from `decomp tools name`: a deploy whose
     content gives another name refuses before it builds anything."""
-    if package not in PACKAGES:
-        raise DeployError("deploy.package", f"--package must be one of {sorted(PACKAGES)}, got {package!r}")
+    if package not in sources.PACKAGES:
+        raise DeployError("deploy.package", f"--package must be one of {sorted(sources.PACKAGES)}, got {package!r}")
     check_sha("--sha", sha)
     if not venvs:
         raise DeployError("deploy.venv", "pass at least one --venv")

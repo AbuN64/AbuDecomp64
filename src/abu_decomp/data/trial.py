@@ -20,6 +20,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import meter
 from abu_decomp.admission import slots
 from abu_decomp.data import literals, source
@@ -98,14 +100,20 @@ class Builder:
         if self.held:
             return self.run(argv, **kw)
         want = self.width()
-        with slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant:
-            began, used = time.monotonic(), meter.cpu()
-            kw["env"] = {**(kw.get("env") or os.environ), "UNBAKE_CORES": str(want)}  # the make takes this hold's slots
+        with (
+            slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant,
+            cache_stages.timed("abu_decomp.data.trial.run_held.began") as began,
+        ):
+            used = meter.cpu()
+            kw["env"] = {
+                **(kw.get("env") or os.environ),
+                "UNBAKE_CORES": str(want),
+            }  # the make takes this hold's slots
             try:
                 return self.run(argv, **kw)
             finally:
                 print(
-                    f"stamp make: slot wait={getattr(grant, 'waited', 0):.0f}s run wall={time.monotonic() - began:.0f}s "
+                    f"stamp make: slot wait={getattr(grant, 'waited', 0):.0f}s run wall={began.seconds:.0f}s "
                     f"cpu={meter.cpu() - used:.0f}s slots={want} {' '.join(argv[-3:])[:80]}",
                     flush=True,
                 )
@@ -216,7 +224,6 @@ class Builder:
         """Write a failed link's whole make output to `<trees>/.stamp-link-failures/<tree>-<time>-aN.log`, headed by the
         objects it names missing, and print one line naming them: the first-make-check link failures left no log (the
         retry overwrote `.stamp-rom.log`, then a pass released the tree), so none could be traced to a rule."""
-        import time
 
         folder = self.tree.parent / self.KEPT
         path = folder / f"{self.tree.name}-{time.strftime('%m%d-%H%M%S')}-a{attempt}.log"

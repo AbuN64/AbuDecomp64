@@ -1,6 +1,6 @@
 """The repo-local virtual environment: made from pyproject.toml's dependencies (and the dev extra), keyed on what it
 installs: a hash of pyproject.toml and of the commit each of our tools has landed at. pyproject.toml names our tools
-bare (unbake, recipemaker, cake-taste-64) and pins no commit; abu_decomp.deploy.clean_requirements turns each name into
+bare (unbake, recipemaker, cake-taste-64) and pins no commit; abu_decomp.sources.clean_requirements turns each name into
 the `name @ git+URL@commit` pip can fetch, the same read the rig deploy's readback makes. An unchanged tree whose tools
 have not moved reuses the environment with no install. Standard library only, so any python3 of the required version
 can run it. Prints the environment's interpreter path on stdout (installer output goes to stderr)."""
@@ -20,11 +20,11 @@ def requirements(root: Path, run=None) -> list[str]:
     """pyproject.toml's dependencies and dev extra with each of our tools resolved to its landed commit."""
     sys.path.insert(0, str(root / "src"))
     try:
-        from abu_decomp import deploy
+        from abu_decomp import sources
     finally:
         sys.path.pop(0)
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    dependencies = deploy.clean_requirements(project["dependencies"], run or deploy.run_command)
+    dependencies = sources.clean_requirements(project["dependencies"], run or sources.run_command)
     return [*dependencies, *project.get("optional-dependencies", {}).get("dev", [])]
 
 

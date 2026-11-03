@@ -17,10 +17,10 @@ import contextlib
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
 from unbake import treelock
 
 from abu_decomp import DecompError, land, meter, tools
@@ -173,37 +173,38 @@ def mark(shared: Path, target: Path, rev: str) -> str:
 def new(
     profile: Profile, shared: Path, lane: str, rev: str | None = None
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    started, cpu = time.monotonic(), meter.cpu()
-    shared = shared.expanduser().resolve()
-    target = base(shared) / lane
-    if target.exists():
-        raise WorktreeError("worktree.exists", f"{target} exists: one worktree per lane")
-    table = land.settings(profile, shared)
-    if rev is None:
-        _git(shared, "fetch", "-q", table["remote"], table["branch"])
-        rev = _git(shared, "rev-parse", "--verify", "FETCH_HEAD^{commit}").strip()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    _git(shared, "worktree", "add", "--detach", "-q", str(target), rev)
-    epoch = treelock.epoch(shared)
-    dropped = seed_locked(shared, target, lane)
-    aligned = align_times(shared, target)
-    if treelock.epoch(shared) != epoch:
-        print("worktree.seed: a ship ended while the outputs were copied; torn files were dropped", flush=True)
-    called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=target)
-    marker = mark(shared, target, rev) if called.ok else None
-    result = {
-        "worktree": str(target),
-        "rev": rev,
-        "aligned": aligned,
-        "dropped": dropped,
-        "setup_ok": called.ok,
-        "marker": marker,
-        "seconds": round(time.monotonic() - started, 1),
-        "cpu": round(meter.cpu() - cpu, 1),
-        "ship": f"decomp --profile {profile.source_file} ship --tree {shared} --patch {lane}=PATH:MESSAGE",
-    }
-    findings = [] if called.ok else [{"key": "worktree.setup", "message": "unbake setup refused", "blocking": True}]
-    return result, int(not called.ok), findings
+    with cache_stages.timed("abu_decomp.worktree.new.started") as started:
+        cpu = meter.cpu()
+        shared = shared.expanduser().resolve()
+        target = base(shared) / lane
+        if target.exists():
+            raise WorktreeError("worktree.exists", f"{target} exists: one worktree per lane")
+        table = land.settings(profile, shared)
+        if rev is None:
+            _git(shared, "fetch", "-q", table["remote"], table["branch"])
+            rev = _git(shared, "rev-parse", "--verify", "FETCH_HEAD^{commit}").strip()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _git(shared, "worktree", "add", "--detach", "-q", str(target), rev)
+        epoch = treelock.epoch(shared)
+        dropped = seed_locked(shared, target, lane)
+        aligned = align_times(shared, target)
+        if treelock.epoch(shared) != epoch:
+            print("worktree.seed: a ship ended while the outputs were copied; torn files were dropped", flush=True)
+        called = tools.invoke("unbake", profile, ["setup", "--no-make"], project=target)
+        marker = mark(shared, target, rev) if called.ok else None
+        result = {
+            "worktree": str(target),
+            "rev": rev,
+            "aligned": aligned,
+            "dropped": dropped,
+            "setup_ok": called.ok,
+            "marker": marker,
+            "seconds": round(started.seconds, 1),
+            "cpu": round(meter.cpu() - cpu, 1),
+            "ship": f"decomp --profile {profile.source_file} ship --tree {shared} --patch {lane}=PATH:MESSAGE",
+        }
+        findings = [] if called.ok else [{"key": "worktree.setup", "message": "unbake setup refused", "blocking": True}]
+        return result, int(not called.ok), findings
 
 
 def _referenced(shared: Path, path: Path) -> list[str]:

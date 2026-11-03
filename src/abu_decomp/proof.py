@@ -10,12 +10,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-import time
 from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
 from unbake import treelock
 
 from abu_decomp import DecompError, land, tools
@@ -48,42 +48,48 @@ def run(
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     chosen = tools.settings(profile, project, host)
     argv = command(profile, chosen.project, list(args))
-    started, tail = time.monotonic(), deque(maxlen=TAIL_LINES)
-    print(f"decomp: make in {chosen.project}", file=sys.stderr)
-    try:
-        # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
-        # a stamp beyond the free slots or the measured memory queues in the host pool, before it takes the tree lock
-        with (
-            slots.hold("batch", slots.stamp_weight(), "decomp make", mem_gib=slots.policy.stamp_gib or None) as grant,
-            treelock.hold(chosen.project, exclusive=True, who="make"),
-        ):
-            if grant and grant.waited > 1:
-                print(f"decomp: queued {grant.waited:.0f}s in the host pool for a stamp slot", file=sys.stderr)
-            environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))  # after the hold: it marks its children
-            if grant:  # the slots held here are the build's: unbake-run takes them (its UNBAKE_CORES protocol) and
-                environment["UNBAKE_CORES"] = str(grant.weight)  # queues no second time for the link (S9: 580 s at ~0%)
-            with subprocess.Popen(
-                argv,
-                cwd=chosen.project,
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                errors="replace",
-            ) as child:
-                assert child.stdout is not None
-                for line in child.stdout:
-                    sys.stderr.write(line)
-                    tail.append(line.rstrip())
-                code = child.wait()
-    except OSError as exc:
-        raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
-    wall = round(time.monotonic() - started, 1)
-    result = {"exit": code, "wall_seconds": wall, "command": argv[1:], "project": str(chosen.project)}
-    if code == 0:
-        return result, 0, []
-    return (
-        result,
-        1,
-        [{"key": "proof.failed", "blocking": True, "message": f"make exited {code}: {tail[-1] if tail else ''}"}],
-    )
+    with cache_stages.timed("abu_decomp.proof.run.started") as started:
+        tail = deque(maxlen=TAIL_LINES)
+        print(f"decomp: make in {chosen.project}", file=sys.stderr)
+        try:
+            # make rewrites build/ and the extraction a ship's check reads: it holds the tree lock as the ship does
+            # a stamp beyond the free slots or the measured memory queues in the host pool, before it
+            # takes the tree lock
+            with (
+                slots.hold(
+                    "batch", slots.stamp_weight(), "decomp make", mem_gib=slots.policy.stamp_gib or None
+                ) as grant,
+                treelock.hold(chosen.project, exclusive=True, who="make"),
+            ):
+                if grant and grant.waited > 1:
+                    print(f"decomp: queued {grant.waited:.0f}s in the host pool for a stamp slot", file=sys.stderr)
+                environment = dict(os.environ, UNBAKE_HOST=str(chosen.host))  # after the hold: it marks its children
+                if grant:  # the slots held here are the build's: unbake-run takes them (its UNBAKE_CORES protocol) and
+                    environment["UNBAKE_CORES"] = str(
+                        grant.weight
+                    )  # queues no second time for the link (S9: 580 s at ~0%)
+                with subprocess.Popen(
+                    argv,
+                    cwd=chosen.project,
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    errors="replace",
+                ) as child:
+                    assert child.stdout is not None
+                    for line in child.stdout:
+                        sys.stderr.write(line)
+                        tail.append(line.rstrip())
+                    code = child.wait()
+        except OSError as exc:
+            raise DecompError("proof.process", f"cannot execute {argv[0]}: {exc}") from exc
+        wall = round(started.seconds, 1)
+        result = {"exit": code, "wall_seconds": wall, "command": argv[1:], "project": str(chosen.project)}
+        if code == 0:
+            return result, 0, []
+        return (
+            result,
+            1,
+            [{"key": "proof.failed", "blocking": True, "message": f"make exited {code}: {tail[-1] if tail else ''}"}],
+        )

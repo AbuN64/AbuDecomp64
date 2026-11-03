@@ -33,7 +33,6 @@ from __future__ import annotations
 import bisect
 import contextlib
 import fcntl
-import functools
 import hashlib
 import json
 import os
@@ -50,6 +49,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
+from abucache import memo
+from abucache import stages as cache_stages
 from unbake import api
 
 from abu_decomp import DecompError, remap, tas_oracle, tas_symbolize
@@ -75,12 +76,12 @@ class Stages:
 
     @contextlib.contextmanager
     def __call__(self, name: str) -> Iterator[None]:
-        start = time.monotonic()
-        try:
-            yield
-        finally:
-            with self._lock:
-                self.seconds[name] = self.seconds.get(name, 0.0) + time.monotonic() - start
+        with cache_stages.timed(name) as elapsed:
+            try:
+                yield
+            finally:
+                with self._lock:
+                    self.seconds[name] = self.seconds.get(name, 0.0) + elapsed.seconds
 
     def report(self) -> dict[str, float]:
         return {name: round(sec, 1) for name, sec in self.seconds.items()}
@@ -841,8 +842,10 @@ def union_lock(runs: Path) -> Iterator[None]:
 def build(profile: Profile, cfg: dict[str, Any], **options: Any) -> dict[str, Any] | None:
     """`_build` under the union lock (the table-only path never touches the merge cache, so it does not wait)."""
     if options.get("table_only"):
+        memo.forget("abu_decomp.tas_coverage.current")
         return _build(profile, cfg, **options)
     with union_lock(cfg["runs"]):
+        memo.forget("abu_decomp.tas_coverage.current")
         return _build(profile, cfg, **options)
 
 
@@ -885,11 +888,14 @@ def _build(
 
     deadline = None if oracle_seconds is None else time.monotonic() + oracle_seconds
 
-    @functools.cache
     def current() -> tuple[
         str, str
     ]:  # the current port's (build sha, code hash): a run on equal code is a run on this build
-        return tas.build_id(Path(tas.port_of(cfg))), tas.code_hash(Path(tas.port_of(cfg)))
+        port = Path(tas.port_of(cfg)).resolve()
+        return memo.memo(
+            ("abu_decomp.tas_coverage.current", str(port)),
+            lambda: (tas.build_id(port), tas.code_hash(port)),
+        )
 
     def one(item: tuple[str, Path]) -> dict[str, Any]:
         name, run = item

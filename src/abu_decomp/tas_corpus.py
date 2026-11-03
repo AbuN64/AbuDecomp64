@@ -46,6 +46,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import DecompError, tas, tas_coverage, tas_health, tas_oracle
 from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
@@ -693,66 +695,67 @@ def _gate(
     if not data["entries"]:
         raise DecompError("tas.corpus", "the corpus is empty: decomp tas corpus seed")
     health = tas_health.read(cfg, profile)
-    began, cpu0 = time.monotonic(), _cpu()
+    with cache_stages.timed("abu_decomp.tas_corpus._gate.began") as began:
+        cpu0 = _cpu()
 
-    def one(movie: str) -> dict[str, Any]:
-        entry = data["entries"][movie]
-        spots = spots_for(data, movie)
-        polls = dump_polls(spots)
-        try:
-            results = _replays(profile, movie, polls, GATE_LABEL, health, port)
-        except DecompError as error:
-            return {"movie": movie, "verdict": "fail", "reasons": [f"refused: {error}"], "run": None}
-        for result, poll in zip(results, polls, strict=True):
-            result["dump_at"] = poll
-        judged = _judge(spots, results)
-        _drop_dumps(results)
-        run = Path(results[0]["run"])
-        reference = entry.get("oracle") or (made_reference(profile, cfg, run) if oracle else None)
-        row = compare(cfg, {**entry, "oracle": reference}, _run(cfg, entry.get("baseline")), run, judged)
-        return {"movie": movie, "oracle": reference, **row}
+        def one(movie: str) -> dict[str, Any]:
+            entry = data["entries"][movie]
+            spots = spots_for(data, movie)
+            polls = dump_polls(spots)
+            try:
+                results = _replays(profile, movie, polls, GATE_LABEL, health, port)
+            except DecompError as error:
+                return {"movie": movie, "verdict": "fail", "reasons": [f"refused: {error}"], "run": None}
+            for result, poll in zip(results, polls, strict=True):
+                result["dump_at"] = poll
+            judged = _judge(spots, results)
+            _drop_dumps(results)
+            run = Path(results[0]["run"])
+            reference = entry.get("oracle") or (made_reference(profile, cfg, run) if oracle else None)
+            row = compare(cfg, {**entry, "oracle": reference}, _run(cfg, entry.get("baseline")), run, judged)
+            return {"movie": movie, "oracle": reference, **row}
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
-        rows = list(pool.map(one, sorted(data["entries"])))
-    counts: dict[str, int] = {}
-    for row in rows:
-        counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
-    failed = [r["movie"] for r in rows if r["verdict"] == "fail"]
-    moved, dropped = [], []
-    if main:
-        with locked(cfg):
-            data = load(cfg)
-            for row in rows:
-                entry = data["entries"].get(row["movie"])
-                if entry is None or row["verdict"] == "fail" or not row.get("run"):
-                    continue
-                entry["baseline"] = row["run"]
-                entry["spots"] = dict(row.get("spots", {}))
-                entry["oracle"] = entry.get("oracle") or row.get("oracle") or oracle_reference(cfg, row["movie"])
-                moved.append(row["movie"])
-            dropped = minimise(cfg, data["entries"])
-            store(cfg, data)
-    result = {
-        "at": time.time(),
-        "port": str(exe),
-        "main": main,
-        "build": tas.build_id(Path(exe)),
-        "pins": pins_stamp(cfg),
-        "verdict": "fail" if failed else "pass",
-        "counts": counts,
-        "failed": failed,
-        "moved": moved,
-        "dropped": dropped,
-        "wall_seconds": round(time.monotonic() - began, 1),
-        "cpu_seconds": round(_cpu() - cpu0, 1),
-        "rows": rows,
-    }
-    if main:
-        cfg["runs"].mkdir(parents=True, exist_ok=True)
-        tmp = gate_path(cfg).with_suffix(".tmp")
-        tmp.write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
-        tmp.replace(gate_path(cfg))
-    return result, int(bool(failed))
+        with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
+            rows = list(pool.map(one, sorted(data["entries"])))
+        counts: dict[str, int] = {}
+        for row in rows:
+            counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
+        failed = [r["movie"] for r in rows if r["verdict"] == "fail"]
+        moved, dropped = [], []
+        if main:
+            with locked(cfg):
+                data = load(cfg)
+                for row in rows:
+                    entry = data["entries"].get(row["movie"])
+                    if entry is None or row["verdict"] == "fail" or not row.get("run"):
+                        continue
+                    entry["baseline"] = row["run"]
+                    entry["spots"] = dict(row.get("spots", {}))
+                    entry["oracle"] = entry.get("oracle") or row.get("oracle") or oracle_reference(cfg, row["movie"])
+                    moved.append(row["movie"])
+                dropped = minimise(cfg, data["entries"])
+                store(cfg, data)
+        result = {
+            "at": time.time(),
+            "port": str(exe),
+            "main": main,
+            "build": tas.build_id(Path(exe)),
+            "pins": pins_stamp(cfg),
+            "verdict": "fail" if failed else "pass",
+            "counts": counts,
+            "failed": failed,
+            "moved": moved,
+            "dropped": dropped,
+            "wall_seconds": round(began.seconds, 1),
+            "cpu_seconds": round(_cpu() - cpu0, 1),
+            "rows": rows,
+        }
+        if main:
+            cfg["runs"].mkdir(parents=True, exist_ok=True)
+            tmp = gate_path(cfg).with_suffix(".tmp")
+            tmp.write_text(json.dumps(result, indent=1, sort_keys=True) + "\n")
+            tmp.replace(gate_path(cfg))
+        return result, int(bool(failed))
 
 
 def accept(profile: Profile, movies: list[str]) -> dict[str, Any]:

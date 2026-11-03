@@ -440,6 +440,54 @@ class RunReportTests(unittest.TestCase):
 
         return fake
 
+    def test_current_port_memo_reuses_reads_and_refreshes_at_each_public_build(self):
+        from abucache import memo
+
+        (self.run / "coverage.json").write_text('{"files": []}')
+        namespace = "abu_decomp.tas_coverage.current"
+        unrelated = ("another.operation", str(self.cfg["port"].resolve()))
+        memo.memo(unrelated, lambda: "keep")
+        self.addCleanup(memo.forget, namespace, "another.operation")
+        with (
+            mock.patch("abu_decomp.tas.equivalent_build", return_value=True),
+            mock.patch("abu_decomp.tas.build_id", side_effect=["first", "second"]) as build_id,
+            mock.patch("abu_decomp.tas.code_hash", side_effect=["hash-one", "hash-two"]) as code_hash,
+            mock.patch.object(cov.memo, "memo", wraps=memo.memo) as cached,
+        ):
+            self._build(self.run, self._page_gcovr([]), oracle=False, table_only=True)
+            self.assertEqual(build_id.call_count, 1)
+            self.assertEqual(code_hash.call_count, 1)
+            key = (namespace, str(self.cfg["port"].resolve()))
+            self.assertTrue(all(call.args[0] == key for call in cached.call_args_list))
+            self.assertEqual(memo.peek(key), ("first", "hash-one"))
+            self._build(self.run, self._page_gcovr([]), oracle=False, table_only=True)
+            self.assertEqual(build_id.call_count, 2)
+            self.assertEqual(code_hash.call_count, 2)
+            self.assertEqual(memo.peek(key), ("second", "hash-two"))
+            self.assertEqual(memo.peek(unrelated), "keep")
+
+    def test_current_port_memo_separates_project_inputs(self):
+        from abucache import memo
+
+        (self.run / "coverage.json").write_text('{"files": []}')
+        namespace = "abu_decomp.tas_coverage.current"
+        memo.forget(namespace)
+        self.addCleanup(memo.forget, namespace)
+        first = str(self.cfg["port"].resolve())
+        with (
+            mock.patch.object(cov.memo, "forget"),
+            mock.patch("abu_decomp.tas.equivalent_build", return_value=True),
+            mock.patch("abu_decomp.tas.build_id", side_effect=["one", "two"]) as build_id,
+            mock.patch("abu_decomp.tas.code_hash", side_effect=["hash-one", "hash-two"]),
+        ):
+            self._build(self.run, self._page_gcovr([]), oracle=False, table_only=True)
+            self.cfg["port"] = self.root / "another-project" / "port"
+            second = str(self.cfg["port"].resolve())
+            self._build(self.run, self._page_gcovr([]), oracle=False, table_only=True)
+            self.assertEqual(build_id.call_count, 2)
+            self.assertEqual(memo.peek((namespace, first)), ("one", "hash-one"))
+            self.assertEqual(memo.peek((namespace, second)), ("two", "hash-two"))
+
     def test_a_second_full_union_waits_for_the_first_and_table_only_does_not(self):
         import fcntl
 

@@ -605,11 +605,22 @@ class PlayTests(unittest.TestCase):
                 write_polls(env, "8000 0 0\n" * 50)
                 stdout.write("n64c-tas: done polls=57\n")
 
-        def begin(profile, cfg, run, pak, card, polls, pads=1, attach=False):
+        def begin(profile, cfg, run, pak, card, polls, pads=1, attach=False, *, stages):
             seen["attach"] = attach
             folder = self.root / "spec"
             folder.mkdir(exist_ok=True)
-            return tas_statediff.Session(folder, run, cfg, "k", {}, run, False, attached=attach, movie_polls=len(polls))
+            return tas_statediff.Session(
+                folder,
+                run,
+                cfg,
+                "k",
+                {},
+                run,
+                False,
+                timing=mock.Mock(seconds=1.25),
+                attached=attach,
+                movie_polls=len(polls),
+            )
 
         def finish(session, profile, movie, record):
             seen["end"] = dict(session._end)

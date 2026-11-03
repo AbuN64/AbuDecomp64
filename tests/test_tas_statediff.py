@@ -1,5 +1,6 @@
 """Game state, port against the original, per region (tas_statediff and shim/tas_state.h). Runs no game."""
 
+import contextlib
 import json
 import re
 import shutil
@@ -345,7 +346,16 @@ class FinishTests(unittest.TestCase):
         self.folder.mkdir()
         (self.run / sd.PORT_TRACE).write_text("1 1\n2 3\n3 5\n")
         (self.cache / "oracle-trace.txt").write_text("1 1\n2 3\n3 7\n")
-        self.session = sd.Session(self.folder, self.run, {"runs": self.tmp / "runs"}, "k", TABLE, self.cache, True)
+        self.session = sd.Session(
+            self.folder,
+            self.run,
+            {"runs": self.tmp / "runs"},
+            "k",
+            TABLE,
+            self.cache,
+            True,
+            timing=mock.Mock(seconds=1.25),
+        )
         self.dump_args = []
         self.ledger("")  # a run always names its ledger; the tests that care write their own
 
@@ -637,7 +647,18 @@ class DumpPassPadsTests(unittest.TestCase):
         cache.mkdir(parents=True)
         (run / "movie.raw").write_text("0000 0 0 0000 0 0\n" * 5)
         cfg = {"env": {}, "timeout_seconds": 1}
-        session = sd.Session(tmp, run, cfg, "k", TABLE, cache, True, oracle_cfg={"timeout_seconds": 1}, pads=2)
+        session = sd.Session(
+            tmp,
+            run,
+            cfg,
+            "k",
+            TABLE,
+            cache,
+            True,
+            timing=mock.Mock(seconds=1.25),
+            oracle_cfg={"timeout_seconds": 1},
+            pads=2,
+        )
         from abu_decomp import tas
 
         with (
@@ -664,7 +685,15 @@ class DumpPassFailureTests(unittest.TestCase):
         (self.run / "movie.raw").write_text("0000\n" * 5)
         cfg = {"env": {}, "timeout_seconds": 1}
         self.session = sd.Session(
-            self.tmp, self.run, cfg, "k", TABLE, self.cache, True, oracle_cfg={"timeout_seconds": 1}
+            self.tmp,
+            self.run,
+            cfg,
+            "k",
+            TABLE,
+            self.cache,
+            True,
+            timing=mock.Mock(seconds=1.25),
+            oracle_cfg={"timeout_seconds": 1},
         )
 
     def replay(self, port_end, original_end):
@@ -733,7 +762,16 @@ class OracleRunTests(unittest.TestCase):
         (folder / "oracle.txt").write_text("host output")
         (folder / "oracle.bmp").write_bytes(b"BM")
         session = sd.Session(
-            self.tmp, self.run, {"runs": self.runs}, "k", TABLE, folder, False, attached=attached, movie_polls=3
+            self.tmp,
+            self.run,
+            {"runs": self.runs},
+            "k",
+            TABLE,
+            folder,
+            False,
+            timing=mock.Mock(seconds=1.25),
+            attached=attached,
+            movie_polls=3,
         )
         session._end.update(code=code, cpu=cpu, wall=9.0)
         return session
@@ -840,7 +878,16 @@ class BeginTests(unittest.TestCase):
             mock.patch.object(sd.tas_oracle, "start", return_value=mock.Mock()) as start,
             mock.patch.object(tas, "_wait", return_value=(0, 1.0)),
         ):
-            session = sd.begin(None, self.cfg, self.run, "on", None, [0, 0, 0], attach=attach)
+            session = sd.begin(
+                None,
+                self.cfg,
+                self.run,
+                "on",
+                None,
+                [0, 0, 0],
+                stages=self.enterContext(contextlib.ExitStack()),
+                attach=attach,
+            )
             if session and session._waiter:
                 session._waiter.join()
         return session, start

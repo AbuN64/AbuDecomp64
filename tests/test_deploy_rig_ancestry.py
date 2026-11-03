@@ -11,14 +11,14 @@ import unittest
 
 from test_deploy_rig import ReadbackCase, git
 
-from abu_decomp import deploy
+from abu_decomp import deploy, sources
 
 HANDGATE = "blob-fuzzy: report every blob row as exact, fuzzy or untyped"
 
 
 class AncestryTests(ReadbackCase):
     def source(self, tool):
-        return self.root / "sources" / deploy.PACKAGES[tool].rsplit("/", 1)[-1]
+        return self.root / "sources" / sources.PACKAGES[tool].rsplit("/", 1)[-1]
 
     def commit(self, tool, message, branch=None):
         remote = self.source(tool)
@@ -42,7 +42,7 @@ class AncestryTests(ReadbackCase):
         self.assertEqual(done.returncode, 1, done.stdout)
         self.assertIn(f"readback-tool: unbake installed {off} landed {self.landed['unbake']} off-main", done.stdout)
         self.assertIn(
-            f"unbake is installed at {off}, which is not on the main of {deploy.PACKAGES['unbake']}", done.stderr
+            f"unbake is installed at {off}, which is not on the main of {sources.PACKAGES['unbake']}", done.stderr
         )
 
     def test_a_tool_installed_at_an_ancestor_of_its_main_is_accepted_as_behind(self):

@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
 from unbake import api
 
 from abu_decomp import DecompError, meter, worktree
@@ -126,30 +127,30 @@ def lease(folder: Path, count: int, wait: float = 900.0, prefer: str | None = No
     naming the holders. PREFER: a free tree left clean at that commit is taken before the others (a build there is
     a no-op, in another tree it is the whole diff). One log line names the tree and the wait."""
     folder.mkdir(parents=True, exist_ok=True)
-    start = time.monotonic()
-    end = start + wait
-    while True:
-        for i in sorted(range(count), key=lambda i: _left_at(folder / f"STAMP-S{i}") != prefer):
-            fd = take(folder / f".stamp-{i}.lock")
-            if fd is None:
-                continue
-            if busy_in(folder / f"STAMP-S{i}"):
-                os.close(fd)
-                continue
-            print(f"stamp pool: leased STAMP-S{i} of {count} (waited {time.monotonic() - start:.0f}s)", flush=True)
-            try:
-                yield f"STAMP-S{i}"
-            finally:
-                os.close(fd)
-                print(f"stamp pool: released STAMP-S{i}", flush=True)
-            return
-        if time.monotonic() > end:
-            who = "; ".join(f"STAMP-S{i}: {describe(folder / f'.stamp-{i}.lock')}" for i in range(count))
-            raise DecompError(
-                "data.stamp",
-                f"all {count} pool trees are leased after {wait:.0f}s (stamp_trees in the data config): {who}",
-            )
-        time.sleep(2)
+    with cache_stages.timed("abu_decomp.data.stampbuild.lease.start") as start:
+        end = time.monotonic() + wait
+        while True:
+            for i in sorted(range(count), key=lambda i: _left_at(folder / f"STAMP-S{i}") != prefer):
+                fd = take(folder / f".stamp-{i}.lock")
+                if fd is None:
+                    continue
+                if busy_in(folder / f"STAMP-S{i}"):
+                    os.close(fd)
+                    continue
+                print(f"stamp pool: leased STAMP-S{i} of {count} (waited {start.seconds:.0f}s)", flush=True)
+                try:
+                    yield f"STAMP-S{i}"
+                finally:
+                    os.close(fd)
+                    print(f"stamp pool: released STAMP-S{i}", flush=True)
+                return
+            if time.monotonic() > end:
+                who = "; ".join(f"STAMP-S{i}: {describe(folder / f'.stamp-{i}.lock')}" for i in range(count))
+                raise DecompError(
+                    "data.stamp",
+                    f"all {count} pool trees are leased after {wait:.0f}s (stamp_trees in the data config): {who}",
+                )
+            time.sleep(2)
 
 
 def _left_at(tree: Path) -> str:
@@ -222,27 +223,28 @@ def rewarm(profile: Any, shared: Path, tree: Path, rev: str) -> dict[str, Any] |
 
     if not (tree / ".git").exists() or not shutil.which("rsync"):
         return None
-    started, was = time.monotonic(), (tree / STATE).read_text().strip() if (tree / STATE).is_file() else "unknown"
-    if any(
-        _git(tree, *a).returncode
-        for a in (("reset", "-q", "--hard"), ("clean", "-fdq"), ("checkout", "-q", "--detach", "-f", rev))
-    ):
-        return None
-    names = [*worktree.COPIED, *(f".unbake/{f}" for f in worktree.FACTS)]
-    with setup_lock(shared, exclusive=False), treelock.hold(shared, who=f"decomp data stamp rewarm {tree.name}"):
-        if not all(sync_all([n for n in names if (shared / n).exists()], shared, tree)):
+    with cache_stages.timed("abu_decomp.data.stampbuild.rewarm.started") as started:
+        was = (tree / STATE).read_text().strip() if (tree / STATE).is_file() else "unknown"
+        if any(
+            _git(tree, *a).returncode
+            for a in (("reset", "-q", "--hard"), ("clean", "-fdq"), ("checkout", "-q", "--detach", "-f", rev))
+        ):
             return None
-        aligned = worktree.align_times(shared, tree)
-        from abu_decomp import tools
+        names = [*worktree.COPIED, *(f".unbake/{f}" for f in worktree.FACTS)]
+        with setup_lock(shared, exclusive=False), treelock.hold(shared, who=f"decomp data stamp rewarm {tree.name}"):
+            if not all(sync_all([n for n in names if (shared / n).exists()], shared, tree)):
+                return None
+            aligned = worktree.align_times(shared, tree)
+            from abu_decomp import tools
 
-        if not tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree).ok:
-            return None
-        worktree.mark(shared, tree, rev)
-    print(
-        f"stamp pool: re-warmed {tree.name} {was[:9]} -> {rev[:9]} by one sync in {time.monotonic() - started:.0f}s",
-        flush=True,
-    )
-    return {"worktree": str(tree), "rev": rev, "reused": False, "rewarmed": True, "aligned": aligned}
+            if not tools.invoke("unbake", profile, ["setup", "--no-make"], project=tree).ok:
+                return None
+            worktree.mark(shared, tree, rev)
+        print(
+            f"stamp pool: re-warmed {tree.name} {was[:9]} -> {rev[:9]} by one sync in {started.seconds:.0f}s",
+            flush=True,
+        )
+        return {"worktree": str(tree), "rev": rev, "reused": False, "rewarmed": True, "aligned": aligned}
 
 
 def release(shared: Path, tree: Path, before: dict[str, list] | None = None) -> None:
@@ -459,9 +461,9 @@ def closure_line(r: dict[str, Any]) -> str:
     )
 
 
-def _phase(name: str, since: list[float], cap: bool = True) -> None:
+def _phase(name: str, since: list[float], elapsed: cache_stages.Timing, cap: bool = True) -> None:
     """One line per stamp phase with its wall and CPU seconds (10-25: a stamp of 762-1434 CPU s named no phase)."""
-    now = [time.monotonic(), meter.cpu()]
+    now = [elapsed.seconds, meter.cpu()]
     used = now[1] - since[1]
     over = f"  FLAG CPU-OVER-5min step={name}" if cap and used > CPU_CAP else ""
     print(f"stamp phase {name}: wall={now[0] - since[0]:.0f}s cpu={used:.0f}s{over}", flush=True)
@@ -503,186 +505,201 @@ def check_versions(builder: trial.Builder, versions: list[str]) -> list[dict[str
 
 
 def _build(cfg, profile, shared, diff, stamps, at, text, lane, reextract=False):
-    started, cpu = time.monotonic(), meter.cpu()
-    slots_held = contextlib.ExitStack()  # the stamp's host slots from the settle until the link is done
-    mark = [started, cpu]
-    # CPU and wall seconds the tree and `settle` used: shown on their own lines, not charged to the diff
-    free = [0.0, 0.0]
+    with cache_stages.timed("abu_decomp.data.stampbuild._build.started") as started:
+        cpu = meter.cpu()
+        slots_held = contextlib.ExitStack()  # the stamp's host slots from the settle until the link is done
+        mark = [started.seconds, cpu]
+        # CPU and wall seconds the tree and `settle` used: shown on their own lines, not charged to the diff
+        free = [0.0, 0.0]
 
-    def settled(tree: Path) -> list[dict[str, Any]]:
-        before, began = mark[1], mark[0]
-        _phase("tree (not charged)", mark, cap=False)  # seeding a fresh tree is the slot's cost, not the diff's
-        # ONE queue trip for the settle, the check and the link
-        slots_held.enter_context(trial.Builder(cfg, tree).holding())
-        # a leased tree whose asm marks differ from its configs (a sync moved it) is re-extracted before anything compiles
-        why = None
-        if check_mod.stale_extractions(cfg, tree):
-            with setup_lock(shared):
-                why = check_mod.refresh_extractions(cfg, profile, tree)
-        why = why or settle(cfg, tree)
-        _phase("settle (not charged)", mark, cap=False)
-        free[0] += mark[1] - before
-        free[1] += mark[0] - began
-        return [{"key": "data.stamp", "blocking": True, "message": why}] if why else []
+        def settled(tree: Path) -> list[dict[str, Any]]:
+            before, began = mark[1], mark[0]
+            _phase(
+                "tree (not charged)", mark, started, cap=False
+            )  # seeding a fresh tree is the slot's cost, not the diff's
+            # ONE queue trip for the settle, the check and the link
+            slots_held.enter_context(trial.Builder(cfg, tree).holding())
+            # a leased tree whose asm marks differ from its configs (a sync moved it) is re-extracted before anything compiles
+            why = None
+            if check_mod.stale_extractions(cfg, tree):
+                with setup_lock(shared):
+                    why = check_mod.refresh_extractions(cfg, profile, tree)
+            why = why or settle(cfg, tree)
+            _phase("settle (not charged)", mark, started, cap=False)
+            free[0] += mark[1] - before
+            free[1] += mark[0] - began
+            return [{"key": "data.stamp", "blocking": True, "message": why}] if why else []
 
-    # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
-    # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
-    head = _git(shared, "rev-parse", "HEAD").stdout.strip()
-    made, code, findings = _tree(profile, shared, lane, at or head or None)
-    tree = Path(made["worktree"])
-    extracted = kept = False
-    wrote: dict[str, int] | None = (
-        None  # the units per version of a stamp written: its measured record is completed below
-    )
-    from unbake import hdrnarrow
+        # The tree is at SHARED's own commit: any other base differs in symbol facts and splits the ROM again for every
+        # version (5 cold extractions, 70 s wall, 10-24). Only a diff that does not apply there goes to the tip.
+        head = _git(shared, "rev-parse", "HEAD").stdout.strip()
+        made, code, findings = _tree(profile, shared, lane, at or head or None)
+        tree = Path(made["worktree"])
+        extracted = kept = False
+        wrote: dict[str, int] | None = (
+            None  # the units per version of a stamp written: its measured record is completed below
+        )
+        from unbake import hdrnarrow
 
-    before = {} if code else dict(hdrnarrow.records(tree))  # the stamp records the clean slot holds, for `restore`
-    try:
-        if code:
-            return {"worktree": made}, code, findings
-        (tree / STATE).write_text("busy\n")
-        if found := settled(tree):
-            return {"worktree": made}, 1, found
-        applied = _git(tree, "apply", str(diff.resolve()))
-        if applied.returncode and not at and head:
-            # A diff based on an older commit than the pool tree: merge it onto the pool tree's own commit first (the train
-            # applies --3way too). Moving the tree to the tip instead re-splits every splat.yaml main changed since the
-            # pool's extraction (~450 CPU s) and drops the warm objects.
-            applied = _git(tree, "apply", "--3way", str(diff.resolve()))
-            if applied.returncode:  # conflicts leave markers behind: back to the clean commit before the tip is tried
-                _git(tree, "reset", "-q", "--hard")
-                _git(tree, "clean", "-fdq")
-        if applied.returncode and not at and head:
-            made, code, findings = _tree(profile, shared, lane, None)
-            tree = Path(made["worktree"])
-            before = {} if code else dict(hdrnarrow.records(tree))
+        before = {} if code else dict(hdrnarrow.records(tree))  # the stamp records the clean slot holds, for `restore`
+        try:
             if code:
                 return {"worktree": made}, code, findings
             (tree / STATE).write_text("busy\n")
             if found := settled(tree):
                 return {"worktree": made}, 1, found
             applied = _git(tree, "apply", str(diff.resolve()))
-        if (
-            applied.returncode
-        ):  # main moved over files the diff edits: the train applies with --3way, so the stamp does too
-            applied = _git(tree, "apply", "--3way", str(diff.resolve()))
-        if (
-            not applied.returncode
-        ):  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
-            _git(tree, "add", "-A", "-N")
-        if applied.returncode:
-            msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
-            return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
-        _phase("apply", mark)
-        same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
-        files = stamp_mod.files_of(text)
-        if stamp_mod.extraction_files(files):
-            extracted = (
-                True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
-            )
-            with setup_lock(shared):
-                why = check_mod.reextract(
-                    profile, tree, files, allow=reextract
-                )  # --reextract: a splat.yaml edit pays the re-split
-            if why:
-                return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
-        if "Makefile" not in files and any(f in ("config.toml", api.paths(tree)["platform"]) for f in files):
-            # a project row (a file's flags, a folder) moved: the committed Makefile still keys them by the old path, so a
-            # renamed unit compiled without its -ffast-math (Math_Sqrtf edit=9, 10-25). The train regenerates it after landing.
-            from abu_decomp import tools
-
-            with setup_lock(shared):
-                regen = tools.invoke("unbake", profile, ["sync", "--makefile"], project=tree)
-            if not regen.ok:
-                msg = "unbake sync --makefile refused in the stamp tree: the project rows cannot be rendered into a Makefile"
+            if applied.returncode and not at and head:
+                # A diff based on an older commit than the pool tree: merge it onto the pool tree's own commit first (the train
+                # applies --3way too). Moving the tree to the tip instead re-splits every splat.yaml main changed since the
+                # pool's extraction (~450 CPU s) and drops the warm objects.
+                applied = _git(tree, "apply", "--3way", str(diff.resolve()))
+                if (
+                    applied.returncode
+                ):  # conflicts leave markers behind: back to the clean commit before the tip is tried
+                    _git(tree, "reset", "-q", "--hard")
+                    _git(tree, "clean", "-fdq")
+            if applied.returncode and not at and head:
+                made, code, findings = _tree(profile, shared, lane, None)
+                tree = Path(made["worktree"])
+                before = {} if code else dict(hdrnarrow.records(tree))
+                if code:
+                    return {"worktree": made}, code, findings
+                (tree / STATE).write_text("busy\n")
+                if found := settled(tree):
+                    return {"worktree": made}, 1, found
+                applied = _git(tree, "apply", str(diff.resolve()))
+            if (
+                applied.returncode
+            ):  # main moved over files the diff edits: the train applies with --3way, so the stamp does too
+                applied = _git(tree, "apply", "--3way", str(diff.resolve()))
+            if (
+                not applied.returncode
+            ):  # a file the diff creates (a module a rename moved) is tracked for sync's [file] rows
+                _git(tree, "add", "-A", "-N")
+            if applied.returncode:
+                msg = f"{diff.name} does not apply on {made['rev'][:9]}: {applied.stderr.strip()[:200]}"
                 return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
-        _phase("extract+regen", mark)
-        builder = trial.Builder(cfg, tree, reference=shared if same else None)
-        check_mod.prepare(builder, list(cfg.versions))
-        slots_held.enter_context(builder.holding())  # ONE queue trip for the check and the link
-        results = check_versions(builder, list(cfg.versions))
-        _phase("check", mark)
-        if refused := [r for r in results if r.get("refused")]:  # a build failure: no scoring, no second check, no link
-            msg = "; ".join(f"{r['version']}: {r['errors'][0]}" for r in refused)
-            return {"worktree": made}, 1, [{"key": "data.build", "blocking": True, "message": msg}]
-        for line in filter(None, map(closure_line, results)):
-            print(line, flush=True)
-        if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
-            builder.skip_headers = header_files(files)  # the check judged their includers; the link does not redo them
-        if (
-            same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
-        ):  # the pool moved on: its objects are not ours
-            slots_held.close()
-            builder = trial.Builder(cfg, tree)
-            slots_held.enter_context(builder.holding())
-            results = check_versions(builder, list(cfg.versions))
-            _phase("check again", mark)
-        findings = [
-            {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
-            for r in results for u, fn, why in r["broken"]
-        ] + [
-            {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
-            for r in results for u, why in r.get("failed", [])
-        ] + [
-            {"key": "data.build", "blocking": True, "message": f"{r['version']}: not built: {'; '.join(r['errors'])}"}
-            for r in results if not r["built"] and not r.get("failed")
-        ]  # fmt: skip
-        # units == 0 proves nothing unless the narrowing proved the includers unreachable (skipped): a dead declaration
-        if not findings and results and all(r.get("units", 1) == 0 and not skipped(r) for r in results):
-            findings = [
-                {
-                    "key": "data.check",
-                    "blocking": True,
-                    "message": "the check judged 0 units in every version, so it proves nothing: no stamp",
-                }
-            ]
-        if not findings and all(r["built"] for r in results):
-            # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
-            # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
-            rc, report = builder.rom_check()
-            _phase("rom_check", mark)
-            if rc and not tree.is_dir():
-                return (
-                    {"worktree": made},
-                    1,
-                    [
-                        {
-                            "key": "data.stamp",
-                            "blocking": True,
-                            "message": f"stamp tree {lane} ({tree}) vanished during the build: another process removed it; retry the stamp",
-                        }
-                    ],
+            _phase("apply", mark, started)
+            same = made["rev"] == head  # the shared tree's objects are the clean build only at its own commit
+            files = stamp_mod.files_of(text)
+            if stamp_mod.extraction_files(files):
+                extracted = (
+                    True  # the tree's asm now follows the diff's symbol rows: it is no clean tree for the next stamp
                 )
-            if rc:
-                kept = True  # the failed tree stays (its build/ and .stamp-rom.log) until the slot is next used
-                findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {report}"}]
-        result: dict[str, Any] = {
-            "results": results,
-            "rev": made["rev"],
-            "tree": lane,
-            "reused": made.get("reused", False),
-        }
-        if not findings and all(r["built"] for r in results):
-            result["stamp"] = str(stamp_mod.write(stamps, text))
-            wrote = {r["version"]: r.get("units", 0) for r in results}
-        else:
-            result["stamp"] = "not stamped: the check failed"
-        return result, 1 if findings else 0, findings
-    finally:
-        slots_held.close()
-        wall, used = time.monotonic() - started, meter.cpu() - cpu - free[0]
-        if kept and (tree / ".git").exists():
-            (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
-        elif extracted:
-            worktree.prune(shared, [tree.name])
-        elif (tree / ".git").exists():
-            release(shared, tree, before)
-        if wrote is not None:  # the cost the line below shows: a held pack re-reports it (`measured`)
-            record = {"cpu": round(used, 1), "wall": round(wall, 1), "tree": lane, "rev": made["rev"], "units": wrote}
-            stamp_mod.write(stamps, text, measured=record)
-        print(
-            f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
-            + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else "")
-            + (f"  (uncharged tree+settle: wall={free[1]:.0f}s cpu={free[0]:.0f}s)" if free[1] else ""),
-            flush=True,
-        )
+                with setup_lock(shared):
+                    why = check_mod.reextract(
+                        profile, tree, files, allow=reextract
+                    )  # --reextract: a splat.yaml edit pays the re-split
+                if why:
+                    return {"worktree": made}, 1, [{"key": "data.extract", "blocking": True, "message": why}]
+            if "Makefile" not in files and any(f in ("config.toml", api.paths(tree)["platform"]) for f in files):
+                # a project row (a file's flags, a folder) moved: the committed Makefile still keys them by the old path, so a
+                # renamed unit compiled without its -ffast-math (Math_Sqrtf edit=9, 10-25). The train regenerates it after landing.
+                from abu_decomp import tools
+
+                with setup_lock(shared):
+                    regen = tools.invoke("unbake", profile, ["sync", "--makefile"], project=tree)
+                if not regen.ok:
+                    msg = "unbake sync --makefile refused in the stamp tree: the project rows cannot be rendered into a Makefile"
+                    return {"worktree": made}, 1, [{"key": "data.stamp", "blocking": True, "message": msg}]
+            _phase("extract+regen", mark, started)
+            builder = trial.Builder(cfg, tree, reference=shared if same else None)
+            check_mod.prepare(builder, list(cfg.versions))
+            slots_held.enter_context(builder.holding())  # ONE queue trip for the check and the link
+            results = check_versions(builder, list(cfg.versions))
+            _phase("check", mark, started)
+            if refused := [
+                r for r in results if r.get("refused")
+            ]:  # a build failure: no scoring, no second check, no link
+                msg = "; ".join(f"{r['version']}: {r['errors'][0]}" for r in refused)
+                return {"worktree": made}, 1, [{"key": "data.build", "blocking": True, "message": msg}]
+            for line in filter(None, map(closure_line, results)):
+                print(line, flush=True)
+            if os.environ.get("ABU_STAMP_ROM_SKIP", "1") == "1":
+                builder.skip_headers = header_files(
+                    files
+                )  # the check judged their includers; the link does not redo them
+            if (
+                same and _git(shared, "rev-parse", "HEAD").stdout.strip() != head
+            ):  # the pool moved on: its objects are not ours
+                slots_held.close()
+                builder = trial.Builder(cfg, tree)
+                slots_held.enter_context(builder.holding())
+                results = check_versions(builder, list(cfg.versions))
+                _phase("check again", mark, started)
+            findings = [
+                {"key": "data.check", "blocking": True, "message": f"{r['version']}: {u} {fn} {why}"}
+                for r in results for u, fn, why in r["broken"]
+            ] + [
+                {"key": "data.build", "blocking": True, "message": f"{r['version']}: {u} does not compile: {why}"}
+                for r in results for u, why in r.get("failed", [])
+            ] + [
+                {"key": "data.build", "blocking": True, "message": f"{r['version']}: not built: {'; '.join(r['errors'])}"}
+                for r in results if not r["built"] and not r.get("failed")
+            ]  # fmt: skip
+            # units == 0 proves nothing unless the narrowing proved the includers unreachable (skipped): a dead declaration
+            if not findings and results and all(r.get("units", 1) == 0 and not skipped(r) for r in results):
+                findings = [
+                    {
+                        "key": "data.check",
+                        "blocking": True,
+                        "message": "the check judged 0 units in every version, so it proves nothing: no stamp",
+                    }
+                ]
+            if not findings and all(r["built"] for r in results):
+                # A stamp means the 5 ROMs match: the units built, now link each version and compare its hash (10-24: a stamped
+                # diff broke the de ROM at the train, which links). Incremental: the objects are the ones just built.
+                rc, report = builder.rom_check()
+                _phase("rom_check", mark, started)
+                if rc and not tree.is_dir():
+                    return (
+                        {"worktree": made},
+                        1,
+                        [
+                            {
+                                "key": "data.stamp",
+                                "blocking": True,
+                                "message": f"stamp tree {lane} ({tree}) vanished during the build: another process removed it; retry the stamp",
+                            }
+                        ],
+                    )
+                if rc:
+                    kept = True  # the failed tree stays (its build/ and .stamp-rom.log) until the slot is next used
+                    findings = [{"key": "data.rom", "blocking": True, "message": f"ROM check failed: {report}"}]
+            result: dict[str, Any] = {
+                "results": results,
+                "rev": made["rev"],
+                "tree": lane,
+                "reused": made.get("reused", False),
+            }
+            if not findings and all(r["built"] for r in results):
+                result["stamp"] = str(stamp_mod.write(stamps, text))
+                wrote = {r["version"]: r.get("units", 0) for r in results}
+            else:
+                result["stamp"] = "not stamped: the check failed"
+            return result, 1 if findings else 0, findings
+        finally:
+            slots_held.close()
+            wall, used = started.seconds, meter.cpu() - cpu - free[0]
+            if kept and (tree / ".git").exists():
+                (tree / STATE).write_text("busy\n")  # not reusable; the next stamp in this slot rebuilds it
+            elif extracted:
+                worktree.prune(shared, [tree.name])
+            elif (tree / ".git").exists():
+                release(shared, tree, before)
+            if wrote is not None:  # the cost the line below shows: a held pack re-reports it (`measured`)
+                record = {
+                    "cpu": round(used, 1),
+                    "wall": round(wall, 1),
+                    "tree": lane,
+                    "rev": made["rev"],
+                    "units": wrote,
+                }
+                stamp_mod.write(stamps, text, measured=record)
+            print(
+                f"stamp build: wall={wall:.0f}s cpu={used:.0f}s tree={lane} {'reused' if made.get('reused') else 'fresh'}"
+                + ("  FLAG CPU-OVER-5min" if used > CPU_CAP else "")
+                + (f"  (uncharged tree+settle: wall={free[1]:.0f}s cpu={free[0]:.0f}s)" if free[1] else ""),
+                flush=True,
+            )

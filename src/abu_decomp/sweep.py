@@ -56,11 +56,12 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import time
 import tomllib
 from collections import Counter
 from pathlib import Path
 from typing import Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import DecompError
 
@@ -943,36 +944,36 @@ def run(
     chosen = [r for r in rules if not only or r.id in only]
     if only and len(chosen) != len(set(only)):
         raise DecompError("sweep.rule", f"no such rule: {', '.join(sorted(set(only) - {r.id for r in chosen}))}")
-    began = time.monotonic()
-    engine = Sweep(chosen, trees)
-    known = read_baseline(baseline)
-    hits: list[dict[str, Any]] = []
-    summary = []
-    found: set[str] = set()
-    for rule in chosen:
-        rows = engine.run_rule(rule)
-        for h, key in zip(rows, fingerprints(rows), strict=True):
-            h["new"] = key not in known
-            found.add(key)
-        hits += rows
-        summary.append(
-            {
-                "id": rule.id,
-                "kind": rule.kind,
-                "severity": rule.severity,
-                "hits": len(rows),
-                "new": sum(1 for h in rows if h["new"]),
-                "why": rule.why,
-            }
-        )
-    if not rewrite:
-        _refuse_stale(known - found, {r.id for r in rules}, {r.id for r in chosen}, trees, baseline)
-    return {
-        "rules": summary,
-        "hits": hits,
-        "files": len(engine.sources),
-        "wall_seconds": round(time.monotonic() - began, 1),
-    }
+    with cache_stages.timed("abu_decomp.sweep.run.began") as began:
+        engine = Sweep(chosen, trees)
+        known = read_baseline(baseline)
+        hits: list[dict[str, Any]] = []
+        summary = []
+        found: set[str] = set()
+        for rule in chosen:
+            rows = engine.run_rule(rule)
+            for h, key in zip(rows, fingerprints(rows), strict=True):
+                h["new"] = key not in known
+                found.add(key)
+            hits += rows
+            summary.append(
+                {
+                    "id": rule.id,
+                    "kind": rule.kind,
+                    "severity": rule.severity,
+                    "hits": len(rows),
+                    "new": sum(1 for h in rows if h["new"]),
+                    "why": rule.why,
+                }
+            )
+        if not rewrite:
+            _refuse_stale(known - found, {r.id for r in rules}, {r.id for r in chosen}, trees, baseline)
+        return {
+            "rules": summary,
+            "hits": hits,
+            "files": len(engine.sources),
+            "wall_seconds": round(began.seconds, 1),
+        }
 
 
 def to_findings(result: dict[str, Any], trees: dict[str, Path], batch: str | None = None) -> list[dict[str, Any]]:

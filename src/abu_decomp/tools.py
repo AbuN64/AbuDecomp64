@@ -22,6 +22,8 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import DecompError, meter
 from abu_decomp.config import Profile, check_keys
 
@@ -525,68 +527,74 @@ def invoke(
     environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
     marker = f"ABU_DECOMP_CALL={os.getpid()}.{time.time_ns()}"
     environment[marker.partition("=")[0]] = marker.partition("=")[2]
-    started, cpu_before = time.monotonic(), meter.cpu()
-    stop = _on_terminate()
-    try:
-        completed = subprocess.run(
-            [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
-            cwd=cwd,
-            input=stdin,
-            stdout=subprocess.PIPE,  # one JSON document; the tool's stages stream live to our stderr, never buffered
-            timeout=chosen.timeout_seconds,
-            check=False,
-            env=environment,
-        )
-    except subprocess.TimeoutExpired as exc:
-        spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())  # its workers outlive it otherwise
-        raise DependencyError(
-            "dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s and used {spent:.1f} CPU s"
-        ) from exc
-    except OSError as exc:
-        raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
-    except (KeyboardInterrupt, SystemExit):  # a cap (`timeout`) or ^C: the workers die with the tool, read their CPU
-        spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())
-        print(f"decomp: {tool} stopped after {spent:.1f} CPU s", file=sys.stderr)
-        raise
-    finally:
-        stop()
-    seconds, spent = time.monotonic() - started, meter.cpu() - cpu_before
-    if is_text_call(given):
+    with cache_stages.timed("abu_decomp.tools.invoke.started") as started:
+        cpu_before = meter.cpu()
+        stop = _on_terminate()
+        try:
+            completed = subprocess.run(
+                [str(Path(sys.executable).absolute()), "-I", "-c", bootstrap, *command],
+                cwd=cwd,
+                input=stdin,
+                # one JSON document; the tool's stages stream live to our stderr, never buffered
+                stdout=subprocess.PIPE,
+                timeout=chosen.timeout_seconds,
+                check=False,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())  # its workers outlive it otherwise
+            raise DependencyError(
+                "dependency.timeout", f"{tool} exceeded {chosen.timeout_seconds:g}s and used {spent:.1f} CPU s"
+            ) from exc
+        except OSError as exc:
+            raise DependencyError("dependency.process", f"cannot execute {tool}: {exc}") from exc
+        except (
+            KeyboardInterrupt,
+            SystemExit,
+        ):  # a cap (`timeout`) or ^C: the workers die with the tool, read their CPU
+            spent = meter.cpu() - cpu_before + meter.stop_marked(marker.encode())
+            print(f"decomp: {tool} stopped after {spent:.1f} CPU s", file=sys.stderr)
+            raise
+        finally:
+            stop()
+        seconds, spent = started.seconds, meter.cpu() - cpu_before
+        if is_text_call(given):
+            return ToolResult(
+                tool,
+                (tool, *command),
+                completed.returncode,
+                {},
+                provenance,
+                where,
+                completed.stdout,
+                seconds,
+                spent,
+            )
+        try:
+            document = json.loads(completed.stdout.decode("utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise DependencyError(
+                "dependency.output",
+                f"{tool} exited {completed.returncode} without one JSON document (its stderr is above)",
+            ) from exc
+        if not isinstance(document, dict) or type(document.get("ok")) is not bool:
+            raise DependencyError("dependency.output", f"{tool} JSON requires an explicit boolean ok")
+        if "findings" in document and not isinstance(document["findings"], list):
+            raise DependencyError("dependency.output", f"{tool} JSON findings must be a list")
+        if TOOLS[tool].envelope and not document.keys() >= ENVELOPE:
+            raise DependencyError("dependency.output", f"{tool} omitted fields of its public result envelope")
+        if tool == "unbake":
+            CACHE_LOG.append({"call": f"unbake {given[0]}", "report": cache_report(document.get("stages"))})
         return ToolResult(
             tool,
             (tool, *command),
             completed.returncode,
-            {},
+            document,
             provenance,
             where,
-            completed.stdout,
-            seconds,
-            spent,
+            seconds=seconds,
+            cpu=spent,
         )
-    try:
-        document = json.loads(completed.stdout.decode("utf-8"))
-    except (ValueError, UnicodeError) as exc:
-        raise DependencyError(
-            "dependency.output", f"{tool} exited {completed.returncode} without one JSON document (its stderr is above)"
-        ) from exc
-    if not isinstance(document, dict) or type(document.get("ok")) is not bool:
-        raise DependencyError("dependency.output", f"{tool} JSON requires an explicit boolean ok")
-    if "findings" in document and not isinstance(document["findings"], list):
-        raise DependencyError("dependency.output", f"{tool} JSON findings must be a list")
-    if TOOLS[tool].envelope and not document.keys() >= ENVELOPE:
-        raise DependencyError("dependency.output", f"{tool} omitted fields of its public result envelope")
-    if tool == "unbake":
-        CACHE_LOG.append({"call": f"unbake {given[0]}", "report": cache_report(document.get("stages"))})
-    return ToolResult(
-        tool,
-        (tool, *command),
-        completed.returncode,
-        document,
-        provenance,
-        where,
-        seconds=seconds,
-        cpu=spent,
-    )
 
 
 # unbake's read-only API (the surface Recipe Maker imports): the calls decomp may make in the pinned interpreter.

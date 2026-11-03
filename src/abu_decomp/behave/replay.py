@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import DecompError, procguard, tas, tas_coverage, tas_oracle, tas_seat
 from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
@@ -188,24 +190,24 @@ def record_movie(
         "N64R_REPLAY_GAP": str(GAP),
         "N64R_REPLAY_EVENTS": str(EVENTS),
     }
-    began = time.monotonic()
-    process = tas_oracle.start(oracle, home, cfg["exit_after"], pak, extra=extra, card=card)
-    code, cpu = tas._wait(process, oracle["timeout_seconds"])
-    wall = round(time.monotonic() - began, 1)
-    made = home / "rec" / "replay.jsonl"
-    if code != 0 or not made.is_file():
-        tail = (home / tas_oracle.LOG).read_text(errors="replace").strip().splitlines()[-3:]
-        if code != 0:
-            raise OracleAborted(name, code, " | ".join(tail))
-        raise ReplayError(
-            "behave.replay.record",
-            f"the oracle did not record {name} (exit {code}; the host may lack the recorder, cake-taste "
-            f"hosts/n64recomp/replay.cpp): {' | '.join(tail)}",
-        )
-    made.replace(done)
-    meta = {"wall_seconds": wall, "cpu_seconds": cpu, "oracle_exit": code}
-    (home / "meta.json").write_text(json.dumps(meta))
-    return {"movie": name, "pak": pak, "path": done, "cached": False, **meta}
+    with cache_stages.timed("abu_decomp.behave.replay.record_movie.began") as began:
+        process = tas_oracle.start(oracle, home, cfg["exit_after"], pak, extra=extra, card=card)
+        code, cpu = tas._wait(process, oracle["timeout_seconds"])
+        wall = round(began.seconds, 1)
+        made = home / "rec" / "replay.jsonl"
+        if code != 0 or not made.is_file():
+            tail = (home / tas_oracle.LOG).read_text(errors="replace").strip().splitlines()[-3:]
+            if code != 0:
+                raise OracleAborted(name, code, " | ".join(tail))
+            raise ReplayError(
+                "behave.replay.record",
+                f"the oracle did not record {name} (exit {code}; the host may lack the recorder, cake-taste "
+                f"hosts/n64recomp/replay.cpp): {' | '.join(tail)}",
+            )
+        made.replace(done)
+        meta = {"wall_seconds": wall, "cpu_seconds": cpu, "oracle_exit": code}
+        (home / "meta.json").write_text(json.dumps(meta))
+        return {"movie": name, "pak": pak, "path": done, "cached": False, **meta}
 
 
 def pick(samples: list[Sample], calls: int) -> dict[str, list[Sample]]:
@@ -638,159 +640,160 @@ def run_port(
     local = {**cfg, "port": port}
     argv = tas._argv(local, user, pak, None)
     env = {**os.environ, **cfg["env"], "N64C_REPLAY": str(plan)}
-    began = time.monotonic()
-    with (run / f"port-{pak}.txt").open("w") as output:
-        process = subprocess.Popen(
-            argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, **procguard.owned()
-        )
-        code, cpu = tas._wait(process, max(60.0, 0.5 * len(cases)))
-    timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu, "exit": code}
-    if not results.is_file():
-        tail = (run / f"port-{pak}.txt").read_text(errors="replace").strip().splitlines()[-3:]
-        raise ReplayError(
-            "behave.replay.port",
-            f"the port ran no case (exit {code}): {' | '.join(tail)}; the build needs shim boot/replay.c",
-        )
-    return parse_results(results.read_text()), timing
+    with cache_stages.timed("abu_decomp.behave.replay.run_port.began") as began:
+        with (run / f"port-{pak}.txt").open("w") as output:
+            process = subprocess.Popen(
+                argv, env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, **procguard.owned()
+            )
+            code, cpu = tas._wait(process, max(60.0, 0.5 * len(cases)))
+        timing = {"wall_seconds": round(began.seconds, 1), "cpu_seconds": cpu, "exit": code}
+        if not results.is_file():
+            tail = (run / f"port-{pak}.txt").read_text(errors="replace").strip().splitlines()[-3:]
+            raise ReplayError(
+                "behave.replay.port",
+                f"the port ran no case (exit {code}): {' | '.join(tail)}; the build needs shim boot/replay.c",
+            )
+        return parse_results(results.read_text()), timing
 
 
 def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    began, own_began = time.monotonic(), time.process_time()
-    spent = 0.0  # CPU seconds of the oracle and port processes (wait4 of each process tree) so far
-    cfg = tas.settings(profile)
-    oracle = oracle_host(profile, options)
-    if not options.port:
-        tas_seat.check(cfg)
-    port = (options.port or tas.port_of(cfg)).resolve()
-    if not port.is_file():
-        raise ReplayError("behave.replay.port", f"no port executable at {port}")
-    movies = options.movies or [m for m in _corpus_movies(cfg)]
-    if not movies:
-        raise ReplayError("behave.replay.movies", "no movie to replay (name some with --movie, or fill the corpus)")
-    stages: dict[str, float] = {}
-    recorded, samples, skipped, seen = [], [], Counter(), set()
-    aborts: list[OracleAborted] = []
-    for name in movies:
-        if spent + time.process_time() - own_began > options.cpu_budget:
+    with cache_stages.timed("abu_decomp.behave.replay.run.began") as began:
+        own_began = time.process_time()
+        spent = 0.0  # CPU seconds of the oracle and port processes (wait4 of each process tree) so far
+        cfg = tas.settings(profile)
+        oracle = oracle_host(profile, options)
+        if not options.port:
+            tas_seat.check(cfg)
+        port = (options.port or tas.port_of(cfg)).resolve()
+        if not port.is_file():
+            raise ReplayError("behave.replay.port", f"no port executable at {port}")
+        movies = options.movies or [m for m in _corpus_movies(cfg)]
+        if not movies:
+            raise ReplayError("behave.replay.movies", "no movie to replay (name some with --movie, or fill the corpus)")
+        stages: dict[str, float] = {}
+        recorded, samples, skipped, seen = [], [], Counter(), set()
+        aborts: list[OracleAborted] = []
+        for name in movies:
+            if spent + time.process_time() - own_began > options.cpu_budget:
+                recorded.append(
+                    {"movie": name, "skipped": f"the batch spent {spent:.0f} CPU s of {options.cpu_budget:.0f}"}
+                )
+                continue
+            try:
+                info = record_movie(profile, cfg, oracle, name, options)
+            except OracleAborted as aborted:
+                recorded.append(
+                    {"movie": name, "skipped": f"oracle aborted (exit {aborted.code})", "oracle_abort": aborted.tail}
+                )
+                aborts.append(aborted)
+                continue
+            spent += 0.0 if info["cached"] else info.get("cpu_seconds", 0.0)
+            found, off, reached = read_samples(info["path"], name, info["pak"])
+            samples += found
+            skipped.update(off)
+            seen |= reached
             recorded.append(
-                {"movie": name, "skipped": f"the batch spent {spent:.0f} CPU s of {options.cpu_budget:.0f}"}
+                {k: v for k, v in info.items() if k != "path"} | {"samples": len(found), "functions": len(reached)}
             )
-            continue
-        try:
-            info = record_movie(profile, cfg, oracle, name, options)
-        except OracleAborted as aborted:
-            recorded.append(
-                {"movie": name, "skipped": f"oracle aborted (exit {aborted.code})", "oracle_abort": aborted.tail}
+        stages["record"] = round(began.seconds, 1)
+        if options.functions:
+            wanted = set(options.functions)
+            samples = [s for s in samples if s.function in wanted]
+        chosen = pick(samples, options.calls)
+        unsampled = {
+            fn: "no replayable recording" if fn in seen else "not reached by the oracle"
+            for fn in sorted(set(options.functions) - chosen.keys())
+        }
+        source = _source(profile, options)
+        config = _config(profile)
+        version = options.version or _names_from(source)
+        guest = guest_addresses(source, version)
+        elf = Elf(port)
+        protos = Prototypes(source, tuple(config["headers"]))
+        native_of = function_pointers(guest, elf.by_name)
+        game = {n for n in guest if n in elf.by_name}
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        batch = cfg["runs"] / "replay" / stamp
+        batch.mkdir(parents=True, exist_ok=True)
+        cases: dict[str, list[Case]] = {}
+        missing: list[str] = []
+        numbered = 0
+        for fn in sorted(chosen):
+            entry = elf.by_name.get(fn)
+            if entry is None:
+                missing.append(fn)
+                continue
+            for s in chosen[fn]:
+                cases.setdefault(s.pak, []).append(make_case(numbered, s, protos.get(fn), entry, native_of))
+                numbered += 1
+        stages["plan"] = round(began.seconds - stages["record"], 1)
+        verdicts: dict[str, Counter[str]] = {}
+        why: Counter[str] = Counter()
+        rows: list[dict[str, Any]] = []
+        differing: dict[str, list[str]] = {}
+        timings: dict[str, Any] = {}
+        now = time.time()
+        for pak, group in sorted(cases.items()):
+            outcomes, timings[pak] = run_port(cfg, port, batch, pak, group)
+            spent += timings[pak]["cpu_seconds"]
+            for case in group:
+                verdict, found, reason = judge(case, outcomes.get(case.id), elf, game, native_of)
+                verdicts.setdefault(case.sample.function, Counter())[verdict] += 1
+                if verdict == "untestable":
+                    why[reason] += 1
+                if found:
+                    evidence = f"{batch}/results-{pak}.txt#{case.id}"
+                    rows += finding_rows(case, found, evidence, stamp, now)
+                    differing.setdefault(case.sample.function, []).extend(sorted({m.field for m in found}))
+        functions = set(verdicts)
+        if options.findings:
+            write_findings(cfg["runs"] / FINDINGS, rows, functions)
+            write_findings(
+                cfg["runs"] / FINDINGS, oracle_rows(aborts, stamp, now), {a.movie for a in aborts}, ORACLE_KIND, "movie"
             )
-            aborts.append(aborted)
-            continue
-        spent += 0.0 if info["cached"] else info.get("cpu_seconds", 0.0)
-        found, off, reached = read_samples(info["path"], name, info["pak"])
-        samples += found
-        skipped.update(off)
-        seen |= reached
-        recorded.append(
-            {k: v for k, v in info.items() if k != "path"} | {"samples": len(found), "functions": len(reached)}
-        )
-    stages["record"] = round(time.monotonic() - began, 1)
-    if options.functions:
-        wanted = set(options.functions)
-        samples = [s for s in samples if s.function in wanted]
-    chosen = pick(samples, options.calls)
-    unsampled = {
-        fn: "no replayable recording" if fn in seen else "not reached by the oracle"
-        for fn in sorted(set(options.functions) - chosen.keys())
-    }
-    source = _source(profile, options)
-    config = _config(profile)
-    version = options.version or _names_from(source)
-    guest = guest_addresses(source, version)
-    elf = Elf(port)
-    protos = Prototypes(source, tuple(config["headers"]))
-    native_of = function_pointers(guest, elf.by_name)
-    game = {n for n in guest if n in elf.by_name}
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    batch = cfg["runs"] / "replay" / stamp
-    batch.mkdir(parents=True, exist_ok=True)
-    cases: dict[str, list[Case]] = {}
-    missing: list[str] = []
-    numbered = 0
-    for fn in sorted(chosen):
-        entry = elf.by_name.get(fn)
-        if entry is None:
-            missing.append(fn)
-            continue
-        for s in chosen[fn]:
-            cases.setdefault(s.pak, []).append(make_case(numbered, s, protos.get(fn), entry, native_of))
-            numbered += 1
-    stages["plan"] = round(time.monotonic() - began - stages["record"], 1)
-    verdicts: dict[str, Counter[str]] = {}
-    why: Counter[str] = Counter()
-    rows: list[dict[str, Any]] = []
-    differing: dict[str, list[str]] = {}
-    timings: dict[str, Any] = {}
-    now = time.time()
-    for pak, group in sorted(cases.items()):
-        outcomes, timings[pak] = run_port(cfg, port, batch, pak, group)
-        spent += timings[pak]["cpu_seconds"]
-        for case in group:
-            verdict, found, reason = judge(case, outcomes.get(case.id), elf, game, native_of)
-            verdicts.setdefault(case.sample.function, Counter())[verdict] += 1
-            if verdict == "untestable":
-                why[reason] += 1
-            if found:
-                evidence = f"{batch}/results-{pak}.txt#{case.id}"
-                rows += finding_rows(case, found, evidence, stamp, now)
-                differing.setdefault(case.sample.function, []).extend(sorted({m.field for m in found}))
-    functions = set(verdicts)
-    if options.findings:
-        write_findings(cfg["runs"] / FINDINGS, rows, functions)
-        write_findings(
-            cfg["runs"] / FINDINGS, oracle_rows(aborts, stamp, now), {a.movie for a in aborts}, ORACLE_KIND, "movie"
-        )
-    per_function = {
-        "same": sorted(f for f, c in verdicts.items() if c["differs"] == 0 and c["same"] > 0),
-        "differs": sorted(differing),
-        "untestable": sorted(f for f, c in verdicts.items() if not c["same"] and not c["differs"]),
-    }
-    own = round(time.process_time() - own_began, 1)
-    cpu = round(spent + own, 1)
-    incomplete = bool(aborts or unsampled or missing or per_function["untestable"] or not verdicts)
-    verdict = "differs" if differing else "untestable" if incomplete else "same"
-    result = {
-        "verdict": verdict,
-        "batch": str(batch),
-        "movies": recorded,
-        "oracle": str(oracle["host"]),
-        "port": str(port),
-        "functions": {
-            "reached": len(seen),
-            "sampled": len(chosen),
-            "replayed": len(verdicts),
-            "same": len(per_function["same"]),
-            "differs": len(per_function["differs"]),
-            "untestable": len(per_function["untestable"]),
-            "not_in_port": len(missing),
-            "unsampled": len(unsampled),
-        },
-        "samples": {"recorded": len(samples), "replayed": sum(len(g) for g in cases.values())},
-        "written_off": dict(skipped),
-        "oracle_aborts": {a.movie: a.tail for a in aborts},
-        "untestable_reasons": dict(why.most_common()),
-        "differing": {f: sorted(set(v)) for f, v in sorted(differing.items())},
-        "not_in_port": missing[:50],
-        "unsampled": unsampled,
-        "findings": {"file": str(cfg["runs"] / FINDINGS), "written": len(rows)} if options.findings else None,
-        "timing": {
-            "wall_seconds": round(time.monotonic() - began, 1),
-            "cpu_seconds": cpu,
-            "cpu_budget": options.cpu_budget,
-            "stages": stages,
-            "port": timings,
-        },
-    }
-    (batch / "report.json").write_text(json.dumps(result, indent=1))
-    return result, 0, []
+        per_function = {
+            "same": sorted(f for f, c in verdicts.items() if c["differs"] == 0 and c["same"] > 0),
+            "differs": sorted(differing),
+            "untestable": sorted(f for f, c in verdicts.items() if not c["same"] and not c["differs"]),
+        }
+        own = round(time.process_time() - own_began, 1)
+        cpu = round(spent + own, 1)
+        incomplete = bool(aborts or unsampled or missing or per_function["untestable"] or not verdicts)
+        verdict = "differs" if differing else "untestable" if incomplete else "same"
+        result = {
+            "verdict": verdict,
+            "batch": str(batch),
+            "movies": recorded,
+            "oracle": str(oracle["host"]),
+            "port": str(port),
+            "functions": {
+                "reached": len(seen),
+                "sampled": len(chosen),
+                "replayed": len(verdicts),
+                "same": len(per_function["same"]),
+                "differs": len(per_function["differs"]),
+                "untestable": len(per_function["untestable"]),
+                "not_in_port": len(missing),
+                "unsampled": len(unsampled),
+            },
+            "samples": {"recorded": len(samples), "replayed": sum(len(g) for g in cases.values())},
+            "written_off": dict(skipped),
+            "oracle_aborts": {a.movie: a.tail for a in aborts},
+            "untestable_reasons": dict(why.most_common()),
+            "differing": {f: sorted(set(v)) for f, v in sorted(differing.items())},
+            "not_in_port": missing[:50],
+            "unsampled": unsampled,
+            "findings": {"file": str(cfg["runs"] / FINDINGS), "written": len(rows)} if options.findings else None,
+            "timing": {
+                "wall_seconds": round(began.seconds, 1),
+                "cpu_seconds": cpu,
+                "cpu_budget": options.cpu_budget,
+                "stages": stages,
+                "port": timings,
+            },
+        }
+        (batch / "report.json").write_text(json.dumps(result, indent=1))
+        return result, 0, []
 
 
 def _corpus_movies(cfg: dict[str, Any]) -> list[str]:

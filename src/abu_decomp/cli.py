@@ -12,7 +12,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 import traceback
 import uuid
 from collections.abc import Callable, Sequence
@@ -20,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
 from abucache.slots import AdmissionError
 
 from abu_decomp import DecompError, priority, runslice
@@ -1864,60 +1864,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:  # a real start, not a call from a test or from `decomp mcp`'s own dispatch
         priority.apply(args)  # before the slice exec, which keeps it
         runslice.start(args)
-    started = time.monotonic()
-    invocation = uuid.uuid4().hex
-    result: dict[str, Any] | None = None
-    findings: list[dict[str, Any]] = []
-    code = 0
-    command = "parse"
-    parsed_profile: Path | None = None
-    try:
-        parsed = _tool_call(args) or parser(list(args)).parse_args(args)
-        command = parsed.command
-        parsed_profile = parsed.profile
-        if command == "mcp":
-            from abu_decomp.mcp import serve
+    with cache_stages.timed("abu_decomp.cli.main.started") as started:
+        invocation = uuid.uuid4().hex
+        result: dict[str, Any] | None = None
+        findings: list[dict[str, Any]] = []
+        code = 0
+        command = "parse"
+        parsed_profile: Path | None = None
+        try:
+            parsed = _tool_call(args) or parser(list(args)).parse_args(args)
+            command = parsed.command
+            parsed_profile = parsed.profile
+            if command == "mcp":
+                from abu_decomp.mcp import serve
 
-            prefix = ["--profile", str(parsed.profile)] if parsed.profile else []
-            return serve(sys.stdin.buffer, sys.stdout.buffer, prefix=prefix)
-        result, code, findings = COMMANDS[command].run(parsed)
-    except _Text as exc:
-        return exc.code
-    except (DecompError, AdmissionError) as exc:
-        code, findings = 1, [exc.finding()]
-    except (ValueError, OSError) as exc:
-        code, findings = 1, [{"key": "command.failed", "message": str(exc), "blocking": True}]
-    except KeyboardInterrupt as exc:
-        code = 128 + getattr(exc, "signum", 2)
-        findings = [{"key": "command.interrupted", "message": str(exc) or "SIGINT", "blocking": True}]
-    except SystemExit as exc:
-        # argparse help is the only plain-text stdout path.
-        if exc.code == 0:
-            return 0
-        # tools._on_terminate turns SIGTERM into SystemExit(128+signal): an external cap or kill, not a bad argument
-        if isinstance(exc.code, int) and 128 < exc.code < 160:
-            spent = time.monotonic() - started
-            name = signal.Signals(exc.code - 128).name
-            message = f"TIMEOUT or kill: {command} stopped by {name} after {spent:.0f} s (external cap)"
-            code, findings = exc.code, [{"key": "command.terminated", "message": message, "blocking": True}]
-        else:
-            message = f"{command} rejected its arguments"
-            code, findings = 2, [{"key": "cli.arguments", "message": message, "blocking": True}]
-    except Exception as exc:
-        sys.stderr.write(traceback.format_exc())
-        code, findings = 3, [{"key": "internal.error", "message": repr(exc), "blocking": True}]
-    _record_claim(parsed_profile, invocation, command, code == 0, result, args)
-    envelope = {
-        "ok": code == 0,
-        "result": result,
-        "findings": findings,
-        "stages": [{"name": command, "wall_seconds": round(time.monotonic() - started, 6)}],
-        "invocation": invocation,
-    }
-    sys.stdout.write(json.dumps(envelope, sort_keys=True, default=str) + "\n")
-    sys.stdout.flush()
-    _refusal_lines(findings)
-    return code
+                prefix = ["--profile", str(parsed.profile)] if parsed.profile else []
+                return serve(sys.stdin.buffer, sys.stdout.buffer, prefix=prefix)
+            result, code, findings = COMMANDS[command].run(parsed)
+        except _Text as exc:
+            return exc.code
+        except (DecompError, AdmissionError) as exc:
+            code, findings = 1, [exc.finding()]
+        except (ValueError, OSError) as exc:
+            code, findings = 1, [{"key": "command.failed", "message": str(exc), "blocking": True}]
+        except KeyboardInterrupt as exc:
+            code = 128 + getattr(exc, "signum", 2)
+            findings = [{"key": "command.interrupted", "message": str(exc) or "SIGINT", "blocking": True}]
+        except SystemExit as exc:
+            # argparse help is the only plain-text stdout path.
+            if exc.code == 0:
+                return 0
+            # tools._on_terminate turns SIGTERM into SystemExit(128+signal): an external cap or kill, not a bad argument
+            if isinstance(exc.code, int) and 128 < exc.code < 160:
+                spent = started.seconds
+                name = signal.Signals(exc.code - 128).name
+                message = f"TIMEOUT or kill: {command} stopped by {name} after {spent:.0f} s (external cap)"
+                code, findings = exc.code, [{"key": "command.terminated", "message": message, "blocking": True}]
+            else:
+                message = f"{command} rejected its arguments"
+                code, findings = 2, [{"key": "cli.arguments", "message": message, "blocking": True}]
+        except Exception as exc:
+            sys.stderr.write(traceback.format_exc())
+            code, findings = 3, [{"key": "internal.error", "message": repr(exc), "blocking": True}]
+        _record_claim(parsed_profile, invocation, command, code == 0, result, args)
+        envelope = {
+            "ok": code == 0,
+            "result": result,
+            "findings": findings,
+            "stages": [{"name": command, "wall_seconds": round(started.seconds, 6)}],
+            "invocation": invocation,
+        }
+        sys.stdout.write(json.dumps(envelope, sort_keys=True, default=str) + "\n")
+        sys.stdout.flush()
+        _refusal_lines(findings)
+        return code
 
 
 if __name__ == "__main__":

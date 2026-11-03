@@ -36,7 +36,6 @@ import subprocess
 import tarfile
 import tempfile
 import threading
-import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -44,6 +43,8 @@ from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import cleanup
 from abu_decomp.config import ConfigError
@@ -296,12 +297,17 @@ def _link(rev: Revision, spec: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
                 subprocess.run(["git", "-C", str(pool), "fetch", "-q", str(rev.root), sha], check=True)
             config = Path(spec["config"]).expanduser() if spec.get("config") else None
             cfg = config_mod.load(config, pool)
-            began = time.monotonic()
-            with stampbuild.at_rev(cfg, rev.profile, pool, sha, float(spec.get("wait", 600))) as tree:
-                leased = time.monotonic()
-                trial.Builder(cfg, tree).rom_check()  # links every version; the report below judges the ROMs themselves
-                rev._linked = shipproof.rom_report(tree)
-                rev._link_seconds = {"tree": round(leased - began, 1), "link": round(time.monotonic() - leased, 1)}
+            with (
+                cache_stages.timed("gates.link.tree") as began,
+                stampbuild.at_rev(cfg, rev.profile, pool, sha, float(spec.get("wait", 600))) as tree,
+            ):
+                tree_seconds = began.seconds
+                with cache_stages.timed("gates.link.roms") as leased:
+                    trial.Builder(
+                        cfg, tree
+                    ).rom_check()  # links every version; the report below judges the ROMs themselves
+                    rev._linked = shipproof.rom_report(tree)
+                    rev._link_seconds = {"tree": round(tree_seconds, 1), "link": round(leased.seconds, 1)}
         return rev._linked
 
 
@@ -340,12 +346,12 @@ def measure(rev: Revision, gate: Mapping[str, Any]) -> dict[str, Any]:
     """One gate row: {id, phase, name, value, detail} or {id, ..., error}."""
     row = {k: gate.get(k, "") for k in ("id", "phase", "name")}
     spec = gate["measure"]
-    started = time.monotonic()
-    try:
-        value, detail = MEASURES[spec["kind"]](rev, spec)
-    except Exception as e:  # a gate that cannot be counted says why; its siblings still run
-        return {**row, "error": f"{type(e).__name__}: {e}"[:300]}
-    return {**row, "value": value, "detail": detail, "seconds": round(time.monotonic() - started, 1)}
+    with cache_stages.timed("abu_decomp.gates.measure.started") as started:
+        try:
+            value, detail = MEASURES[spec["kind"]](rev, spec)
+        except Exception as e:  # a gate that cannot be counted says why; its siblings still run
+            return {**row, "error": f"{type(e).__name__}: {e}"[:300]}
+        return {**row, "value": value, "detail": detail, "seconds": round(started.seconds, 1)}
 
 
 def gate_lines(rows: list[dict[str, Any]], top: int = 0) -> list[str]:
@@ -366,23 +372,25 @@ def gate_lines(rows: list[dict[str, Any]], top: int = 0) -> list[str]:
 def run(root: Path, rev: str, section: Mapping[str, Any], profile: Any = None) -> dict[str, Any]:
     """Every gate of `section` on commit `rev`: {"rev", "seconds", "gates": [...], "failed": n}. The ROM gates start
     first: their link is the one long step and the others count while it runs."""
-    started = time.monotonic()
-    book = Revision(
-        root, rev, Path(section.get("scratch", "~/rig-state/tmp")).expanduser(), section.get("link"), profile
-    )
-    gates = list(section["gates"])
-    try:
-        with ThreadPoolExecutor(max_workers=int(section.get("workers", 8))) as pool:
-            futures = {i: pool.submit(measure, book, g) for i, g in enumerate(gates) if g["measure"]["kind"] == "roms"}
-            if any(g["measure"]["kind"] in ("externs", "dead-decls", "command", "style") for g in gates):
-                _ = book.tree  # unpack once, before the gates that read it share it
-            futures |= {i: pool.submit(measure, book, g) for i, g in enumerate(gates) if i not in futures}
-            rows = [futures[i].result() for i in range(len(gates))]
-    finally:
-        book.close()
-    return {
-        "rev": rev,
-        "seconds": round(time.monotonic() - started, 1),
-        "gates": rows,
-        "failed": sum(1 for r in rows if "error" in r),
-    }
+    with cache_stages.timed("abu_decomp.gates.run.started") as started:
+        book = Revision(
+            root, rev, Path(section.get("scratch", "~/rig-state/tmp")).expanduser(), section.get("link"), profile
+        )
+        gates = list(section["gates"])
+        try:
+            with ThreadPoolExecutor(max_workers=int(section.get("workers", 8))) as pool:
+                futures = {
+                    i: pool.submit(measure, book, g) for i, g in enumerate(gates) if g["measure"]["kind"] == "roms"
+                }
+                if any(g["measure"]["kind"] in ("externs", "dead-decls", "command", "style") for g in gates):
+                    _ = book.tree  # unpack once, before the gates that read it share it
+                futures |= {i: pool.submit(measure, book, g) for i, g in enumerate(gates) if i not in futures}
+                rows = [futures[i].result() for i in range(len(gates))]
+        finally:
+            book.close()
+        return {
+            "rev": rev,
+            "seconds": round(started.seconds, 1),
+            "gates": rows,
+            "failed": sum(1 for r in rows if "error" in r),
+        }

@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
 from unbake import api
 
 from abu_decomp import DecompError, procguard, statetypes, tas_findings, tas_oracle, tas_reviews
@@ -330,52 +331,53 @@ def build_spec(profile: Profile, cfg: dict[str, Any], exe: Path) -> Path:
     folder = cfg["runs"] / SPECS / spec_key(exe, units)
     if (folder / "map.json").is_file():
         return folder
-    began, cpu = time.monotonic(), time.process_time()
-    symbols = port_symbols(exe)
-    regions, why = build_entries(read_types(units), symbols, owners(units, areas(_pinned(profile))), None)
-    static_end = max(
-        (e.address + sum(KIND_BYTES[k] * n for _o, k, n in e.port) for es in regions.values() for e in es),
-        default=BASE,
-    )
-    top = max(symbols.values(), default=BASE) + HEAP_GUARD
-    dynamic = ((max(static_end, top) + 0xFFF) & ~0xFFF, BASE + RAM)
-    tmp = folder.with_name(folder.name + f".tmp{os.getpid()}")
-    tmp.mkdir(parents=True, exist_ok=True)
-    (tmp / "port.spec").write_text(spec_text(regions, "port", dynamic))
-    (tmp / "oracle.spec").write_text(spec_text(regions, "oracle", dynamic))
-    index = 0
-    table_regions = {}
-    for r in sorted(regions):
-        symbols_out = []
-        for e in regions[r]:
-            symbols_out.append(
-                {
-                    "index": index,
-                    "name": e.name,
-                    "address": e.address,
-                    "elements": e.elements,
-                    "kinds": _kinds(e.port),
-                    "shape": e.shape,
-                }
-            )
-            index += 1
-        table_regions[r] = {"elements": sum(e.elements for e in regions[r]), "symbols": symbols_out}
-    table = {
-        "schema": SCHEMA,
-        "dynamic": list(dynamic),
-        "left_out": dict(why),
-        "symbols": index,
-        "wall_seconds": round(time.monotonic() - began, 1),
-        "cpu_seconds": round(time.process_time() - cpu, 1),
-        "regions": table_regions,
-    }
-    (tmp / "map.json").write_text(json.dumps(table, separators=(",", ":")))
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.replace(tmp, folder)
-    except OSError:  # another run built it first
-        shutil.rmtree(tmp, ignore_errors=True)
-    return folder
+    with cache_stages.timed("abu_decomp.tas_statediff.build_spec.began") as began:
+        cpu = time.process_time()
+        symbols = port_symbols(exe)
+        regions, why = build_entries(read_types(units), symbols, owners(units, areas(_pinned(profile))), None)
+        static_end = max(
+            (e.address + sum(KIND_BYTES[k] * n for _o, k, n in e.port) for es in regions.values() for e in es),
+            default=BASE,
+        )
+        top = max(symbols.values(), default=BASE) + HEAP_GUARD
+        dynamic = ((max(static_end, top) + 0xFFF) & ~0xFFF, BASE + RAM)
+        tmp = folder.with_name(folder.name + f".tmp{os.getpid()}")
+        tmp.mkdir(parents=True, exist_ok=True)
+        (tmp / "port.spec").write_text(spec_text(regions, "port", dynamic))
+        (tmp / "oracle.spec").write_text(spec_text(regions, "oracle", dynamic))
+        index = 0
+        table_regions = {}
+        for r in sorted(regions):
+            symbols_out = []
+            for e in regions[r]:
+                symbols_out.append(
+                    {
+                        "index": index,
+                        "name": e.name,
+                        "address": e.address,
+                        "elements": e.elements,
+                        "kinds": _kinds(e.port),
+                        "shape": e.shape,
+                    }
+                )
+                index += 1
+            table_regions[r] = {"elements": sum(e.elements for e in regions[r]), "symbols": symbols_out}
+        table = {
+            "schema": SCHEMA,
+            "dynamic": list(dynamic),
+            "left_out": dict(why),
+            "symbols": index,
+            "wall_seconds": round(began.seconds, 1),
+            "cpu_seconds": round(time.process_time() - cpu, 1),
+            "regions": table_regions,
+        }
+        (tmp / "map.json").write_text(json.dumps(table, separators=(",", ":")))
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.replace(tmp, folder)
+        except OSError:  # another run built it first
+            shutil.rmtree(tmp, ignore_errors=True)
+        return folder
 
 
 def load_map(folder: Path) -> dict[str, Any]:
@@ -622,12 +624,12 @@ class Session:
     table: dict[str, Any]
     oracle_dir: Path
     cached: bool
+    timing: cache_stages.Timing
     process: subprocess.Popen | None = None
     oracle_cfg: dict[str, Any] = field(default_factory=dict)
     pak: str = "on"
     card: Path | None = None
     pads: int = 1  # controllers both sides see; every movie line holds that many pads
-    began: float = field(default_factory=time.monotonic)
     notes: list[str] = field(default_factory=list)
     attached: bool = False  # the picture oracle of this play is the state oracle too: one process, no second Popen
     movie_polls: int = 0  # polls in the movie; an oracle trace that stops short of it is incomplete
@@ -674,6 +676,8 @@ def begin(
     polls: list[Any],
     pads: int = 1,
     attach: bool = False,
+    *,
+    stages: contextlib.ExitStack,
 ) -> Session | None:
     """Start a run's state diff: the spec for the port in use, and the original's trace of this movie (started now,
     beside the port, unless a complete one is cached). With `attach` (a --oracle play) no process starts here: the
@@ -711,6 +715,7 @@ def begin(
         table,
         cache,
         _complete(cache, len(polls)),
+        stages.enter_context(cache_stages.timed("tas.state_diff")),
         oracle_cfg=oracle,
         pak=pak,
         card=card,
@@ -746,7 +751,7 @@ def begin(
 
     def reap() -> None:
         code, cpu = tas._wait(session.process, oracle["timeout_seconds"])
-        session._end.update(code=code, cpu=cpu, wall=round(time.monotonic() - session.began, 1))
+        session._end.update(code=code, cpu=cpu, wall=round(session.timing.seconds, 1))
 
     session._waiter = threading.Thread(target=reap, daemon=True)
     session._waiter.start()
@@ -1155,7 +1160,7 @@ def finish(session: Session, profile: Profile, movie: str, record: dict[str, Any
     result["unreviewed_symbols"] = sum(
         len(r["static"]) + sum(len(v) for v in r["later"].values()) for r in per_region.values()
     )
-    result["wall_seconds"] = round(time.monotonic() - session.began, 1)
+    result["wall_seconds"] = round(session.timing.seconds, 1)
     (run / DIFF).write_text(json.dumps(result, indent=1))
     if found["compared"]:  # a run that compared nothing neither clears nor adds findings
         write_findings(session, movie, record, rows, result["regions"])

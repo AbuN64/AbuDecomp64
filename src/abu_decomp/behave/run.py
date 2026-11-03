@@ -7,13 +7,14 @@ import hashlib
 import json
 import os
 import re
-import time
 import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import DecompError, arity
 from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, permutations, prototype, rodata
@@ -302,12 +303,12 @@ def _name_index(symbols: dict[str, list[Any]]) -> list[tuple[int, str]]:
     return sorted((row[0], name) for name, row in symbols.items() if row[0] is not None)
 
 
-def timing(stages: dict[str, float], started: float, cache: dict[str, Any]) -> dict[str, float]:
+def timing(stages: dict[str, float], started: cache_stages.Timing, cache: dict[str, Any]) -> dict[str, float]:
     """The stage seconds, the total, and the unbake cache lookups this command made: misses with no hits is a cold
     cache (the cost of a score or a build context is then the whole build, not a lookup)."""
     return {
         **stages,
-        "total": round(time.monotonic() - started, 3),
+        "total": round(started.seconds, 3),
         "cache_hits": cache["hits"],
         "cache_misses": cache["misses"],
     }
@@ -377,402 +378,205 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
 
 
 def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    started = time.monotonic()
-    drain_cache()  # the lookups of earlier commands in this process are not this one's
-    stages: dict[str, float] = {}
-    findings: list[dict[str, Any]] = []
+    with cache_stages.timed("behave.run") as started:
+        drain_cache()  # the lookups of earlier commands in this process are not this one's
+        stages: dict[str, float] = {}
+        findings: list[dict[str, Any]] = []
 
-    def lap(name: str, since: float) -> float:
-        stages[name] = round(time.monotonic() - since, 3)
-        return time.monotonic()
+        def lap(name: str, since: float) -> float:
+            stages[name] = round(started.seconds - since, 3)
+            return started.seconds
 
-    waited = 0.0
-    config = configuration(profile)
-    budget = config["event_budget"]
-    hopeless = False  # a case that did not finish at the cap: later probes do not measure it again
+        waited = 0.0
+        config = configuration(profile)
+        budget = config["event_budget"]
+        hopeless = False  # a case that did not finish at the cap: later probes do not measure it again
 
-    def ask(name: str, request: dict[str, Any]) -> dict[str, Any]:
-        """One probe; the seconds it queued behind another isolated repro are added to the timing. A case that
-        runs out of its event budget is measured alone at the cap: when it finishes there, the budget is raised
-        to twice what it wrote (for this and every later probe) and the probe repeats; when it still does not,
-        it never returns in any budget we would record, and stays fatal."""
-        nonlocal waited, budget, hopeless
-        request = dict(request, event_budget=budget)
-        if options.lenient:
-            if not options.lenient_reason:
-                raise BehaveError("behave.lenient_reason", "lenient memory requires an explicit reason")
-            request.update(lenient=True, lenient_reason=options.lenient_reason)
-        if options.seeded:  # real run-time memory under every generated case, the entry stack where it was
-            request = dict(request, seed={"memory": options.seeded["memory"]}, sp=options.seeded["sp"])
-        done = probe(profile, work, name, request, target)
-        waited += done["record"].get("lock_wait_seconds", 0.0)
-        for _ in range(2):
-            spent = [i for i, c in enumerate(done["cases"]) if out_of_budget(c)]
-            if not spent or hopeless or budget >= config["event_budget_cap"]:
-                break
-            pilot = dict(request, cases=[request["cases"][spent[0]]], event_budget=config["event_budget_cap"])
-            alone = probe(profile, work, name + "-measure", pilot, target)
-            waited += alone["record"].get("lock_wait_seconds", 0.0)
-            if out_of_budget(alone["cases"][0]):
-                hopeless = True
-                break
-            budget = min(config["event_budget_cap"], max(budget, 2 * alone["cases"][0].get("events_written", budget)))
+        def ask(name: str, request: dict[str, Any]) -> dict[str, Any]:
+            """One probe; the seconds it queued behind another isolated repro are added to the timing. A case that
+            runs out of its event budget is measured alone at the cap: when it finishes there, the budget is raised
+            to twice what it wrote (for this and every later probe) and the probe repeats; when it still does not,
+            it never returns in any budget we would record, and stays fatal."""
+            nonlocal waited, budget, hopeless
             request = dict(request, event_budget=budget)
+            if options.lenient:
+                if not options.lenient_reason:
+                    raise BehaveError("behave.lenient_reason", "lenient memory requires an explicit reason")
+                request.update(lenient=True, lenient_reason=options.lenient_reason)
+            if options.seeded:  # real run-time memory under every generated case, the entry stack where it was
+                request = dict(request, seed={"memory": options.seeded["memory"]}, sp=options.seeded["sp"])
             done = probe(profile, work, name, request, target)
             waited += done["record"].get("lock_wait_seconds", 0.0)
-        stages["lock_wait"] = round(waited, 3)
-        return done
+            for _ in range(2):
+                spent = [i for i, c in enumerate(done["cases"]) if out_of_budget(c)]
+                if not spent or hopeless or budget >= config["event_budget_cap"]:
+                    break
+                pilot = dict(request, cases=[request["cases"][spent[0]]], event_budget=config["event_budget_cap"])
+                alone = probe(profile, work, name + "-measure", pilot, target)
+                waited += alone["record"].get("lock_wait_seconds", 0.0)
+                if out_of_budget(alone["cases"][0]):
+                    hopeless = True
+                    break
+                budget = min(
+                    config["event_budget_cap"], max(budget, 2 * alone["cases"][0].get("events_written", budget))
+                )
+                request = dict(request, event_budget=budget)
+                done = probe(profile, work, name, request, target)
+                waited += done["record"].get("lock_wait_seconds", 0.0)
+            stages["lock_wait"] = round(waited, 3)
+            return done
 
-    # the oracle's table can name a function otherwise than the project does (a rename the oracle has not seen), so the
-    # tools are always asked for the address the project's own symbol facts gave
-    chosen = settings(profile, options.project, options.host)
-    version = options.version or _project_version(chosen.project)
-    if not version:
-        raise BehaveError("behave.version", "pass --version: the project config names no names_from version")
-    count = options.cases or config["cases"]
-    depth = options.depth if options.depth is not None else config["depth"]
-    mark = time.monotonic()
-    symbols = build_candidate.symbol_table(profile, version, options.project, options.host)
-    fact = symbols.get(options.function)
-    if fact is None or fact[0] is None:
-        raise BehaveError("behave.function", f"{options.function} is not a symbol of version {version}")
-    address = fact[0]
-    target = f"0x{address:08X}"
-    defect = abi.entry_defect(chosen.project, version, options.function)
-    if defect:
-        raise BehaveError("behave.entry_mid_frame", defect)
-    mark = lap("symbols", mark)
-    candidate_file = options.candidate.resolve() if options.candidate else None
-    proto = prototype.find(chosen.project, options.function, tuple(config["headers"]), candidate_file)
-    if proto is None:
-        proto = prototype.inferred(options.function)
-        findings.append(
-            {
-                "key": "behave.prototype",
-                "blocking": False,
-                "message": f"no declaration of {options.function} found; four unknown argument words assumed",
-            }
-        )
-    elif proto.blind:
-        findings.append(
-            {
-                "key": "behave.prototype",
-                "blocking": False,
-                "message": "the prototype has unknown or by-value types; the return value and those "
-                "arguments are compared as notes only",
-            }
-        )
-    mark = lap("prototype", mark)
-    layout = inputs.Layout(config["arena_base"], 0x1000, config["region_bytes"])
-    work = work_dir(config)
-    question = f"Behaviour of {options.function} over {count} input combinations"
-    own, no_movie = (
-        capture_movie(profile, config, options.function, version)
-        if options.capture and options.seeded is None
-        else (None, None)
-    )
-    unreplayable = {"unreplayable": True} if no_movie and no_movie.get("reach") else None
-    options = replace(options, reach=options.reach or own or unreplayable)
-    crash = options.fault_arguments
-    if no_movie:
-        from abu_decomp.behave import crash as crash_inputs
-
-        crash, why = crash_inputs.arguments(profile, options.function)
-        findings.append({**no_movie, "message": no_movie["message"] + "; " + why})
-        options = replace(options, capture=False, fault_arguments=crash)
-
-    # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
-    #    fields it dereferences (those get a region of their own); repeated while it finds new ones
-    readonly = rodata.read_only_ranges(chosen.project, version)
-    learned = inputs.Learned()
-    for _ in range(0 if options.seeded else config["learn_rounds"]):
-        first, regions = inputs.seeded_cases(
-            proto, min(config["learn_cases"], count), options.seed, layout, learned, learn=True
-        )
-        result = ask(
-            "learn",
-            _request(
-                version=version,
-                address=address,
-                cases=first,
-                config=config,
-                depth=depth,
-                memory_end=layout.reach(regions),
-                question=question + " (reads)",
-            ),
-        )
-        stack = _stack(result["record"])
-        hot = describe.learn(result["cases"], regions)
-        new, answers = describe.pointer_fields(result["cases"], inputs.Tags.of(learned), learned)
-        seen, bss = describe.read_globals(result["cases"], regions, stack)
-        cut = [name for name, why in result["record"].get("stubs", {}).items() if why == "boundary"]
-        before = learned
-        learned = inputs.Learned(
-            tuple((i, tuple(v)) for i, v in sorted(hot.items())),
-            (*learned.pointers, *new),
-            tuple(dict.fromkeys((*learned.globals, *seen)))[:16],
-            tuple(dict.fromkeys((*learned.state, *bss)))[:8],
-            tuple(dict.fromkeys((*learned.stubs, *sorted(cut))))[:16],
-            (*learned.returns, *answers),
-            learned.finite or any("NaN operand" in str(c.get("detail", "")) for c in result["cases"]),
-        )
-        # literal pools and constant tables are the ROM's words, not state: seeded as they are, never swept
-        learned = replace(
-            learned,
-            rom=tuple(
-                sorted(rodata.words(rodata.linked_elf(chosen.project, version), learned.state, readonly).items())
-            ),
-        )
-        if replace(learned, rom=()) == replace(before, rom=()):
-            break
-    mark = lap("learn", mark)
-    cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
-    crash_used = None
-    if crash and cases:
-        from abu_decomp.behave import crash as crash_inputs
-
-        entry, crash_used = crash_inputs.case(proto, cases[0], crash)
-        if entry is not None:
-            cases = [entry, *cases, *inputs.around(entry, proto, max(1, count // 8))]
-        else:
-            findings.append({"key": "behave.crash_arguments", "blocking": False, "message": crash_used["reason"]})
-    if options.seeded:  # the registers the real game entered the function with, over the captured memory, and the
-        # same entry with one argument moved off its real value at a time
-        entry = options.seeded["case"]
-        cases = [
-            {**entry, "labels": {"seed": entry["name"]}},
-            *options.seeded.get("real", []),  # the other entries of the covering movie, over their own memory
-        ]
-    memory_end = layout.reach(regions)
-    image = None
-    if candidate_file:
-        try:
-            image = build_candidate.build(
-                profile,
-                version=version,
-                function=options.function,
-                source=candidate_file,
-                work=_candidate_dir(work, candidate_file, options.function),
-                base=config["candidate_base"],
-                project=options.project,
-                host=options.host,
-            )
-        except build_candidate.CandidateError as exc:
-            return _refused(profile, options, version, address, proto, exc, stages, started, findings)
-        if image.kept:
+        # the oracle's table can name a function otherwise than the project does (a rename the oracle has
+        # not seen), so the
+        # tools are always asked for the address the project's own symbol facts gave
+        chosen = settings(profile, options.project, options.host)
+        version = options.version or _project_version(chosen.project)
+        if not version:
+            raise BehaveError("behave.version", "pass --version: the project config names no names_from version")
+        count = options.cases or config["cases"]
+        depth = options.depth if options.depth is not None else config["depth"]
+        mark = started.seconds
+        symbols = build_candidate.symbol_table(profile, version, options.project, options.host)
+        fact = symbols.get(options.function)
+        if fact is None or fact[0] is None:
+            raise BehaveError("behave.function", f"{options.function} is not a symbol of version {version}")
+        address = fact[0]
+        target = f"0x{address:08X}"
+        defect = abi.entry_defect(chosen.project, version, options.function)
+        if defect:
+            raise BehaveError("behave.entry_mid_frame", defect)
+        mark = lap("symbols", mark)
+        candidate_file = options.candidate.resolve() if options.candidate else None
+        proto = prototype.find(chosen.project, options.function, tuple(config["headers"]), candidate_file)
+        if proto is None:
+            proto = prototype.inferred(options.function)
             findings.append(
                 {
-                    "key": "behave.sibling",
+                    "key": "behave.prototype",
                     "blocking": False,
-                    "message": f"{', '.join(image.kept)} run from the candidate, not the original: the file branches "
-                    "to them PC-relative, which cannot reach their original address",
+                    "message": f"no declaration of {options.function} found; four unknown argument words assumed",
                 }
             )
-        memory_end = max(memory_end, config["candidate_base"] + image.size + 0x1000)
-    mark = lap("candidate", mark)
-    original = ask(
-        "original",
-        _request(
-            version=version,
-            address=address,
-            cases=cases,
-            config=config,
-            depth=depth,
-            memory_end=memory_end,
-            question=question,
-        ),
-    )
-    mark = lap("original", mark)
-    generation = None
-    if options.seeded:
-        generated, generation = permutations.generate(
-            cases,
-            original["cases"],
-            options.seeded,
-            proto,
-            chosen.project,
-            tuple(config["headers"]),
-            int(config["generated_cases"]),
-            readonly,
-            stage="singles",
-        )
-        for stage in ("singles", "pairs"):  # the second stage skips the values the first showed the original cannot run
-            if generated:
-                more = ask(
-                    "original-generated" if stage == "singles" else "original-generated-pairs",
-                    _request(
-                        version=version,
-                        address=address,
-                        cases=generated,
-                        config=config,
-                        depth=depth,
-                        memory_end=memory_end,
-                        question=question + " (generated from real inputs)",
-                    ),
-                )
-                cases = [*cases, *generated]
-                original = {**original, "cases": [*original["cases"], *more["cases"]]}
-            if stage == "pairs" or not (generation or {}).get("more"):
-                break
-            first = len(generated)
-            generated, second = permutations.generate(
-                cases,
-                original["cases"],
-                options.seeded,
-                proto,
-                chosen.project,
-                tuple(config["headers"]),
-                int(config["generated_cases"]) - first,
-                readonly,
-                stage="pairs",
-                skip=permutations.refused(cases, original["cases"]),
-            )
-            generation = {
-                **{k: v for k, v in generation.items() if k != "more"},
-                "mode": "single+pairwise",
-                "generated": first + second.get("generated", 0),
-                "refused": second.get("refused", []),
-            }
-    record = original["record"]
-    cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
-    # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
-    # that ran unchanged (they never read what it adds), so it is done when no case ran, or when a case chased a
-    # pointer that is not a null one (garbage built from the input, a function pointer the game filled in): a null
-    # dereference is a crash on the console and stays untestable with that reason.
-    if options.plan is not None:
-        # precapture (behave.precapture): note the stub set the capture below would be asked for and go on without
-        # the oracle, so a depth step or a lenient re-run notes its own set the same way
-        options.plan.append((depth, sorted(record.get("stubs", {}))))
-        options = replace(options, capture=False)
-    if options.capture and options.seeded is None:
-        # every comparison runs over the state the real game entered the function with: the ROM is run to its entry
-        # and both bodies run again over that memory, with its entry registers (and variations around them) as more
-        # cases. Only when that is not available do the static image and, for a starved case, the lenient memory below
-        # stand in, under a named finding.
-        seed, why, key = (
-            (None, "", "")
-            if no_movie  # nothing recorded reaches it: the cases stay synthetic and the time limit is not spent
-            else capture_states(profile, config, version, target, options.hit, sorted(record.get("stubs", {})), own)
-        )
-        if no_movie:
-            findings.append(no_movie)
-            options = replace(options, capture=False)
-        elif seed is None:
-            findings.append(_no_seed(why, key))
-            options = replace(options, capture=False)
-        else:
-            again, code, more = run(profile, replace(options, seeded=seed))
-            shown = seed["capture"]
-            more.append(
+        elif proto.blind:
+            findings.append(
                 {
-                    "key": "behave.seed",
+                    "key": "behave.prototype",
                     "blocking": False,
-                    "message": f"seeded from the oracle at entry {shown['hit']} of {shown['function']} (rdram "
-                    f"{shown['rdram_sha256'][:12]}, rom sha1 {shown['rom_sha1'][:12]})"
-                    + (f"; movie {own['movie']} poll {own['poll']}" if own else ""),
+                    "message": "the prototype has unknown or by-value types; the return value and those "
+                    "arguments are compared as notes only",
                 }
             )
-            return again, code, [*findings, *more]
-    if options.seeded and options.capture and not options.recaptured:
-        # the recorded calls hold for the callees that were stubs when the oracle ran (a call inside a stub is not
-        # the probe's call): a probe with other stubs (another depth) needs its own capture
-        asked = set(options.seeded["capture"].get("stubs", []))
-        if set(record.get("stubs", {})) - asked:
-            seed, why, key = capture_states(
-                profile,
-                config,
-                version,
-                target,
-                options.hit,
-                sorted(record["stubs"]),
-                capture_movie(profile, config, options.function, version)[0],
-            )
-            if seed is None:
-                findings.append(_no_seed(why, key, stubs=True))
-                options = replace(options, capture=False)
-            else:
-                again, code, more = run(profile, replace(options, seeded=seed, recaptured=True))
-                return again, code, [*findings, *more]
-    if (
-        not any(c["status"] == "ok" or out_of_budget(c) for c in original["cases"])  # a loop cut by the budget ran
-        and cut
-        and depth < config["depth_cap"]
-        and (options.depth is None or options.deepened)
-    ):
-        # callees cut off at the boundary answer zero and starve loops and pointer reads: let the next level run
-        deeper, code, more = run(profile, replace(options, depth=depth + 1, deepened=True))
-        more.append(
-            {
-                "key": "behave.depth",
-                "blocking": False,
-                "message": f"no case completed at depth {depth} ({len(cut)} callees stubbed); ran at depth {depth + 1}",
-            }
+        mark = lap("prototype", mark)
+        layout = inputs.Layout(config["arena_base"], 0x1000, config["region_bytes"])
+        work = work_dir(config)
+        question = f"Behaviour of {options.function} over {count} input combinations"
+        own, no_movie = (
+            capture_movie(profile, config, options.function, version)
+            if options.capture and options.seeded is None
+            else (None, None)
         )
-        return deeper, code, [*findings, *more]
-    stack = _stack(record)
-    seed_used = None
-    if options.seeded:
-        shown = options.seeded["capture"]
-        seed_used = {
-            **{k: options.seeded[k] for k in ("real_asked", "real_notes") if k in options.seeded},
-            **{
-                k: shown[k]
-                for k in (
-                    "function",
-                    "hit",
-                    "rom_sha1",
-                    "rdram_sha256",
-                    "sp",
-                    "rdram_path",
-                    "cached",
-                    "calls",
-                    "calls_complete",
-                    "calls_unresolved",
-                    "calls_dropped_writes",
+        unreplayable = {"unreplayable": True} if no_movie and no_movie.get("reach") else None
+        options = replace(options, reach=options.reach or own or unreplayable)
+        crash = options.fault_arguments
+        if no_movie:
+            from abu_decomp.behave import crash as crash_inputs
+
+            crash, why = crash_inputs.arguments(profile, options.function)
+            findings.append({**no_movie, "message": no_movie["message"] + "; " + why})
+            options = replace(options, capture=False, fault_arguments=crash)
+
+        # 1. short probes of the original show which offsets of each pointed-to region it touches, and which
+        #    fields it dereferences (those get a region of their own); repeated while it finds new ones
+        readonly = rodata.read_only_ranges(chosen.project, version)
+        learned = inputs.Learned()
+        for _ in range(0 if options.seeded else config["learn_rounds"]):
+            first, regions = inputs.seeded_cases(
+                proto, min(config["learn_cases"], count), options.seed, layout, learned, learn=True
+            )
+            result = ask(
+                "learn",
+                _request(
+                    version=version,
+                    address=address,
+                    cases=first,
+                    config=config,
+                    depth=depth,
+                    memory_end=layout.reach(regions),
+                    question=question + " (reads)",
+                ),
+            )
+            stack = _stack(result["record"])
+            hot = describe.learn(result["cases"], regions)
+            new, answers = describe.pointer_fields(result["cases"], inputs.Tags.of(learned), learned)
+            seen, bss = describe.read_globals(result["cases"], regions, stack)
+            cut = [name for name, why in result["record"].get("stubs", {}).items() if why == "boundary"]
+            before = learned
+            learned = inputs.Learned(
+                tuple((i, tuple(v)) for i, v in sorted(hot.items())),
+                (*learned.pointers, *new),
+                tuple(dict.fromkeys((*learned.globals, *seen)))[:16],
+                tuple(dict.fromkeys((*learned.state, *bss)))[:8],
+                tuple(dict.fromkeys((*learned.stubs, *sorted(cut))))[:16],
+                (*learned.returns, *answers),
+                learned.finite or any("NaN operand" in str(c.get("detail", "")) for c in result["cases"]),
+            )
+            # literal pools and constant tables are the ROM's words, not state: seeded as they are, never swept
+            learned = replace(
+                learned,
+                rom=tuple(
+                    sorted(rodata.words(rodata.linked_elf(chosen.project, version), learned.state, readonly).items())
+                ),
+            )
+            if replace(learned, rom=()) == replace(before, rom=()):
+                break
+        mark = lap("learn", mark)
+        cases, regions = inputs.seeded_cases(proto, count, options.seed, layout, learned)
+        crash_used = None
+        if crash and cases:
+            from abu_decomp.behave import crash as crash_inputs
+
+            entry, crash_used = crash_inputs.case(proto, cases[0], crash)
+            if entry is not None:
+                cases = [entry, *cases, *inputs.around(entry, proto, max(1, count // 8))]
+            else:
+                findings.append({"key": "behave.crash_arguments", "blocking": False, "message": crash_used["reason"]})
+        if options.seeded:  # the registers the real game entered the function with, over the captured memory, and the
+            # same entry with one argument moved off its real value at a time
+            entry = options.seeded["case"]
+            cases = [
+                {**entry, "labels": {"seed": entry["name"]}},
+                *options.seeded.get("real", []),  # the other entries of the covering movie, over their own memory
+            ]
+        memory_end = layout.reach(regions)
+        image = None
+        if candidate_file:
+            try:
+                image = build_candidate.build(
+                    profile,
+                    version=version,
+                    function=options.function,
+                    source=candidate_file,
+                    work=_candidate_dir(work, candidate_file, options.function),
+                    base=config["candidate_base"],
+                    project=options.project,
+                    host=options.host,
                 )
-                if k in shown
-            },
-        }
-    common = {
-        "function": options.function,
-        "version": version,
-        "address": f"0x{address:08X}",
-        "prototype": proto.describe(),
-        "cases": len(cases),
-        "sources": sources(cases, original["cases"]),
-        "reach": options.reach,
-        "generation": generation,
-        "memory": {"policy": "lenient" if options.lenient else "strict", "reason": options.lenient_reason},
-        **({"crash_seed": crash_used} if crash_used else {}),
-        "seed": options.seed,
-        "depth": depth,
-        "probe": {k: record[k] for k in PROBE_KEYS if k in record},
-        **({"oracle_seed": seed_used} if seed_used else {}),
-    }
-    cache = drain_cache()
-    if image is None:
-        names = _name_index(symbols)
-        result = {
-            "mode": "describe",
-            "verdict": "described",
-            "cases_detail": case_details(cases, original["cases"]),
-            **common,
-            **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers, learned.returns),
-            "timing": timing(stages, started, cache),
-            "cache": cache,
-        }
-        if not result["testable_cases"]:
-            reasons = {}
-            for case in original["cases"]:
-                key = compare.reason_key(f"original {case['status']}: {case['detail']}")
-                reasons[key] = reasons.get(key, 0) + 1
-            top = max(reasons, key=reasons.get) if reasons else "no cases"
-            result.update(verdict=compare.UNTESTABLE, reason=f"no case ran to completion; most common: {top}")
-            findings.append({"key": "behave.untestable", "blocking": False, "message": result["reason"]})
-        return result, 0, findings
-    try:
-        changed = ask(
-            "candidate",
+            except build_candidate.CandidateError as exc:
+                return _refused(profile, options, version, address, proto, exc, stages, started, findings)
+            if image.kept:
+                findings.append(
+                    {
+                        "key": "behave.sibling",
+                        "blocking": False,
+                        "message": f"{', '.join(image.kept)} run from the candidate, not the original: "
+                        "the file branches "
+                        "to them PC-relative, which cannot reach their original address",
+                    }
+                )
+            memory_end = max(memory_end, config["candidate_base"] + image.size + 0x1000)
+        mark = lap("candidate", mark)
+        original = ask(
+            "original",
             _request(
                 version=version,
                 address=address,
@@ -780,103 +584,311 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
                 config=config,
                 depth=depth,
                 memory_end=memory_end,
-                question=question + " (candidate)",
-                candidate=image.spec(options.function),
+                question=question,
             ),
         )
-    except BehaveError as exc:
-        return _refused(profile, options, version, address, proto, exc, stages, started, findings)
-    lap("candidate_run", mark)
-    callees = {}
-    own = (image.vram, image.vram + image.size)
-    called = {e["name"] for c in original["cases"] for e in c["events"] if e["k"] in ("call", "stub")}
-    # hand-written callees, and the candidate's own helpers (inlining a callee is not a different call order)
-    helpers = {f["name"] for f in image.functions if f["name"] != options.function}
-    opaque = frozenset(abi.opaque(chosen.project, version, {n.removeprefix(compare.PREFIX) for n in called}) | helpers)
-    for name in called:
-        # a library routine the recompiler replaces (osRecvMesg_recomp) is the project's function at the same vram
-        # under another name (the probe record says which vram): its prototype gives the arguments
-        vram = record.get("replaced", {}).get(name)
-        same = [n for n, r in symbols.items() if vram and r[0] is not None and r[0] == int(vram, 0)]
-        callee = next(
-            (c for n in (name, *same) if (c := prototype.find(chosen.project, n, tuple(config["headers"]), None))),
-            None,
+        mark = lap("original", mark)
+        generation = None
+        if options.seeded:
+            generated, generation = permutations.generate(
+                cases,
+                original["cases"],
+                options.seeded,
+                proto,
+                chosen.project,
+                tuple(config["headers"]),
+                int(config["generated_cases"]),
+                readonly,
+                stage="singles",
+            )
+            for stage in (
+                "singles",
+                "pairs",
+            ):  # the second stage skips the values the first showed the original cannot run
+                if generated:
+                    more = ask(
+                        "original-generated" if stage == "singles" else "original-generated-pairs",
+                        _request(
+                            version=version,
+                            address=address,
+                            cases=generated,
+                            config=config,
+                            depth=depth,
+                            memory_end=memory_end,
+                            question=question + " (generated from real inputs)",
+                        ),
+                    )
+                    cases = [*cases, *generated]
+                    original = {**original, "cases": [*original["cases"], *more["cases"]]}
+                if stage == "pairs" or not (generation or {}).get("more"):
+                    break
+                first = len(generated)
+                generated, second = permutations.generate(
+                    cases,
+                    original["cases"],
+                    options.seeded,
+                    proto,
+                    chosen.project,
+                    tuple(config["headers"]),
+                    int(config["generated_cases"]) - first,
+                    readonly,
+                    stage="pairs",
+                    skip=permutations.refused(cases, original["cases"]),
+                )
+                generation = {
+                    **{k: v for k, v in generation.items() if k != "more"},
+                    "mode": "single+pairwise",
+                    "generated": first + second.get("generated", 0),
+                    "refused": second.get("refused", []),
+                }
+        record = original["record"]
+        cut = [name for name, why in record.get("stubs", {}).items() if why == "boundary"]
+        # a case the original could not finish for want of memory is not compared. Widening the memory leaves the cases
+        # that ran unchanged (they never read what it adds), so it is done when no case ran, or when a case chased a
+        # pointer that is not a null one (garbage built from the input, a function pointer the game filled in): a null
+        # dereference is a crash on the console and stays untestable with that reason.
+        if options.plan is not None:
+            # precapture (behave.precapture): note the stub set the capture below would be asked for and go on without
+            # the oracle, so a depth step or a lenient re-run notes its own set the same way
+            options.plan.append((depth, sorted(record.get("stubs", {}))))
+            options = replace(options, capture=False)
+        if options.capture and options.seeded is None:
+            # every comparison runs over the state the real game entered the function with: the ROM is run to its entry
+            # and both bodies run again over that memory, with its entry registers (and variations around them) as more
+            # cases. Only when that is not available do the static image and, for a starved case, the
+            # lenient memory below
+            # stand in, under a named finding.
+            seed, why, key = (
+                (None, "", "")
+                if no_movie  # nothing recorded reaches it: the cases stay synthetic and the time limit is not spent
+                else capture_states(profile, config, version, target, options.hit, sorted(record.get("stubs", {})), own)
+            )
+            if no_movie:
+                findings.append(no_movie)
+                options = replace(options, capture=False)
+            elif seed is None:
+                findings.append(_no_seed(why, key))
+                options = replace(options, capture=False)
+            else:
+                again, code, more = run(profile, replace(options, seeded=seed))
+                shown = seed["capture"]
+                more.append(
+                    {
+                        "key": "behave.seed",
+                        "blocking": False,
+                        "message": f"seeded from the oracle at entry {shown['hit']} of {shown['function']} (rdram "
+                        f"{shown['rdram_sha256'][:12]}, rom sha1 {shown['rom_sha1'][:12]})"
+                        + (f"; movie {own['movie']} poll {own['poll']}" if own else ""),
+                    }
+                )
+                return again, code, [*findings, *more]
+        if options.seeded and options.capture and not options.recaptured:
+            # the recorded calls hold for the callees that were stubs when the oracle ran (a call inside a stub is not
+            # the probe's call): a probe with other stubs (another depth) needs its own capture
+            asked = set(options.seeded["capture"].get("stubs", []))
+            if set(record.get("stubs", {})) - asked:
+                seed, why, key = capture_states(
+                    profile,
+                    config,
+                    version,
+                    target,
+                    options.hit,
+                    sorted(record["stubs"]),
+                    capture_movie(profile, config, options.function, version)[0],
+                )
+                if seed is None:
+                    findings.append(_no_seed(why, key, stubs=True))
+                    options = replace(options, capture=False)
+                else:
+                    again, code, more = run(profile, replace(options, seeded=seed, recaptured=True))
+                    return again, code, [*findings, *more]
+        if (
+            not any(c["status"] == "ok" or out_of_budget(c) for c in original["cases"])  # a loop cut by the budget ran
+            and cut
+            and depth < config["depth_cap"]
+            and (options.depth is None or options.deepened)
+        ):
+            # callees cut off at the boundary answer zero and starve loops and pointer reads: let the next level run
+            deeper, code, more = run(profile, replace(options, depth=depth + 1, deepened=True))
+            more.append(
+                {
+                    "key": "behave.depth",
+                    "blocking": False,
+                    "message": f"no case completed at depth {depth} ({len(cut)} callees stubbed); "
+                    f"ran at depth {depth + 1}",
+                }
+            )
+            return deeper, code, [*findings, *more]
+        stack = _stack(record)
+        seed_used = None
+        if options.seeded:
+            shown = options.seeded["capture"]
+            seed_used = {
+                **{k: options.seeded[k] for k in ("real_asked", "real_notes") if k in options.seeded},
+                **{
+                    k: shown[k]
+                    for k in (
+                        "function",
+                        "hit",
+                        "rom_sha1",
+                        "rdram_sha256",
+                        "sp",
+                        "rdram_path",
+                        "cached",
+                        "calls",
+                        "calls_complete",
+                        "calls_unresolved",
+                        "calls_dropped_writes",
+                    )
+                    if k in shown
+                },
+            }
+        common = {
+            "function": options.function,
+            "version": version,
+            "address": f"0x{address:08X}",
+            "prototype": proto.describe(),
+            "cases": len(cases),
+            "sources": sources(cases, original["cases"]),
+            "reach": options.reach,
+            "generation": generation,
+            "memory": {"policy": "lenient" if options.lenient else "strict", "reason": options.lenient_reason},
+            **({"crash_seed": crash_used} if crash_used else {}),
+            "seed": options.seed,
+            "depth": depth,
+            "probe": {k: record[k] for k in PROBE_KEYS if k in record},
+            **({"oracle_seed": seed_used} if seed_used else {}),
+        }
+        cache = drain_cache()
+        if image is None:
+            names = _name_index(symbols)
+            result = {
+                "mode": "describe",
+                "verdict": "described",
+                "cases_detail": case_details(cases, original["cases"]),
+                **common,
+                **describe.describe(original["cases"], regions, proto, names, stack, learned.pointers, learned.returns),
+                "timing": timing(stages, started, cache),
+                "cache": cache,
+            }
+            if not result["testable_cases"]:
+                reasons = {}
+                for case in original["cases"]:
+                    key = compare.reason_key(f"original {case['status']}: {case['detail']}")
+                    reasons[key] = reasons.get(key, 0) + 1
+                top = max(reasons, key=reasons.get) if reasons else "no cases"
+                result.update(verdict=compare.UNTESTABLE, reason=f"no case ran to completion; most common: {top}")
+                findings.append({"key": "behave.untestable", "blocking": False, "message": result["reason"]})
+            return result, 0, findings
+        try:
+            changed = ask(
+                "candidate",
+                _request(
+                    version=version,
+                    address=address,
+                    cases=cases,
+                    config=config,
+                    depth=depth,
+                    memory_end=memory_end,
+                    question=question + " (candidate)",
+                    candidate=image.spec(options.function),
+                ),
+            )
+        except BehaveError as exc:
+            return _refused(profile, options, version, address, proto, exc, stages, started, findings)
+        lap("candidate_run", mark)
+        callees = {}
+        own = (image.vram, image.vram + image.size)
+        called = {e["name"] for c in original["cases"] for e in c["events"] if e["k"] in ("call", "stub")}
+        # hand-written callees, and the candidate's own helpers (inlining a callee is not a different call order)
+        helpers = {f["name"] for f in image.functions if f["name"] != options.function}
+        opaque = frozenset(
+            abi.opaque(chosen.project, version, {n.removeprefix(compare.PREFIX) for n in called}) | helpers
         )
-        if callee:
-            callees[name] = callee
-    rows = [
-        compare.compare_case(
-            a, b, proto, callees, permutations.stack_of(case, stack, int(record["stack_window"])), own, opaque
+        for name in called:
+            # a library routine the recompiler replaces (osRecvMesg_recomp) is the project's function at the same vram
+            # under another name (the probe record says which vram): its prototype gives the arguments
+            vram = record.get("replaced", {}).get(name)
+            same = [n for n, r in symbols.items() if vram and r[0] is not None and r[0] == int(vram, 0)]
+            callee = next(
+                (c for n in (name, *same) if (c := prototype.find(chosen.project, n, tuple(config["headers"]), None))),
+                None,
+            )
+            if callee:
+                callees[name] = callee
+        rows = [
+            compare.compare_case(
+                a, b, proto, callees, permutations.stack_of(case, stack, int(record["stack_window"])), own, opaque
+            )
+            for case, a, b in zip(cases, original["cases"], changed["cases"], strict=True)
+        ]
+        labels = [c["labels"] for c in cases]
+        summary = compare.overall(
+            rows,
+            labels,
+            int(config["min_compared"]),
+            testable=sum(c["status"] == "ok" or out_of_budget(c) for c in original["cases"]),
         )
-        for case, a, b in zip(cases, original["cases"], changed["cases"], strict=True)
-    ]
-    labels = [c["labels"] for c in cases]
-    summary = compare.overall(
-        rows,
-        labels,
-        int(config["min_compared"]),
-        testable=sum(c["status"] == "ok" or out_of_budget(c) for c in original["cases"]),
-    )
-    real_compared = sum(
-        row["verdict"] != compare.UNTESTABLE and permutations.is_real(case)
-        for case, row in zip(cases, rows, strict=True)
-    )
-    common["sources"]["real_compared"] = real_compared
-    common["sources"]["generated_compared"] = sum(
-        row["verdict"] != compare.UNTESTABLE and "generated" in case["labels"]
-        for case, row in zip(cases, rows, strict=True)
-    )
-    common["generated_differences"] = [
-        dict(row, inputs=case["labels"])
-        for case, row in zip(cases, rows, strict=True)
-        if "generated" in case["labels"] and row["verdict"] == compare.DIFFERS
-    ]
-    if summary["verdict"] == compare.SAME and options.reach and not real_compared:
-        summary.update(verdict=compare.UNTESTABLE, reason="coverage reach exists but zero real cases compared")
-        findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
-    if checked := check_stops(original["cases"], changed["cases"]):
-        findings.append({"key": "behave.check_failed", "blocking": False, "message": checked})
-        summary["check_failed"] = checked
-    notes = sorted({n for row in rows for n in row["notes"]})
-    shown = case_details(cases, original["cases"], changed["cases"], rows)
-    untestable_reasons = untestable_by_reason(rows, labels)
-    classification = classify.classify(
-        summary,
-        original["cases"],
-        changed["cases"],
-        stack,
-        own,
-        opaque,
-        options.function,
-        candidate_file,
-        profile.source_file,
-    )
-    disagreement = arity.notes(profile, [options.function], chosen.project)
-    if disagreement and classification:
-        classification["arity_first"] = disagreement[0]["first"] + f": {disagreement[0]['next']}"
-    result = {
-        "mode": "compare",
-        **common,
-        **summary,
-        "candidate": {
-            "file": str(candidate_file),
-            "object_sha256": image.object_sha256,
-            "function_sha256": _function_sha256(image, options.function),
-            "address": f"0x{image.vram:08X}",
-            "functions": [f["name"] for f in image.functions],
-            "image_bytes": image.size,
-            "closure": changed["record"]["closure"],
-        },
-        "notes": notes[:20],
-        **({"classification": classification} if classification else {}),
-        **({"arity": disagreement} if disagreement else {}),
-        **({"opaque_callees": sorted(opaque)} if opaque else {}),
-        "cases_detail": shown,
-        **({"untestable_reasons": untestable_reasons} if untestable_reasons else {}),
-        "timing": timing(stages, started, cache),
-        "cache": cache,
-    }
-    return result, 0, findings
+        real_compared = sum(
+            row["verdict"] != compare.UNTESTABLE and permutations.is_real(case)
+            for case, row in zip(cases, rows, strict=True)
+        )
+        common["sources"]["real_compared"] = real_compared
+        common["sources"]["generated_compared"] = sum(
+            row["verdict"] != compare.UNTESTABLE and "generated" in case["labels"]
+            for case, row in zip(cases, rows, strict=True)
+        )
+        common["generated_differences"] = [
+            dict(row, inputs=case["labels"])
+            for case, row in zip(cases, rows, strict=True)
+            if "generated" in case["labels"] and row["verdict"] == compare.DIFFERS
+        ]
+        if summary["verdict"] == compare.SAME and options.reach and not real_compared:
+            summary.update(verdict=compare.UNTESTABLE, reason="coverage reach exists but zero real cases compared")
+            findings.append({"key": "behave.real_required", "blocking": False, "message": summary["reason"]})
+        if checked := check_stops(original["cases"], changed["cases"]):
+            findings.append({"key": "behave.check_failed", "blocking": False, "message": checked})
+            summary["check_failed"] = checked
+        notes = sorted({n for row in rows for n in row["notes"]})
+        shown = case_details(cases, original["cases"], changed["cases"], rows)
+        untestable_reasons = untestable_by_reason(rows, labels)
+        classification = classify.classify(
+            summary,
+            original["cases"],
+            changed["cases"],
+            stack,
+            own,
+            opaque,
+            options.function,
+            candidate_file,
+            profile.source_file,
+        )
+        disagreement = arity.notes(profile, [options.function], chosen.project)
+        if disagreement and classification:
+            classification["arity_first"] = disagreement[0]["first"] + f": {disagreement[0]['next']}"
+        result = {
+            "mode": "compare",
+            **common,
+            **summary,
+            "candidate": {
+                "file": str(candidate_file),
+                "object_sha256": image.object_sha256,
+                "function_sha256": _function_sha256(image, options.function),
+                "address": f"0x{image.vram:08X}",
+                "functions": [f["name"] for f in image.functions],
+                "image_bytes": image.size,
+                "closure": changed["record"]["closure"],
+            },
+            "notes": notes[:20],
+            **({"classification": classification} if classification else {}),
+            **({"arity": disagreement} if disagreement else {}),
+            **({"opaque_callees": sorted(opaque)} if opaque else {}),
+            "cases_detail": shown,
+            **({"untestable_reasons": untestable_reasons} if untestable_reasons else {}),
+            "timing": timing(stages, started, cache),
+            "cache": cache,
+        }
+        return result, 0, findings
 
 
 CHECK_STOP = "check failed"  # the harness's detail for an assert of the recompiled code (NAN_CHECK) it caught
@@ -961,7 +973,7 @@ def _refused(
     proto: prototype.Prototype,
     exc: DecompError,
     stages: dict[str, float],
-    started: float,
+    started: cache_stages.Timing,
     findings: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
     done = _untestable(options, version, address, proto, str(exc), stages, started, findings, exc.key)
@@ -975,7 +987,7 @@ def _untestable(
     proto: prototype.Prototype,
     reason: str,
     stages: dict[str, float],
-    started: float,
+    started: cache_stages.Timing,
     findings: list[dict[str, Any]],
     key: str,
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:

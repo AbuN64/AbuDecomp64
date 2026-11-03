@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import deploy, tools
+from abu_decomp import deploy, sources, tools
 from abu_decomp.config import load_profile
 
 U1, U2 = "1" * 40, "2" * 40
 R1 = "3" * 40
 D1 = "a" * 40
-URL = deploy.PACKAGES
+URL = sources.PACKAGES
 CARRIED = [
     "pycparser==3.0",
     f"recipemaker @ git+{URL['recipemaker']}@{R1}",
@@ -112,7 +112,7 @@ class DeployTests(unittest.TestCase):
         carry, package = installs[0], installs[1]
         self.assertEqual(carry[carry.index("install") + 1 :], ["--no-deps", *KEPT])  # as installed, not re-resolved
         self.assertEqual(  # our tools at their landed commits, with their dependencies
-            package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}", *MOVED]
+            package[package.index("install") + 1 :], [f"abu-decomp-64[dev] @ git+{sources.DECOMP_URL}@{D1}", *MOVED]
         )
         self.assertEqual(
             sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
@@ -414,21 +414,21 @@ class DeployTests(unittest.TestCase):
         (_, carry_env), (package, package_env) = installs
         self.assertIsNone(carry_env)  # the carried set is not the package: nothing is rewritten for it
         self.assertEqual(  # provenance and requirement stay git+PACKAGES URL@SHA
-            package[package.index("install") + 1 :][0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}"
+            package[package.index("install") + 1 :][0], f"abu-decomp-64[dev] @ git+{sources.DECOMP_URL}@{D1}"
         )
         self.assertEqual(
             package_env,
             {
                 "GIT_CONFIG_COUNT": "1",
                 "GIT_CONFIG_KEY_0": f"url.{self.tree}.insteadOf",
-                "GIT_CONFIG_VALUE_0": deploy.DECOMP_URL,
+                "GIT_CONFIG_VALUE_0": sources.DECOMP_URL,
             },
         )
-        self.assertEqual(result["requirements"][0], f"abu-decomp-64[dev] @ git+{deploy.DECOMP_URL}@{D1}")
+        self.assertEqual(result["requirements"][0], f"abu-decomp-64[dev] @ git+{sources.DECOMP_URL}@{D1}")
         self.assertEqual(sum(bool(e) for e in self.envs), 1)  # only the package's own pip run is steered
 
     def test_another_tool_is_fetched_as_before_the_tree_is_not_its_repository(self):
-        self.heads[deploy.PACKAGES["unbake"]] = U3
+        self.heads[sources.PACKAGES["unbake"]] = U3
         self.deploy(package="unbake", sha=U3)
         self.assertEqual(sum(bool(e) for e in self.envs), 0)
         self.assertFalse([c for c in self.commands if "rev-parse" in c or "cat-file" in c])
@@ -484,7 +484,7 @@ class TreeInstallTests(unittest.TestCase):
             sha = self.git("rev-parse", "HEAD")
             url = "https://unreachable.invalid/AbuN64/landedpkg"
             venv = root / "venv"
-            with mock.patch.dict(deploy.PACKAGES, {"landedpkg": url}):
+            with mock.patch.dict(sources.PACKAGES, {"landedpkg": url}):
                 spec = deploy.requirement("landedpkg", sha).replace("[dev]", "")
                 # without the rewrite pip cannot get the commit: the mirror is not reachable
                 code, _ = deploy.run_command([sys.executable, "-m", "venv", str(venv)])
@@ -557,7 +557,7 @@ class CarryTests(DeployTests):
 
     def test_a_tool_whose_source_does_not_answer_refuses_the_deploy_before_anything_installs(self):
         self.heads.pop(URL["unbake"])
-        with self.assertRaises(deploy.DeployError) as refused:
+        with self.assertRaises(sources.SourceError) as refused:
             self.deploy()
         self.assertEqual(refused.exception.key, "deploy.landed")
         self.assertIn("repository not found", str(refused.exception))

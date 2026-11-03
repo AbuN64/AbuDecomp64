@@ -16,11 +16,12 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import DecompError, evidence, meter, owes, tools
 from abu_decomp.behave import candidate as build_candidate
@@ -99,109 +100,127 @@ def plan_one(profile: Profile, options: behave_run.Options, name: str) -> dict[s
 def run(
     profile: Profile, options: behave_run.Options, spec: str, cpu_budget: float = CPU_BUDGET
 ) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
-    started, cpu_began = time.monotonic(), meter.cpu()
-    version = options.version or behave_run._project_version(tools.project_dir(profile, options.project))
-    if not version:
-        raise DecompError("behave.version", "pass --version: the project config names no names_from version")
-    names = names_of(profile, spec, options.project, version, options.host)
-    if not names:
-        raise DecompError("behave.precapture", f"--precapture {spec}: no functions")
-    base = replace(options, candidate=None, plan=None, version=version)
+    with cache_stages.timed("abu_decomp.behave.precapture.run.started") as started:
+        cpu_began = meter.cpu()
+        version = options.version or behave_run._project_version(tools.project_dir(profile, options.project))
+        if not version:
+            raise DecompError("behave.version", "pass --version: the project config names no names_from version")
+        names = names_of(profile, spec, options.project, version, options.host)
+        if not names:
+            raise DecompError("behave.precapture", f"--precapture {spec}: no functions")
+        base = replace(options, candidate=None, plan=None, version=version)
 
-    def plan(name: str) -> dict[str, Any]:
-        if meter.cpu() - cpu_began > cpu_budget:  # the next run continues: finished describe runs are cached
-            return {"function": name, "status": "deferred", "message": f"the planning spent {cpu_budget:.0f} CPU s"}
-        return plan_one(profile, base, name)
+        def plan(name: str) -> dict[str, Any]:
+            if meter.cpu() - cpu_began > cpu_budget:  # the next run continues: finished describe runs are cached
+                return {"function": name, "status": "deferred", "message": f"the planning spent {cpu_budget:.0f} CPU s"}
+            return plan_one(profile, base, name)
 
-    with ThreadPoolExecutor(max_workers=WIDTH) as pool:
-        planned = list(pool.map(plan, names))
-    mark = time.monotonic()
-    rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, tuple[str, ...]]] = set()
-    config = behave_run.configuration(profile)
-    findings: list[dict[str, Any]] = []
-    for row in planned:
-        # the movie the coverage table says reaches it, as a live `behave` would ask for: the same capture key
-        own, no_movie = (
-            behave_run.capture_movie(profile, config, row["function"], version) if row.get("sets") else (None, None)
-        )
-        if no_movie:
-            findings.append({**no_movie, "message": f"{row['function']}: {no_movie['message']}"})
-            continue
-        for _, stubs in row.get("sets", []):
-            if (row["function"], tuple(stubs)) not in seen:
-                seen.add((row["function"], tuple(stubs)))
-                rows.append(
+        with ThreadPoolExecutor(max_workers=WIDTH) as pool:
+            planned = list(pool.map(plan, names))
+        plan_seconds = started.seconds
+        with cache_stages.timed("abu_decomp.behave.precapture.run.mark") as mark:
+            rows: list[dict[str, Any]] = []
+            seen: set[tuple[str, tuple[str, ...]]] = set()
+            config = behave_run.configuration(profile)
+            findings: list[dict[str, Any]] = []
+            for row in planned:
+                # the movie the coverage table says reaches it, as a live `behave` would ask for: the same capture key
+                own, no_movie = (
+                    behave_run.capture_movie(profile, config, row["function"], version)
+                    if row.get("sets")
+                    else (None, None)
+                )
+                if no_movie:
+                    findings.append({**no_movie, "message": f"{row['function']}: {no_movie['message']}"})
+                    continue
+                for _, stubs in row.get("sets", []):
+                    if (row["function"], tuple(stubs)) not in seen:
+                        seen.add((row["function"], tuple(stubs)))
+                        rows.append(
+                            {
+                                "function": row["function"],
+                                "stubs": stubs,
+                                **({"env": own["env"], "seconds": own["seconds"]} if own else {}),
+                            }
+                        )
+            captured: list[dict[str, Any]] = []
+            if rows:
+                with tempfile.TemporaryDirectory(
+                    prefix="precapture-", dir=behave_run.work_dir(behave_run.configuration(profile))
+                ) as tmp:
+                    plan = Path(tmp) / "plan.json"
+                    plan.write_text(json.dumps(rows))
+                    called = tools.invoke(
+                        "taste",
+                        profile,
+                        [
+                            "repro",
+                            "capture-batch",
+                            "--version",
+                            version,
+                            "--hit",
+                            str(options.hit),
+                            "--plan",
+                            str(plan),
+                        ],
+                    )
+                if not called.ok:
+                    why = "; ".join(str(f.get("message") or f) for f in called.document.get("findings", [])) or str(
+                        called.returncode
+                    )
+                    raise DecompError("behave.precapture", f"taste repro capture-batch failed: {why}")
+                captured = called.document["result"]["captures"]
+                oracle = {k: called.document["result"].get(k) for k in ("oracle_runs", "counts", "wall_seconds")}
+            else:
+                oracle = {"oracle_runs": 0, "counts": {}, "wall_seconds": 0.0}
+            for row in captured:
+                if row["status"] != "captured":
+                    findings.append(
+                        {
+                            "key": "behave." + row["status"],
+                            "blocking": False,
+                            "message": f"{row['function']}: {row.get('message', row['status'])}",
+                        }
+                    )
+            for row in planned:
+                if row["status"] == "unplanned":
+                    findings.append(
+                        {
+                            "key": "behave.unplanned",
+                            "blocking": False,
+                            "message": f"{row['function']}: {row['message']}",
+                        }
+                    )
+            deferred = [r["function"] for r in planned if r["status"] == "deferred"]
+            if deferred:
+                findings.append(
                     {
-                        "function": row["function"],
-                        "stubs": stubs,
-                        **({"env": own["env"], "seconds": own["seconds"]} if own else {}),
+                        "key": "behave.deferred",
+                        "blocking": False,
+                        "message": f"{len(deferred)} functions are not planned yet "
+                        f"(the CPU budget of {cpu_budget:.0f} s was "
+                        "spent); run the same command again",
                     }
                 )
-    captured: list[dict[str, Any]] = []
-    if rows:
-        with tempfile.TemporaryDirectory(
-            prefix="precapture-", dir=behave_run.work_dir(behave_run.configuration(profile))
-        ) as tmp:
-            plan = Path(tmp) / "plan.json"
-            plan.write_text(json.dumps(rows))
-            called = tools.invoke(
-                "taste",
-                profile,
-                ["repro", "capture-batch", "--version", version, "--hit", str(options.hit), "--plan", str(plan)],
-            )
-        if not called.ok:
-            why = "; ".join(str(f.get("message") or f) for f in called.document.get("findings", [])) or str(
-                called.returncode
-            )
-            raise DecompError("behave.precapture", f"taste repro capture-batch failed: {why}")
-        captured = called.document["result"]["captures"]
-        oracle = {k: called.document["result"].get(k) for k in ("oracle_runs", "counts", "wall_seconds")}
-    else:
-        oracle = {"oracle_runs": 0, "counts": {}, "wall_seconds": 0.0}
-    for row in captured:
-        if row["status"] != "captured":
-            findings.append(
-                {
-                    "key": "behave." + row["status"],
-                    "blocking": False,
-                    "message": f"{row['function']}: {row.get('message', row['status'])}",
-                }
-            )
-    for row in planned:
-        if row["status"] == "unplanned":
-            findings.append(
-                {"key": "behave.unplanned", "blocking": False, "message": f"{row['function']}: {row['message']}"}
-            )
-    deferred = [r["function"] for r in planned if r["status"] == "deferred"]
-    if deferred:
-        findings.append(
-            {
-                "key": "behave.deferred",
-                "blocking": False,
-                "message": f"{len(deferred)} functions are not planned yet (the CPU budget of {cpu_budget:.0f} s was "
-                "spent); run the same command again",
+            result = {
+                "mode": "precapture",
+                "list": spec,
+                "version": version,
+                "functions": len(names),
+                "planned": sum(r["status"] == "planned" for r in planned),
+                "captures": len(rows),
+                "newly_captured": sum(r["status"] == "captured" and not r.get("cached") for r in captured),
+                "already_cached": sum(r["status"] == "captured" and bool(r.get("cached")) for r in captured),
+                "oracle": oracle,
+                "deferred": deferred,
+                "unplanned": [r for r in planned if r["status"] == "unplanned"],
+                "not_captured": [r for r in captured if r["status"] != "captured"],
+                "cpu_budget": cpu_budget,
+                "timing": {
+                    "cpu_seconds": round(meter.cpu() - cpu_began, 1),
+                    "plan_seconds": round(plan_seconds, 3),
+                    "capture_seconds": round(mark.seconds, 3),
+                    "wall_seconds": round(started.seconds, 3),
+                },
             }
-        )
-    result = {
-        "mode": "precapture",
-        "list": spec,
-        "version": version,
-        "functions": len(names),
-        "planned": sum(r["status"] == "planned" for r in planned),
-        "captures": len(rows),
-        "newly_captured": sum(r["status"] == "captured" and not r.get("cached") for r in captured),
-        "already_cached": sum(r["status"] == "captured" and bool(r.get("cached")) for r in captured),
-        "oracle": oracle,
-        "deferred": deferred,
-        "unplanned": [r for r in planned if r["status"] == "unplanned"],
-        "not_captured": [r for r in captured if r["status"] != "captured"],
-        "cpu_budget": cpu_budget,
-        "timing": {
-            "cpu_seconds": round(meter.cpu() - cpu_began, 1),
-            "plan_seconds": round(mark - started, 3),
-            "capture_seconds": round(time.monotonic() - mark, 3),
-            "wall_seconds": round(time.monotonic() - started, 3),
-        },
-    }
-    return result, 0, findings
+            return result, 0, findings

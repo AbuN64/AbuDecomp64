@@ -3,9 +3,10 @@
 import hashlib
 import resource
 import subprocess
-import time
 from pathlib import Path
 from typing import Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import DecompError
 
@@ -64,28 +65,28 @@ def make(runs: Path, version: str, fps: int = DEFAULT_FPS) -> dict[str, Any]:
     work = out.with_suffix(".list")
     part = out.with_suffix(".part.mp4")
     work.write_text(listing(files, fps))
-    started = time.time()
-    before = resource.getrusage(resource.RUSAGE_CHILDREN)
-    try:
-        done = subprocess.run(
-            command(work, part, fps, len(files)), capture_output=True, text=True, preexec_fn=_limit, check=False
-        )
-    except OSError as error:
-        raise DecompError("phase.ffmpeg", f"cannot run ffmpeg: {error}") from error
-    finally:
-        work.unlink(missing_ok=True)
-    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    if done.returncode != 0:
-        part.unlink(missing_ok=True)
-        raise DecompError("phase.ffmpeg", f"ffmpeg exited {done.returncode}: {done.stderr.strip()[-300:]}")
-    part.replace(out)
-    return {
-        "version": version,
-        "mp4": str(out),
-        "frames": len(files),
-        "skipped_identical": dropped,
-        "fps": fps,
-        "seconds": round(len(files) / fps, 3),
-        "wall_seconds": round(time.time() - started, 2),
-        "cpu_seconds": round(after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime, 2),
-    }
+    with cache_stages.timed("tas.timelapse.encode") as elapsed:
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        try:
+            done = subprocess.run(
+                command(work, part, fps, len(files)), capture_output=True, text=True, preexec_fn=_limit, check=False
+            )
+        except OSError as error:
+            raise DecompError("phase.ffmpeg", f"cannot run ffmpeg: {error}") from error
+        finally:
+            work.unlink(missing_ok=True)
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        if done.returncode != 0:
+            part.unlink(missing_ok=True)
+            raise DecompError("phase.ffmpeg", f"ffmpeg exited {done.returncode}: {done.stderr.strip()[-300:]}")
+        part.replace(out)
+        return {
+            "version": version,
+            "mp4": str(out),
+            "frames": len(files),
+            "skipped_identical": dropped,
+            "fps": fps,
+            "seconds": round(len(files) / fps, 3),
+            "wall_seconds": round(elapsed.seconds, 2),
+            "cpu_seconds": round(after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime, 2),
+        }

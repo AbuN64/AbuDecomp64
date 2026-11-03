@@ -8,12 +8,12 @@ import json
 import re
 import subprocess
 import sys
-import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from abucache import stages as cache_stages
 from unbake import api
 
 EXAMPLES = 3
@@ -314,44 +314,48 @@ def run(tree: Path, scratch: Path) -> Report:
     scratch.mkdir(parents=True, exist_ok=True)
     report = Report()
 
-    def record(tool: str, stats: dict[str, Any], found: list[Refusal], started: float) -> None:
-        report.tools[tool] = {"stats": stats, "refusals": len(found), "wall_s": round(time.monotonic() - started, 1)}
+    def record(tool: str, stats: dict[str, Any], found: list[Refusal], started: cache_stages.Timing) -> None:
+        report.tools[tool] = {"stats": stats, "refusals": len(found), "wall_s": round(started.seconds, 1)}
         report.refusals += found
 
     functions, why = literal_functions(tree, scratch)
     if why:
         report.tools["data.place"] = {"stats": {}, "refusals": 1, "wall_s": 0.0}
         report.refusals.append(Refusal("data.place", why, "data census"))
-    started = time.monotonic()
-    has = subprocess.run([sys.executable, "-m", "abu_decomp", "record", "--help"], capture_output=True, check=False)
-    record(
-        "record.rename",
-        {},
-        [] if not has.returncode else [Refusal("record.rename", "no scoped record rename command", "0evAlAtaxw2p")],
-        started,
-    )
-    started = time.monotonic()
-    try:
-        stats, found = _units(tree)
-    except Exception as e:  # a generator that crashes is a refusal of the preflight, not of the run
-        stats, found = {}, [Refusal("owners.units", f"fault: {type(e).__name__}: {str(e)[:140]}", "")]
-    record("owners.units", stats, found, started)
-    for tool, (argv, parse) in _commands(tree, scratch / "names", scratch, functions).items():
-        started = time.monotonic()
-        doc, why = _call(argv, tree)
-        if why:
-            record(tool, {}, [Refusal(tool, why, "")], started)
-            continue
-        stats, found = parse(doc)
-        if not found and doc.get("ok") is False:  # a refusal no parser reads: its first finding is the group
-            first = (doc.get("findings") or [{}])[0]
-            found = [
-                Refusal(
-                    tool, "fault: " + normal(str(first.get("reason") or first.get("message") or "refused"))[:160], ""
-                )
-            ]
-        record(tool, stats, found, started)
-    return report
+    with cache_stages.timed("preflight.tool") as started:
+        has = subprocess.run([sys.executable, "-m", "abu_decomp", "record", "--help"], capture_output=True, check=False)
+        record(
+            "record.rename",
+            {},
+            [] if not has.returncode else [Refusal("record.rename", "no scoped record rename command", "0evAlAtaxw2p")],
+            started,
+        )
+        with cache_stages.timed("preflight.tool") as started:
+            try:
+                stats, found = _units(tree)
+            except Exception as e:  # a generator that crashes is a refusal of the preflight, not of the run
+                stats, found = {}, [Refusal("owners.units", f"fault: {type(e).__name__}: {str(e)[:140]}", "")]
+            record("owners.units", stats, found, started)
+            for tool, (argv, parse) in _commands(tree, scratch / "names", scratch, functions).items():
+                with cache_stages.timed("preflight.tool") as started:
+                    doc, why = _call(argv, tree)
+                    if why:
+                        record(tool, {}, [Refusal(tool, why, "")], started)
+                        continue
+                    stats, found = parse(doc)
+                    if (
+                        not found and doc.get("ok") is False
+                    ):  # a refusal no parser reads: its first finding is the group
+                        first = (doc.get("findings") or [{}])[0]
+                        found = [
+                            Refusal(
+                                tool,
+                                "fault: " + normal(str(first.get("reason") or first.get("message") or "refused"))[:160],
+                                "",
+                            )
+                        ]
+                    record(tool, stats, found, started)
+            return report
 
 
 def document(rev: str, sha: str, report: Report) -> dict[str, Any]:

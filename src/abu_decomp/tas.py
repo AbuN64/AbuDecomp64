@@ -71,6 +71,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import (
     DecompError,
     inotify,
@@ -1547,384 +1549,396 @@ def play(
     check_label(label)
     if not 0 <= speed <= 1000:
         raise DecompError("tas.play", f"speed is 0 (turbo) .. 1000, not {speed}")
-    began = time.monotonic()
-    health = tas_health.read(cfg, profile) if health is None else health
-    check_inspect(shots_every, dump_ram_at, trace_draws)
-    check_pak(pak)
-    check_cpak(cpak)
-    if take and (not start or name is not None or source is not None):
-        raise DecompError("tas.play", "--take starts a new run at a start point: give --from POINT and no movie")
-    if start and not take and name is None:
-        name = start  # the point alone, replayed like a movie
-        start = None
-    retry = retry_source(cfg, source, take_at) if source is not None else None
-    if take:
-        point = tas_points.load(cfg, str(start))
-        mode_ = point["header"].get("cpak", "none")
-        retry = {
-            "movie": human_movie_name(now),
-            "polls": point["polls"],
-            "pak": point["header"].get("pak", "on"),
-            "cpak": mode_,
-            "card": start_card(cfg, mode_),
-            "start": start,
-            "prefix": len(point["polls"]),
-            "pads": pad_count(point["polls"]),
-            "fresh": True,
-        }
-        take_at = len(point["polls"])
-    human = name is None and retry is None
-    if retry and (oracle or shots_every):
-        raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
-    if oracle and human:
-        raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
-    if hold_at is not None and (human or retry or hold_at < 0):
-        raise DecompError("tas.play", "hold_at is a poll number >= 0 of a replayed movie (not a human run or a retry)")
-    if oracle and oracle_pictures and shots_every:
-        raise DecompError(
-            "tas.oracle", "--oracle-pictures pictures the port every tas.oracle.shot_every polls (shots/port)"
-        )
-    diffing = state_diff and not sanitize and not human and not retry and hold_at is None
-    if diffing and tas_statediff.available(profile) is None:
-        tas_statediff.load_ledger(
-            cfg
-        )  # refused here, before any process starts, not written into state-diff.json after
-    if lockstep and (not oracle or hold_at is not None):
-        raise DecompError("tas.lockstep", "--lockstep compares the whole movie beside --oracle (no hold)")
-    original = tas_oracle.required(profile) if oracle else None
-    if original and oracle_pictures:
-        original["pictures"] = True
-    if original and lockstep:
-        tas_oracle.lockstep_script()
-        original["lockstep"] = True
-    if retry:
-        name, polls = retry["movie"], retry["polls"]
-        speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
-    elif human:
-        speed, label = 1, label or HUMAN_LABEL
-        name = human_movie_name(now)
-        polls = []
-    else:
-        polls = movie_polls(cfg, name, start)
-    if not retry and not human:
-        own_start = start or decode(_movie(cfg, name).read_text())[0].get("start")
-        started = (own_start, len(tas_points.load(cfg, own_start)["polls"])) if own_start else (None, 0)
-    else:
-        started = (retry["start"], retry["prefix"]) if retry else (None, 0)
-    pak = pak or ("on" if human else movie_pak(cfg, name, start))
-    pads = retry["pads"] if retry else pad_count(polls)
-    run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
-    user_dir = run / "user"
-    user_dir.mkdir(parents=True)
-    card, mode, oracle_card = None, "none", None
-    if retry:
-        mode = retry["cpak"]
-        if retry["card"] is not None:
-            card = run / CARD
-            card.write_bytes(retry["card"])
-            (run / CARD_START).write_bytes(retry["card"])
-    elif human:
-        if cpak != "off":
-            card = cfg["runs"] / PROFILE_CARD  # the owner's own card: the game's saves stay in it
-            if card.exists():
-                start = card.read_bytes()
-                if len(start) != CARD_BYTES:
-                    raise DecompError("tas.cpak", f"{card} is not a 32 KiB Controller Pak image")
-            else:
-                start = fresh_card()
-            (run / CARD_START).write_bytes(start)
-            mode = card_mode(start)
-    else:
-        mode = movie_cpak(cfg, name, start)
-        if cpak == "off":
-            mode = "none"
-        elif cpak == "on" and mode == "none":
-            mode = "fresh"
-        start = start_card(cfg, mode)
-        if start is not None:
-            card, oracle_card = run / CARD, run / "oracle-cpak.mpk"
-            card.write_bytes(start)
-            (run / CARD_START).write_bytes(start)
-            oracle_card.write_bytes(start)
-    env = {
-        **port_env(cfg, run),
-        # The port's lockstep record (CONTRACTS.md "Run record"): its poll lines are the pads the guest read, its call
-        # lines the per-call record.
-        "N64C_LOCKSTEP": "1",
-        "N64C_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "port")),
-        "N64C_CALLS": str(tas_oracle.lockstep_side(run, "port")),
-        "N64C_CALLS_FIRST": tas_oracle.keep_env(original)["N64C_CALLS_FIRST"],
-        "N64C_TAS_HASH": str(run / HASH),
-        "N64C_VIEW": str(run / VIEW),
-        # Keep readbacks within the realtime frame budget, including human input and takeovers.
-        "N64C_VIEW_FPS": str(cfg["env"].get("N64C_VIEW_FPS", "30")),
-        "N64C_FAULT_FRAME": str(run / tas_fault.FILE),  # a host fault leaves its signal frame here (shim)
-        "N64C_SPEED": str(speed),
-        "N64C_INPUT": input_address(run),
-        "N64C_AUDIO_OUT": str(run / AUDIO),
-    }
-    rows, reach_census = reach_rows(cfg), None
-    if rows and rows.is_file():
-        env["N64C_REACH_ROWS"] = str(rows)  # the port streams the functions the run enters (reach_address)
-        reach_census = census(rows)  # what its reach.bin is a bitset over: the file the port loads, not a later bake
-    if pads > 1:
-        env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
-    if human:
-        (run / TAKEN).write_text("new run\n")
-    else:
-        (run / "movie.raw").write_text(format_raw(polls))
-        env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
-    if retry:
-        where = f"start point {start}" if retry.get("fresh") else f"retry of {source}"
-        (run / TAKEN).write_text(f"{where} from poll {take_at}\n")
-        env.update(N64C_TAS_TAKE_AT=str(take_at))
-    if hold_at is not None:  # the port runs to that poll at turbo and holds there until the gate says otherwise
-        (run / GATED).write_text(f"hold at poll {hold_at}\n")
-        env.update(N64C_TAS_HOLD_AT=str(hold_at))
-    inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
-    env.update(inspect)
-    if sanitize:  # recoverable reports: one run lists many (tas_sanitize)
-        env.update({k: v for k, v in tas_sanitize.options_env().items() if k not in os.environ})
-    build = build_id(cfg["port"])
-    # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that. At turbo its
-    # wall is the port's own rate, so the timeout counts from the last new poll up to the movie's end (_wait until).
-    timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
-    until = None if speed or human else len(polls) + cfg["exit_after"]
-    timeout *= tas_sanitize.TIMEOUT_FACTOR if sanitize else 1
-    record = {
-        "id": run.name,
-        "movie": name,
-        "speed": speed,
-        "polls": len(polls),
-        "build": build,
-        "code": code_hash(cfg["port"]),
-        "status": "running",
-        "started": time.time(),
-        "pid": os.getpid(),
-        "port": str(cfg["port"]),
-        "port_provenance": tas_seat.record(cfg, Path(cfg["port"]), build, port is not None),
-        "label": label or None,
-        "input": "human" if human or retry else "movie",
-        "pak": pak,
-        "cpak": mode,
-        "fps_unlock": bool(fps_unlock),
-        "sanitizer": sanitize or None,
-    }
-    if (pins := tas_select.read_pins(cfg)) is not None:
-        record[tas_select.PINS] = pins  # what the port was built from: the next selective replay diffs against it
-    if pads > 1:
-        record["pads"] = pads
-    if reach_census:
-        record["census"] = reach_census
-    if shots_every:  # the port's pictures' interval: the stream's clock step (tas_stream.every)
-        record[SHOTS] = {"every": shots_every}
-    if started[0]:
-        record.update({"start": started[0], "prefix": started[1]})
-    if retry and source is not None:
-        record.update({"from": source, "at": take_at})
-    with _run_record(run, record) as (children, reapers):
-        state = None
-        if diffing:
-            try:
-                with _starting_play_process():
-                    state = tas_statediff.begin(profile, cfg, run, pak, card, polls, pads, attach=bool(original))
-                    if state and state.process:
-                        children.append(state.process)
-                        if state._waiter:
-                            reapers.append(state._waiter)
-            except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                record["state_diff"] = {"error": str(error)}
-            if state:
-                env.update(state.port_env())
-            elif "state_diff" not in record and (why := tas_statediff.available(profile)):
-                record["state_diff"] = {"skipped": why}  # said once per run, not a silent "no trace" after a replay
-        oracle_process, oracle_end, oracle_waiter = None, {}, None
-        if original:
-            env.update(tas_oracle.port_env(original, run))
-            record["oracle"] = {
-                "status": "running",
-                "every": original["shot_every"],
-                "host": str(original["host"]),
-                **tas_oracle.picture_marks(original),  # render_lead per picture: a gated one is no basis for a diff
+    with cache_stages.timed("abu_decomp.tas.play.began") as began, contextlib.ExitStack() as timed_work:
+        health = tas_health.read(cfg, profile) if health is None else health
+        check_inspect(shots_every, dump_ram_at, trace_draws)
+        check_pak(pak)
+        check_cpak(cpak)
+        if take and (not start or name is not None or source is not None):
+            raise DecompError("tas.play", "--take starts a new run at a start point: give --from POINT and no movie")
+        if start and not take and name is None:
+            name = start  # the point alone, replayed like a movie
+            start = None
+        retry = retry_source(cfg, source, take_at) if source is not None else None
+        if take:
+            point = tas_points.load(cfg, str(start))
+            mode_ = point["header"].get("cpak", "none")
+            retry = {
+                "movie": human_movie_name(now),
+                "polls": point["polls"],
+                "pak": point["header"].get("pak", "on"),
+                "cpak": mode_,
+                "card": start_card(cfg, mode_),
+                "start": start,
+                "prefix": len(point["polls"]),
+                "pads": pad_count(point["polls"]),
+                "fresh": True,
             }
-            oracle_began = time.monotonic()
-            if hold_at is not None:  # the original replays the same prefix and stops: its last picture is poll hold_at
-                (run / ORACLE_HOLD).write_text(format_raw(polls[:hold_at]))
-            with _starting_play_process():
-                oracle_process = tas_oracle.start(
-                    original,
-                    run,
-                    0 if hold_at is not None else cfg["exit_after"],
-                    pak,
-                    extra=state.oracle_env() if state and state.attached else None,  # one host: pictures and trace
-                    card=oracle_card,
-                    pads=pads,
-                    movie=run / ORACLE_HOLD if hold_at is not None else None,
-                )
-                children.append(oracle_process)
-                record["oracle"]["pid"] = oracle_process.pid
-
-            def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
-                code, cpu = _wait(oracle_process, original["timeout_seconds"])
-                oracle_end.update(code=code, cpu=cpu, wall=round(time.monotonic() - oracle_began, 1))
-
-            oracle_waiter = threading.Thread(target=reap, daemon=True)
-            oracle_waiter.start()
-            reapers.append(oracle_waiter)
-            if state and state.attached:
-                state.join_oracle(oracle_end, oracle_waiter)
-        _write_record(run, record)
-        _check_play_signal()
-        argv = _argv(cfg, user_dir, pak, card, fps_unlock)
-        argv = supervised(cfg, run, argv) if supervise else argv
-        collector = None  # the play owns the run's reach socket and reach.bin (module tas_reach)
-        if reach_census:  # the port was named N64C_REACH_ROWS: its reach.bin is a bitset over that census
-            collector = tas_reach.Collector(run, reach_address(run), reach_live_address(run), reach_census["rows"])
-        try:
-            with (run / "output.txt").open("w") as output:
-                with _starting_play_process():
-                    process = subprocess.Popen(
-                        argv,
-                        env=env,
-                        stdin=subprocess.PIPE if supervise else subprocess.DEVNULL,
-                        stdout=output,
-                        stderr=subprocess.STDOUT,
-                        **procguard.owned(),
-                    )
-                    children.append(process)
-                    record["pgid"] = process.pid
-                    _write_record(run, record)
-                # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the
-                # stacks.
-                if supervise:
-                    process.stdin.close()
-                code, cpu = _wait(process, timeout, run, until)
-        finally:
-            if collector:
-                collector.finish()  # RUN/reach.bin: the play is the one writer, whether or not a server listens
-        text = (run / "output.txt").read_text(errors="replace")
-        reached = 0
-        with contextlib.suppress(OSError):  # a port that died before its first poll left no lockstep file
-            reached = len(read_polls(run))
-        result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
-        result.update(polls_reached=reached, **classify(code, text))
-        found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
-        if found:
-            result["inspect"] = found
-        if sanitize or tas_sanitize.present(text):
-            result["sanitizer"] = tas_sanitize.collect(cfg, run, text, movie=name, port=cfg["port"], build=build)
-        try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
-            if tas_coverage.run_report(profile, cfg, run):
-                result["coverage"] = str(run / tas_coverage.COVERAGE)
-        except DecompError as error:
-            result["coverage_error"] = str(error)
-        stopped = (run / "stopped").exists()
-        if stopped:
-            result["subject"] = "stopped from the page"
-        result["wall_seconds"], result["cpu_seconds"] = round(time.monotonic() - began, 1), cpu
-        stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
-        if result["outcome"] == "crash" and (fault := tas_fault.capture(run, cfg["port"])):
-            result["fault"] = fault
-            stacks.insert(0, str(run / tas_fault.STACK))  # the signal frame's own stack ranks before the supervisor's
-        if stacks:
-            result["stacks"] = stacks
-        # Kind, blocking, owner and one next command (the arity note comes first when set).
-        result.update(tas_symbolize.claim(profile, result, stacks, health))
-        if health:
-            result["build"] = tas_health.header(health)
-        before = previous_run(cfg, name, build, run.name, pak, mode) if build and not stopped else None
-        result["same_twice"] = same_hashes(run, before) if before else None
-        if before:
-            result["compared_with"] = before.name
-        result["fn"] = fn_of(result)
-        result["cpak"] = mode
-        result["shown"] = fps_shown(text)
-        taken = (run / TAKEN).is_file()
-        if taken:
-            result.update(
-                taken=True,
-                same_twice=None,
-                compared_with=None,
-                saved=save_taken(
-                    profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started
-                ),
+            take_at = len(point["polls"])
+        human = name is None and retry is None
+        if retry and (oracle or shots_every):
+            raise DecompError("tas.retry", "a retry is driven by live input from its poll on: no oracle, no shots")
+        if oracle and human:
+            raise DecompError("tas.oracle", "the oracle replays a movie; a human run has none")
+        if hold_at is not None and (human or retry or hold_at < 0):
+            raise DecompError(
+                "tas.play", "hold_at is a poll number >= 0 of a replayed movie (not a human run or a retry)"
             )
-        keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
-        keep += (
-            "taken",
-            "saved",
-            "coverage",
-            "frame",
-            "fault",
-            "shown",
-            "state_diff",
-            "sanitizer",
-            "function",
-            "source",
-            "source_precision",
-            "instruction",
-            "fcsr",
-            "claim",
-            "owner",
-        )
-        if state:
-            try:
-                result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
-            except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-                result["state_diff"] = {"error": str(error)}
-        elif "state_diff" in record:
-            result["state_diff"] = record["state_diff"]
-        if oracle_waiter:
-            oracle_waiter.join()
-            wall, polls = oracle_end["wall"], tas_oracle.reached(run)
-            record["oracle"] = {
-                **record["oracle"],
-                **tas_oracle.outcome(oracle_end["code"]),
-                "status": "done",
-                "polls_reached": polls,
-                "wall_seconds": wall,
-                "cpu_seconds": oracle_end["cpu"],
-                "fps": round(polls / wall, 1) if wall else None,
-            }
-            if note := tas_oracle.startup_note(oracle_end["code"], polls):
-                record["oracle"]["startup_fault"] = note
-            if os.environ.get("N64C_TRACE_EVENTS"):
-                record["oracle"]["events"] = tas_oracle.split_events(run)  # the outcome above is gdb's then
-            if original.get("lockstep"):
-                record["oracle"]["lockstep"] = tas_oracle.lockstep_match(run)
-            result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
-        if oracle_waiter:
-            record["oracle"]["verdict"] = result["oracle"]["verdict"] = tas_oracle.verdict(result)
-        if first_pass and result["outcome"] != "ok":
-            raise NeedsSupervisor(run)
-        final = {
-            **record,
-            **{k: result.get(k) for k in keep},
-            "status": "done",
-            "stopped": stopped,
-            "ended": time.time(),
-            **({"error": refusal} if human and (refusal := no_first_frame(code, text, result, stopped)) else {}),
+        if oracle and oracle_pictures and shots_every:
+            raise DecompError(
+                "tas.oracle", "--oracle-pictures pictures the port every tas.oracle.shot_every polls (shots/port)"
+            )
+        diffing = state_diff and not sanitize and not human and not retry and hold_at is None
+        if diffing and tas_statediff.available(profile) is None:
+            tas_statediff.load_ledger(
+                cfg
+            )  # refused here, before any process starts, not written into state-diff.json after
+        if lockstep and (not oracle or hold_at is not None):
+            raise DecompError("tas.lockstep", "--lockstep compares the whole movie beside --oracle (no hold)")
+        original = tas_oracle.required(profile) if oracle else None
+        if original and oracle_pictures:
+            original["pictures"] = True
+        if original and lockstep:
+            tas_oracle.lockstep_script()
+            original["lockstep"] = True
+        if retry:
+            name, polls = retry["movie"], retry["polls"]
+            speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
+        elif human:
+            speed, label = 1, label or HUMAN_LABEL
+            name = human_movie_name(now)
+            polls = []
+        else:
+            polls = movie_polls(cfg, name, start)
+        if not retry and not human:
+            own_start = start or decode(_movie(cfg, name).read_text())[0].get("start")
+            started = (own_start, len(tas_points.load(cfg, own_start)["polls"])) if own_start else (None, 0)
+        else:
+            started = (retry["start"], retry["prefix"]) if retry else (None, 0)
+        pak = pak or ("on" if human else movie_pak(cfg, name, start))
+        pads = retry["pads"] if retry else pad_count(polls)
+        run = cfg["runs"] / "plays" / (run_id or new_run_id(cfg, name, now))
+        user_dir = run / "user"
+        user_dir.mkdir(parents=True)
+        card, mode, oracle_card = None, "none", None
+        if retry:
+            mode = retry["cpak"]
+            if retry["card"] is not None:
+                card = run / CARD
+                card.write_bytes(retry["card"])
+                (run / CARD_START).write_bytes(retry["card"])
+        elif human:
+            if cpak != "off":
+                card = cfg["runs"] / PROFILE_CARD  # the owner's own card: the game's saves stay in it
+                if card.exists():
+                    start = card.read_bytes()
+                    if len(start) != CARD_BYTES:
+                        raise DecompError("tas.cpak", f"{card} is not a 32 KiB Controller Pak image")
+                else:
+                    start = fresh_card()
+                (run / CARD_START).write_bytes(start)
+                mode = card_mode(start)
+        else:
+            mode = movie_cpak(cfg, name, start)
+            if cpak == "off":
+                mode = "none"
+            elif cpak == "on" and mode == "none":
+                mode = "fresh"
+            start = start_card(cfg, mode)
+            if start is not None:
+                card, oracle_card = run / CARD, run / "oracle-cpak.mpk"
+                card.write_bytes(start)
+                (run / CARD_START).write_bytes(start)
+                oracle_card.write_bytes(start)
+        env = {
+            **port_env(cfg, run),
+            # The port's lockstep record (CONTRACTS.md "Run record"): its poll lines are the pads the
+            # guest read, its call
+            # lines the per-call record.
+            "N64C_LOCKSTEP": "1",
+            "N64C_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "port")),
+            "N64C_CALLS": str(tas_oracle.lockstep_side(run, "port")),
+            "N64C_CALLS_FIRST": tas_oracle.keep_env(original)["N64C_CALLS_FIRST"],
+            "N64C_TAS_HASH": str(run / HASH),
+            "N64C_VIEW": str(run / VIEW),
+            # Keep readbacks within the realtime frame budget, including human input and takeovers.
+            "N64C_VIEW_FPS": str(cfg["env"].get("N64C_VIEW_FPS", "30")),
+            "N64C_FAULT_FRAME": str(run / tas_fault.FILE),  # a host fault leaves its signal frame here (shim)
+            "N64C_SPEED": str(speed),
+            "N64C_INPUT": input_address(run),
+            "N64C_AUDIO_OUT": str(run / AUDIO),
         }
-        _check_play_signal()
-        _write_record(run, final)
-        if not human:  # this run's report replaces the movie's older ones in the union: they are dead disk
-            with contextlib.suppress(DecompError, OSError):
-                tas_coverage.drop_superseded(cfg, run)
-        if (
-            not human
-        ):  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears
-            marked = {**final, "id": run.name, "sanitizer": final.get("sanitizer") or sanitize}
-            tas_findings.record_run(profile, cfg, marked, run, batch)
-        if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
-            from abu_decomp import tas_corpus
+        rows, reach_census = reach_rows(cfg), None
+        if rows and rows.is_file():
+            env["N64C_REACH_ROWS"] = str(rows)  # the port streams the functions the run enters (reach_address)
+            reach_census = census(
+                rows
+            )  # what its reach.bin is a bitset over: the file the port loads, not a later bake
+        if pads > 1:
+            env["N64C_PADS"] = str(pads)  # the guest sees that many controllers; every movie line holds that many pads
+        if human:
+            (run / TAKEN).write_text("new run\n")
+        else:
+            (run / "movie.raw").write_text(format_raw(polls))
+            env.update(N64C_TAS_PLAY=str(run / "movie.raw"), N64C_TAS_EXIT_AFTER=str(cfg["exit_after"]))
+        if retry:
+            where = f"start point {start}" if retry.get("fresh") else f"retry of {source}"
+            (run / TAKEN).write_text(f"{where} from poll {take_at}\n")
+            env.update(N64C_TAS_TAKE_AT=str(take_at))
+        if hold_at is not None:  # the port runs to that poll at turbo and holds there until the gate says otherwise
+            (run / GATED).write_text(f"hold at poll {hold_at}\n")
+            env.update(N64C_TAS_HOLD_AT=str(hold_at))
+        inspect = inspect_env(run, shots_every, dump_ram_at, trace_draws)
+        env.update(inspect)
+        if sanitize:  # recoverable reports: one run lists many (tas_sanitize)
+            env.update({k: v for k, v in tas_sanitize.options_env().items() if k not in os.environ})
+        build = build_id(cfg["port"])
+        # At real speed a movie takes its own length in wall time; the timeout is the allowance beyond that.
+        # At turbo its
+        # wall is the port's own rate, so the timeout counts from the last new poll up to the movie's end (_wait until).
+        timeout = cfg["timeout_seconds"] + ((len(polls) + cfg["exit_after"]) / (60 * speed) if speed else 0)
+        until = None if speed or human else len(polls) + cfg["exit_after"]
+        timeout *= tas_sanitize.TIMEOUT_FACTOR if sanitize else 1
+        record = {
+            "id": run.name,
+            "movie": name,
+            "speed": speed,
+            "polls": len(polls),
+            "build": build,
+            "code": code_hash(cfg["port"]),
+            "status": "running",
+            "started": time.time(),
+            "pid": os.getpid(),
+            "port": str(cfg["port"]),
+            "port_provenance": tas_seat.record(cfg, Path(cfg["port"]), build, port is not None),
+            "label": label or None,
+            "input": "human" if human or retry else "movie",
+            "pak": pak,
+            "cpak": mode,
+            "fps_unlock": bool(fps_unlock),
+            "sanitizer": sanitize or None,
+        }
+        if (pins := tas_select.read_pins(cfg)) is not None:
+            record[tas_select.PINS] = pins  # what the port was built from: the next selective replay diffs against it
+        if pads > 1:
+            record["pads"] = pads
+        if reach_census:
+            record["census"] = reach_census
+        if shots_every:  # the port's pictures' interval: the stream's clock step (tas_stream.every)
+            record[SHOTS] = {"every": shots_every}
+        if started[0]:
+            record.update({"start": started[0], "prefix": started[1]})
+        if retry and source is not None:
+            record.update({"from": source, "at": take_at})
+        with _run_record(run, record) as (children, reapers):
+            state = None
+            if diffing:
+                try:
+                    with _starting_play_process():
+                        state = tas_statediff.begin(
+                            profile, cfg, run, pak, card, polls, pads, attach=bool(original), stages=timed_work
+                        )
+                        if state and state.process:
+                            children.append(state.process)
+                            if state._waiter:
+                                reapers.append(state._waiter)
+                except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                    record["state_diff"] = {"error": str(error)}
+                if state:
+                    env.update(state.port_env())
+                elif "state_diff" not in record and (why := tas_statediff.available(profile)):
+                    record["state_diff"] = {"skipped": why}  # said once per run, not a silent "no trace" after a replay
+            oracle_process, oracle_end, oracle_waiter = None, {}, None
+            if original:
+                env.update(tas_oracle.port_env(original, run))
+                record["oracle"] = {
+                    "status": "running",
+                    "every": original["shot_every"],
+                    "host": str(original["host"]),
+                    **tas_oracle.picture_marks(original),  # render_lead per picture: a gated one is no basis for a diff
+                }
+                oracle_began = timed_work.enter_context(cache_stages.timed("tas.oracle"))
+                if (
+                    hold_at is not None
+                ):  # the original replays the same prefix and stops: its last picture is poll hold_at
+                    (run / ORACLE_HOLD).write_text(format_raw(polls[:hold_at]))
+                with _starting_play_process():
+                    oracle_process = tas_oracle.start(
+                        original,
+                        run,
+                        0 if hold_at is not None else cfg["exit_after"],
+                        pak,
+                        extra=state.oracle_env() if state and state.attached else None,  # one host: pictures and trace
+                        card=oracle_card,
+                        pads=pads,
+                        movie=run / ORACLE_HOLD if hold_at is not None else None,
+                    )
+                    children.append(oracle_process)
+                    record["oracle"]["pid"] = oracle_process.pid
 
+                def reap() -> None:  # reaped as soon as it ends, so the page sees it done while the port goes on
+                    code, cpu = _wait(oracle_process, original["timeout_seconds"])
+                    oracle_end.update(code=code, cpu=cpu, wall=round(oracle_began.seconds, 1))
+
+                oracle_waiter = threading.Thread(target=reap, daemon=True)
+                oracle_waiter.start()
+                reapers.append(oracle_waiter)
+                if state and state.attached:
+                    state.join_oracle(oracle_end, oracle_waiter)
+            _write_record(run, record)
+            _check_play_signal()
+            argv = _argv(cfg, user_dir, pak, card, fps_unlock)
+            argv = supervised(cfg, run, argv) if supervise else argv
+            collector = None  # the play owns the run's reach socket and reach.bin (module tas_reach)
+            if reach_census:  # the port was named N64C_REACH_ROWS: its reach.bin is a bitset over that census
+                collector = tas_reach.Collector(run, reach_address(run), reach_live_address(run), reach_census["rows"])
             try:
-                kept = tas_corpus.offer(profile, settings(profile), run, final)
-            except (DecompError, OSError) as error:
-                kept = {"error": str(error)}
-            if kept:
-                result["corpus"] = kept
-        return result
+                with (run / "output.txt").open("w") as output:
+                    with _starting_play_process():
+                        process = subprocess.Popen(
+                            argv,
+                            env=env,
+                            stdin=subprocess.PIPE if supervise else subprocess.DEVNULL,
+                            stdout=output,
+                            stderr=subprocess.STDOUT,
+                            **procguard.owned(),
+                        )
+                        children.append(process)
+                        record["pgid"] = process.pid
+                        _write_record(run, record)
+                    # The bridge holds a stopped port until its stdin says "continue"; a closed pipe ends it after the
+                    # stacks.
+                    if supervise:
+                        process.stdin.close()
+                    code, cpu = _wait(process, timeout, run, until)
+            finally:
+                if collector:
+                    collector.finish()  # RUN/reach.bin: the play is the one writer, whether or not a server listens
+            text = (run / "output.txt").read_text(errors="replace")
+            reached = 0
+            with contextlib.suppress(OSError):  # a port that died before its first poll left no lockstep file
+                reached = len(read_polls(run))
+            result = {"movie": name, "run": str(run), "id": run.name, "speed": speed, "polls": len(polls)}
+            result.update(polls_reached=reached, **classify(code, text))
+            found = inspect_files(run, shots_every, dump_ram_at, trace_draws)
+            if found:
+                result["inspect"] = found
+            if sanitize or tas_sanitize.present(text):
+                result["sanitizer"] = tas_sanitize.collect(cfg, run, text, movie=name, port=cfg["port"], build=build)
+            try:  # RUN/coverage.json: this run's gcovr report (nothing without a coverage build)
+                if tas_coverage.run_report(profile, cfg, run):
+                    result["coverage"] = str(run / tas_coverage.COVERAGE)
+            except DecompError as error:
+                result["coverage_error"] = str(error)
+            stopped = (run / "stopped").exists()
+            if stopped:
+                result["subject"] = "stopped from the page"
+            result["wall_seconds"], result["cpu_seconds"] = round(began.seconds, 1), cpu
+            stacks = [str(p) for p in sorted(run.glob("*-st*.txt")) + sorted(run.glob("*-threads.txt"))]
+            if result["outcome"] == "crash" and (fault := tas_fault.capture(run, cfg["port"])):
+                result["fault"] = fault
+                stacks.insert(
+                    0, str(run / tas_fault.STACK)
+                )  # the signal frame's own stack ranks before the supervisor's
+            if stacks:
+                result["stacks"] = stacks
+            # Kind, blocking, owner and one next command (the arity note comes first when set).
+            result.update(tas_symbolize.claim(profile, result, stacks, health))
+            if health:
+                result["build"] = tas_health.header(health)
+            before = previous_run(cfg, name, build, run.name, pak, mode) if build and not stopped else None
+            result["same_twice"] = same_hashes(run, before) if before else None
+            if before:
+                result["compared_with"] = before.name
+            result["fn"] = fn_of(result)
+            result["cpak"] = mode
+            result["shown"] = fps_shown(text)
+            taken = (run / TAKEN).is_file()
+            if taken:
+                result.update(
+                    taken=True,
+                    same_twice=None,
+                    compared_with=None,
+                    saved=save_taken(
+                        profile, cfg, run, name, human or bool(retry and retry.get("fresh")), pak, mode, *started
+                    ),
+                )
+            keep = ("outcome", "subject", "polls_reached", "kind", "same_twice", "compared_with", "fn", "wall_seconds")
+            keep += (
+                "taken",
+                "saved",
+                "coverage",
+                "frame",
+                "fault",
+                "shown",
+                "state_diff",
+                "sanitizer",
+                "function",
+                "source",
+                "source_precision",
+                "instruction",
+                "fcsr",
+                "claim",
+                "owner",
+            )
+            if state:
+                try:
+                    result["state_diff"] = tas_statediff.finish(state, profile, name, {**record, "batch": batch})
+                except (DecompError, OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+                    result["state_diff"] = {"error": str(error)}
+            elif "state_diff" in record:
+                result["state_diff"] = record["state_diff"]
+            if oracle_waiter:
+                oracle_waiter.join()
+                wall, polls = oracle_end["wall"], tas_oracle.reached(run)
+                record["oracle"] = {
+                    **record["oracle"],
+                    **tas_oracle.outcome(oracle_end["code"]),
+                    "status": "done",
+                    "polls_reached": polls,
+                    "wall_seconds": wall,
+                    "cpu_seconds": oracle_end["cpu"],
+                    "fps": round(polls / wall, 1) if wall else None,
+                }
+                if note := tas_oracle.startup_note(oracle_end["code"], polls):
+                    record["oracle"]["startup_fault"] = note
+                if os.environ.get("N64C_TRACE_EVENTS"):
+                    record["oracle"]["events"] = tas_oracle.split_events(run)  # the outcome above is gdb's then
+                if original.get("lockstep"):
+                    record["oracle"]["lockstep"] = tas_oracle.lockstep_match(run)
+                result["oracle"] = {**record["oracle"], **(tas_oracle.summary(run, record) or {})}
+            if oracle_waiter:
+                record["oracle"]["verdict"] = result["oracle"]["verdict"] = tas_oracle.verdict(result)
+            if first_pass and result["outcome"] != "ok":
+                raise NeedsSupervisor(run)
+            final = {
+                **record,
+                **{k: result.get(k) for k in keep},
+                "status": "done",
+                "stopped": stopped,
+                "ended": time.time(),
+                **({"error": refusal} if human and (refusal := no_first_frame(code, text, result, stopped)) else {}),
+            }
+            _check_play_signal()
+            _write_record(run, final)
+            if not human:  # this run's report replaces the movie's older ones in the union: they are dead disk
+                with contextlib.suppress(DecompError, OSError):
+                    tas_coverage.drop_superseded(cfg, run)
+            if (
+                not human
+            ):  # a crash, stop, hang or exit is a finding (tas_findings; sanitized: crash-sanitized); clean clears
+                marked = {**final, "id": run.name, "sanitizer": final.get("sanitizer") or sanitize}
+                tas_findings.record_run(profile, cfg, marked, run, batch)
+            if not human and not retry and not sanitize:  # a run reaching new code keeps its movie (tas_corpus)
+                from abu_decomp import tas_corpus
+
+                try:
+                    kept = tas_corpus.offer(profile, settings(profile), run, final)
+                except (DecompError, OSError) as error:
+                    kept = {"error": str(error)}
+                if kept:
+                    result["corpus"] = kept
+            return result
 
 
 def play_twice(
@@ -2108,112 +2122,113 @@ def play_all(
     _lower_priority(nice or ALL_NICE)
     options.setdefault("slot_class", "background")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id
-    began, cpu0 = time.monotonic(), resource.getrusage(resource.RUSAGE_CHILDREN)
+    with cache_stages.timed("abu_decomp.tas.play_all.began") as began:
+        cpu0 = resource.getrusage(resource.RUSAGE_CHILDREN)
 
-    def one(name: str) -> dict[str, Any]:
+        def one(name: str) -> dict[str, Any]:
+            try:
+                if twice:
+                    play(profile, name, now=now, health=health, **options)
+                run_id = (run_ids or {}).get(name) if not twice else None
+                if not twice and not gdb_all and not options.get("sanitize"):
+                    try:
+                        return play(
+                            profile,
+                            name,
+                            now=now,
+                            health=health,
+                            run_id=run_id,
+                            supervise=False,
+                            first_pass=True,
+                            **options,
+                        )
+                    except NeedsSupervisor as failed:
+                        shutil.rmtree(failed.run, ignore_errors=True)  # the bridge's replay takes its place
+                return play(profile, name, now=now, health=health, run_id=run_id, **options)
+            except DecompError as error:
+                return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
+
+        def progress(row: dict[str, Any]) -> None:
+            reached = f"{row.get('polls_reached', 0)}/{row.get('polls', 0)}"
+            outcome = row["outcome"] + (f" {row['subject']}" if row.get("subject") else "")
+            sys.stderr.write(
+                f"tas: {row['movie']} {outcome} {reached} same_twice={_twice_text(row.get('same_twice'))} "
+                f"{row.get('wall_seconds', 0)}/{row.get('cpu_seconds', 0)} s (wall/cpu)\n"
+            )
+            sys.stderr.flush()
+
+        done: dict[str, dict[str, Any]] = {}
+        for name, (run, last) in skipped.items():  # unaffected: the last good run stands
+            done[name] = {
+                "movie": name,
+                "outcome": last["outcome"],
+                "polls_reached": last.get("polls_reached", 0),
+                "polls": last.get("polls", 0),
+                "run": str(run),
+                "skipped": run.name,
+                "wall_seconds": 0,
+                "cpu_seconds": 0,
+            }
+        with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names_to_run) or 1))) as pool:
+            for future in as_completed([pool.submit(one, name) for name in names_to_run]):
+                row = future.result()
+                progress(row)  # one row per movie as each finishes; the table and JSON below are unchanged
+                done[row["movie"]] = row
+        results = [done[name] for name in names]
+        sanitize = bool(options.get("sanitize"))
+        path = cfg["runs"] / "standing.json"
         try:
-            if twice:
-                play(profile, name, now=now, health=health, **options)
-            run_id = (run_ids or {}).get(name) if not twice else None
-            if not twice and not gdb_all and not options.get("sanitize"):
-                try:
-                    return play(
-                        profile,
-                        name,
-                        now=now,
-                        health=health,
-                        run_id=run_id,
-                        supervise=False,
-                        first_pass=True,
-                        **options,
-                    )
-                except NeedsSupervisor as failed:
-                    shutil.rmtree(failed.run, ignore_errors=True)  # the bridge's replay takes its place
-            return play(profile, name, now=now, health=health, run_id=run_id, **options)
+            standing = json.loads(path.read_text())
+        except (OSError, ValueError):
+            standing = {}
+        rows = []
+        for result in results:
+            recorded = standing.get(result["movie"])
+            verdict = compare(recorded, result)
+            if verdict != "worse" and not sanitize:  # the standing is the page port's
+                standing[result["movie"]] = {
+                    k: result.get(k) for k in ("outcome", "subject", "polls_reached", "kind", "next", "owner")
+                }
+            rows.append(
+                {
+                    "movie": result["movie"],
+                    "outcome": result["outcome"],
+                    "subject": result.get("subject", ""),
+                    "polls_reached": result.get("polls_reached", 0),
+                    "polls": result.get("polls", 0),
+                    "recorded": recorded,
+                    "vs_recorded": verdict,
+                    "kind": result.get("kind", ""),
+                    "next": result.get("next", ""),
+                    "owner": result.get("owner", ""),
+                    "run": result.get("run", ""),
+                    "skipped": result.get("skipped"),
+                    "same_twice": result.get("same_twice"),
+                    "fn": result.get("fn"),
+                    "frame": result.get("frame", ""),
+                    "wall_seconds": result.get("wall_seconds", 0),
+                    "cpu_seconds": result.get("cpu_seconds", 0),
+                    "sanitizer": result.get("sanitizer"),
+                }
+            )
+        cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu = round(cpu1.ru_utime + cpu1.ru_stime - cpu0.ru_utime - cpu0.ru_stime, 1)
+        cfg["runs"].mkdir(parents=True, exist_ok=True)
+        if not sanitize:
+            path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
+        worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
+        timing = {"wall_seconds": round(began.seconds, 1), "cpu_seconds": cpu}
+        ranked = ranked_work(profile, cfg, health, rows)
+        result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
+        if changed or resume:
+            result["selected"] = {"replayed": len(names_to_run), "skipped": len(skipped), "why": why_skipped}
+        try:  # the unioned coverage never fails a replay
+            report = None if sanitize else tas_coverage.build(profile, cfg, jobs=jobs)
+            if report:
+                result["coverage"] = tas_coverage.line(report)
         except DecompError as error:
-            return {"movie": name, "outcome": "refused", "subject": str(error), "polls_reached": 0}
-
-    def progress(row: dict[str, Any]) -> None:
-        reached = f"{row.get('polls_reached', 0)}/{row.get('polls', 0)}"
-        outcome = row["outcome"] + (f" {row['subject']}" if row.get("subject") else "")
-        sys.stderr.write(
-            f"tas: {row['movie']} {outcome} {reached} same_twice={_twice_text(row.get('same_twice'))} "
-            f"{row.get('wall_seconds', 0)}/{row.get('cpu_seconds', 0)} s (wall/cpu)\n"
-        )
-        sys.stderr.flush()
-
-    done: dict[str, dict[str, Any]] = {}
-    for name, (run, last) in skipped.items():  # unaffected: the last good run stands
-        done[name] = {
-            "movie": name,
-            "outcome": last["outcome"],
-            "polls_reached": last.get("polls_reached", 0),
-            "polls": last.get("polls", 0),
-            "run": str(run),
-            "skipped": run.name,
-            "wall_seconds": 0,
-            "cpu_seconds": 0,
-        }
-    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(names_to_run) or 1))) as pool:
-        for future in as_completed([pool.submit(one, name) for name in names_to_run]):
-            row = future.result()
-            progress(row)  # one row per movie as each finishes; the table and JSON below are unchanged
-            done[row["movie"]] = row
-    results = [done[name] for name in names]
-    sanitize = bool(options.get("sanitize"))
-    path = cfg["runs"] / "standing.json"
-    try:
-        standing = json.loads(path.read_text())
-    except (OSError, ValueError):
-        standing = {}
-    rows = []
-    for result in results:
-        recorded = standing.get(result["movie"])
-        verdict = compare(recorded, result)
-        if verdict != "worse" and not sanitize:  # the standing is the page port's
-            standing[result["movie"]] = {
-                k: result.get(k) for k in ("outcome", "subject", "polls_reached", "kind", "next", "owner")
-            }
-        rows.append(
-            {
-                "movie": result["movie"],
-                "outcome": result["outcome"],
-                "subject": result.get("subject", ""),
-                "polls_reached": result.get("polls_reached", 0),
-                "polls": result.get("polls", 0),
-                "recorded": recorded,
-                "vs_recorded": verdict,
-                "kind": result.get("kind", ""),
-                "next": result.get("next", ""),
-                "owner": result.get("owner", ""),
-                "run": result.get("run", ""),
-                "skipped": result.get("skipped"),
-                "same_twice": result.get("same_twice"),
-                "fn": result.get("fn"),
-                "frame": result.get("frame", ""),
-                "wall_seconds": result.get("wall_seconds", 0),
-                "cpu_seconds": result.get("cpu_seconds", 0),
-                "sanitizer": result.get("sanitizer"),
-            }
-        )
-    cpu1 = resource.getrusage(resource.RUSAGE_CHILDREN)
-    cpu = round(cpu1.ru_utime + cpu1.ru_stime - cpu0.ru_utime - cpu0.ru_stime, 1)
-    cfg["runs"].mkdir(parents=True, exist_ok=True)
-    if not sanitize:
-        path.write_text(json.dumps(standing, indent=1, sort_keys=True) + "\n")
-    worse = [r["movie"] for r in rows if r["vs_recorded"] == "worse"]
-    timing = {"wall_seconds": round(time.monotonic() - began, 1), "cpu_seconds": cpu}
-    ranked = ranked_work(profile, cfg, health, rows)
-    result = {"build": tas_health.header(health), "movies": rows, "worse": worse, **timing, "ranked": ranked}
-    if changed or resume:
-        result["selected"] = {"replayed": len(names_to_run), "skipped": len(skipped), "why": why_skipped}
-    try:  # the unioned coverage never fails a replay
-        report = None if sanitize else tas_coverage.build(profile, cfg, jobs=jobs)
-        if report:
-            result["coverage"] = tas_coverage.line(report)
-    except DecompError as error:
-        result["coverage"] = f"coverage: {error}"
-    return {**result, "next": ranked[0]["next"] if ranked else "nothing open"}, int(bool(worse))
+            result["coverage"] = f"coverage: {error}"
+        return {**result, "next": ranked[0]["next"] if ranked else "nothing open"}, int(bool(worse))
 
 
 def ranked_work(

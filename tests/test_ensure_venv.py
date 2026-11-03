@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -9,7 +10,7 @@ spec = importlib.util.spec_from_file_location("ensure_venv", Path(__file__).pare
 ensure_venv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ensure_venv)
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from abu_decomp import deploy  # noqa: E402
+from abu_decomp import sources  # noqa: E402
 
 REPO = Path(__file__).parent.parent
 UNBAKE = "https://github.com/AbuN64/cake-unbake-64"
@@ -29,7 +30,7 @@ class EnsureTests(unittest.TestCase):
         self.root = Path(self.dir.name)
         (self.root / "pyproject.toml").write_text(PYPROJECT)
         (self.root / "src").symlink_to(REPO / "src")
-        self.heads = {url: "a" * 40 for url in deploy.PACKAGES.values()}
+        self.heads = {url: "a" * 40 for url in sources.PACKAGES.values()}
         self.calls = []
 
     def ls_remote(self, argv, cwd):
@@ -81,6 +82,39 @@ class EnsureTests(unittest.TestCase):
         self.ensure()
         self.assertIn(f"unbake @ git+{UNBAKE}@{'c' * 40}", self.installs()[0])
 
+    def test_new_abucache_revision_changes_the_environment_key(self):
+        (self.root / "pyproject.toml").write_text(PYPROJECT.replace('["unbake",', '["abucache", "unbake",'))
+        self.ensure()
+        before = (self.root / ".venv" / ensure_venv.STAMP).read_text()
+        self.calls.clear()
+        self.heads[sources.PACKAGES["abucache"]] = "d" * 40
+        self.ensure()
+        self.assertNotEqual(before, (self.root / ".venv" / ensure_venv.STAMP).read_text())
+        self.assertIn(f"abucache @ git+{sources.PACKAGES['abucache']}@{'d' * 40}", self.installs()[0])
+
+    def test_fresh_python_bootstraps_without_abucache_or_the_runtime(self):
+        script = r"""
+import builtins, importlib.util, sys
+from pathlib import Path
+original = builtins.__import__
+def guarded(name, *args, **kwargs):
+    if name.startswith('abucache') or name in ('abu_decomp.deploy', 'abu_decomp.tools'):
+        raise AssertionError('bootstrap imported runtime: ' + name)
+    return original(name, *args, **kwargs)
+builtins.__import__ = guarded
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('bootstrap', root / 'ci/ensure_venv.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+rows = module.requirements(root, lambda argv, cwd: (0, 'a' * 40 + '\tHEAD\n'))
+assert any(row.startswith('abucache @ git+') for row in rows)
+assert 'abucache' not in sys.modules
+assert 'abu_decomp.deploy' not in sys.modules
+assert 'abu_decomp.tools' not in sys.modules
+"""
+        done = subprocess.run([sys.executable, "-I", "-S", "-c", script, str(REPO)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
     def test_a_source_that_cannot_answer_fails_before_anything_is_made(self):
         def down(argv, cwd):
             return 128, "fatal: unable to access"
@@ -113,7 +147,7 @@ class RepoDeclaresNoPins(unittest.TestCase):
         text = (REPO / "pyproject.toml").read_text()
         self.assertNotIn("git+", text)
         deps = tomllib.loads(text)["project"]["dependencies"]
-        for name in (n for n in deploy.PACKAGES if n != deploy.tools.DISTRIBUTION):
+        for name in (n for n in sources.PACKAGES if n != "abu-decomp-64"):
             self.assertIn(name, deps)
 
     def test_no_environment_variable_picks_the_interpreter(self):

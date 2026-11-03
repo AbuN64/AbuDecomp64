@@ -1,7 +1,7 @@
 """A game repo builds with make alone: none of its files names one of our tools.
 
 The names are those of the tools decomp installs (tools.TOOLS: each distribution and module) and of decomp itself, plus
-the repositories they install from (deploy.PACKAGES), matched in any case and with any `-`, `_` or space between
+the repositories they install from (sources.PACKAGES), matched in any case and with any `-`, `_` or space between
 their letters (so `cake-unbake`, `__UNBAKE_X` and `recipe maker` all count). A plain command word (`recipe`,
 `taste`, `decomp`) is not a name: game text and make recipes use those words. `mentions(tree)` reads every tracked
 and untracked unignored file of the tree; `mentions(tree, against=REV)` reads only the lines the work tree adds over
@@ -15,7 +15,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, deploy, tools
+from abu_decomp import DecompError, sources, tools
 
 _OWNER = re.compile(r"^abu[-_]")  # the owner word some repository names start with; the rest is the tool's name
 
@@ -24,7 +24,7 @@ def _stems() -> set[str]:
     names = {tools.DISTRIBUTION, __name__.split(".")[0]}
     for tool in tools.TOOLS.values():
         names |= {tool.distribution, tool.module.split(".")[0]}
-    names |= {url.rsplit("/", 1)[-1] for url in deploy.PACKAGES.values()}  # the repository names (recipe-maker-64)
+    names |= {url.rsplit("/", 1)[-1] for url in sources.PACKAGES.values()}  # the repository names (recipe-maker-64)
     stems = set()
     for name in names:
         stem = re.sub(r"[-_]64$", "", name.lower())

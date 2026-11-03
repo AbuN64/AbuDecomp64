@@ -423,7 +423,7 @@ class BootstrapScriptTests(ScriptCase):
     """The stale toolkit cannot import the checkout; the deploy prepares landed siblings before that import."""
 
     def test_name_bootstraps_landed_siblings_without_writing_the_live_toolkit(self):
-        from abu_decomp import deploy
+        from abu_decomp import deploy, sources
 
         source = Path(__file__).parent.parent
         checkout = self.root / "checkout"
@@ -433,13 +433,13 @@ class BootstrapScriptTests(ScriptCase):
         (checkout / "src/abu_decomp/__main__.py").write_text(
             f"from abucache.slots import AdmissionError\nprint({ENVELOPE.strip()!r})\n"
         )
-        siblings = [name for name in deploy.PACKAGES if name != deploy.tools.DISTRIBUTION]
+        siblings = [name for name in sources.PACKAGES if name != deploy.tools.DISTRIBUTION]
         (checkout / "pyproject.toml").write_text(
             f'[project]\nname = "test-deploy"\nrequires-python = ">=3.13"\ndependencies = {json.dumps(siblings)}\n'
         )
         landed = {}
         for name in siblings:
-            repository = self.root / "sources" / deploy.PACKAGES[name].rsplit("/", 1)[-1]
+            repository = self.root / "sources" / sources.PACKAGES[name].rsplit("/", 1)[-1]
             repository.mkdir(parents=True)
             wheel_name = name.replace("-", "_")
             content = {"abucache/slots.py": "class AdmissionError(Exception): pass\n"} if name == "abucache" else {}
@@ -497,7 +497,7 @@ class BootstrapScriptTests(ScriptCase):
             return deploy.run_command(argv, cwd, env)
 
         build = self.root / "build"
-        steps = deploy.install(build, checkout / ".venv", deploy.clean_requirements(siblings, run), [], run)
+        steps = deploy.install(build, checkout / ".venv", sources.clean_requirements(siblings, run), [], run)
         self.assertTrue(all(step["ok"] for step in steps), steps)
         for venv in (checkout / ".venv", build):
             installed = subprocess.check_output(
@@ -518,14 +518,15 @@ class ReadbackCase(ScriptCase):
 
     def setUp(self):
         super().setUp()
-        from abu_decomp import deploy
+        from abu_decomp import deploy, sources
 
         self.deploy = deploy
+        self.sources = sources
         self.name = deploy.tools.DISTRIBUTION
         self.repo = self.root / "worktree"
         self.repo.mkdir()
         self.landed = {}
-        for tool, url in deploy.PACKAGES.items():
+        for tool, url in sources.PACKAGES.items():
             if tool != self.name:
                 remote = self.root / "sources" / url.rsplit("/", 1)[-1]
                 remote.mkdir(parents=True)
@@ -578,7 +579,7 @@ class ReadbackScriptTests(ReadbackCase):
     def test_readback_and_the_clean_environment_resolve_the_same_commit_for_each_tool(self):
         done = self.readback()
         with mock.patch.dict(os.environ, self.git_env):
-            specs = self.deploy.clean_requirements(["textual==8.2.8", *self.landed])
+            specs = self.sources.clean_requirements(["textual==8.2.8", *self.landed])
         for tool, commit in self.landed.items():
             (spec_row,) = [row for row in specs if row.startswith(tool + " @ ")]
             self.assertTrue(spec_row.endswith(f"@{commit}"), spec_row)

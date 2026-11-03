@@ -8,8 +8,9 @@ import hashlib
 import json
 import re
 import subprocess
-import time
 from pathlib import Path
+
+from abucache import stages as cache_stages
 
 from abu_decomp import meter
 from abu_decomp.data import objsyms, source
@@ -475,51 +476,57 @@ def check(b: Builder, version: str, units: list[str] | None = None, baseline: di
     units = sorted({u for u in units if u})  # a path the diff removed has no source to build
     if not units:
         return {"version": version, "units": 0, "built": True, "broken": [], **_narrow_note(narrowed, version)}
-    mark = (time.monotonic(), meter.cpu())
-    rc, log = b.objects(version, units, keep_going=True)
-    made = (time.monotonic() - mark[0], meter.cpu() - mark[1])
-    for line in log.splitlines():
-        if "make.front:" in line:  # how many compiles the cache answered: the make is most of the check's CPU
-            print(f"check {version}: " + line[line.index("make.front:") :], flush=True)
-    if refused := sorted({m.group(0) for m in map(_FACTS_REFUSED.search, log.splitlines()) if m}):
-        # every compile of this version refused its asm's facts: no unit has an object, so nothing can be scored
-        return {
-            "version": version,
-            "units": len(units),
-            "built": False,
-            "broken": [],
-            "refused": len(units),
-            "errors": [f"{len(units)} units refused: {', '.join(refused)} (the asm needs `make extract-{version}`)"],
-        }
-    failed = failures(b, version, units, log)
-    old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
-    failed = {u: why for u, why in failed.items() if u not in old}
-    if (
-        rc and not failed and not old
-    ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
-        lines = [x for x in log.splitlines() if x.strip()]
-        errs = (
-            [x for x in lines if re.search(r"error", x, re.I)][:5] or lines[-5:] or [f"make exited {rc} with no output"]
-        )
-        return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
-    mark = (time.monotonic(), meter.cpu())
-    bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b), moved)
-    print(  # which half of the check holds the CPU: the objects' make, or the scoring of what they built
-        f"check {version}: {len(units)} units, make wall={made[0]:.0f}s cpu={made[1]:.0f}s,"
-        f" score wall={time.monotonic() - mark[0]:.0f}s cpu={meter.cpu() - mark[1]:.0f}s",
-        flush=True,
-    )
-    return {
-        "version": version,
-        "units": len(units),
-        "built": not failed,
-        "broken": [list(x) for x in bad],
-        "failed": [[u, why] for u, why in sorted(failed.items())],
-        "preexisting": [[u, why] for u, why in sorted(old.items())],
-        "all_failed": {**old, **failed},
-        **_narrow_note(narrowed, version),
-        **({"errors": [f"{u}: {why}" for u, why in sorted(failed.items())][:8]} if failed else {}),
-    }
+    with cache_stages.timed("data.check") as elapsed:
+        mark = (elapsed, meter.cpu())
+        rc, log = b.objects(version, units, keep_going=True)
+        made = (mark[0].seconds, meter.cpu() - mark[1])
+        for line in log.splitlines():
+            if "make.front:" in line:  # how many compiles the cache answered: the make is most of the check's CPU
+                print(f"check {version}: " + line[line.index("make.front:") :], flush=True)
+        if refused := sorted({m.group(0) for m in map(_FACTS_REFUSED.search, log.splitlines()) if m}):
+            # every compile of this version refused its asm's facts: no unit has an object, so nothing can be scored
+            return {
+                "version": version,
+                "units": len(units),
+                "built": False,
+                "broken": [],
+                "refused": len(units),
+                "errors": [
+                    f"{len(units)} units refused: {', '.join(refused)} (the asm needs `make extract-{version}`)"
+                ],
+            }
+        failed = failures(b, version, units, log)
+        old = {u: why for u, why in failed.items() if baseline and baseline.get(u) == why}
+        failed = {u: why for u, why in failed.items() if u not in old}
+        if (
+            rc and not failed and not old
+        ):  # make failed with no unit named (a missing rule, a toolchain error): nothing can be judged
+            lines = [x for x in log.splitlines() if x.strip()]
+            errs = (
+                [x for x in lines if re.search(r"error", x, re.I)][:5]
+                or lines[-5:]
+                or [f"make exited {rc} with no output"]
+            )
+            return {"version": version, "units": len(units), "built": False, "broken": [], "errors": errs}
+        with cache_stages.timed("data.check") as elapsed:
+            mark = (elapsed, meter.cpu())
+            bad = broken(b, version, [u for u in units if u not in failed and u not in old], renamed(b), moved)
+            print(  # which half of the check holds the CPU: the objects' make, or the scoring of what they built
+                f"check {version}: {len(units)} units, make wall={made[0]:.0f}s cpu={made[1]:.0f}s,"
+                f" score wall={mark[0].seconds:.0f}s cpu={meter.cpu() - mark[1]:.0f}s",
+                flush=True,
+            )
+            return {
+                "version": version,
+                "units": len(units),
+                "built": not failed,
+                "broken": [list(x) for x in bad],
+                "failed": [[u, why] for u, why in sorted(failed.items())],
+                "preexisting": [[u, why] for u, why in sorted(old.items())],
+                "all_failed": {**old, **failed},
+                **_narrow_note(narrowed, version),
+                **({"errors": [f"{u}: {why}" for u, why in sorted(failed.items())][:8]} if failed else {}),
+            }
 
 
 def mixed_loop(

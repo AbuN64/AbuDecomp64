@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 
 from abu_decomp import worktree
 from abu_decomp.data import stamp as stamp_mod
@@ -557,7 +558,7 @@ def test_a_stamp_phase_over_the_cpu_cap_names_itself(monkeypatch, capsys):
 
     mark = [0.0, 0.0]
     monkeypatch.setattr(stampbuild.meter, "cpu", lambda: 400.0)
-    stampbuild._phase("rom_check", mark)
+    stampbuild._phase("rom_check", mark, SimpleNamespace(seconds=4.0))
     assert "FLAG CPU-OVER-5min step=rom_check" in capsys.readouterr().out
 
 
@@ -695,7 +696,6 @@ def clock(monkeypatch, links):
 
     The wall clock the phases read (stampbuild's `time`) is a counter too, held still: the phase lines read wall=0s by
     construction, whatever the host load."""
-    from types import SimpleNamespace
 
     from abu_decomp import meter
 

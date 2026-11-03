@@ -10,9 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from abucache import stages as cache_stages
 
 from abu_decomp import DecompError, evidence, meter, provenance, tools
 
@@ -121,41 +122,42 @@ class Gate:
             self.measures.append({"function": function, "side": side, "cached": True, "seconds": 0.0, "cpu": 0.0})
             return evidence.Score(**{k: v for k, v in data.items() if k in evidence.Score.__dataclass_fields__})
         path = self.candidate(side, relative, text)
-        started, cpu = time.monotonic(), meter.cpu()
-        try:
-            result = self.run_behave(function, path)
-            counts = result.get("counts") or {}
-            score = evidence.Score(
-                int(counts.get("same", 0)),
-                int(result.get("total", 0)),
-                (result.get("candidate") or {}).get("function_sha256"),
-                str(result.get("reason") or "")[:200],
+        with cache_stages.timed("abu_decomp.evidence_gate.measure.started") as started:
+            cpu = meter.cpu()
+            try:
+                result = self.run_behave(function, path)
+                counts = result.get("counts") or {}
+                score = evidence.Score(
+                    int(counts.get("same", 0)),
+                    int(result.get("total", 0)),
+                    (result.get("candidate") or {}).get("function_sha256"),
+                    str(result.get("reason") or "")[:200],
+                )
+            except DecompError as exc:
+                raise EvidenceError(
+                    "land.evidence_unmeasured", f"{function} ({side}): behave failed: {exc.detail}"
+                ) from exc
+            wall, spent = started.seconds, meter.cpu() - cpu
+            self.measures.append(
+                {"function": function, "side": side, "cached": False, "seconds": round(wall, 1), "cpu": round(spent, 1)}
             )
-        except DecompError as exc:
-            raise EvidenceError(
-                "land.evidence_unmeasured", f"{function} ({side}): behave failed: {exc.detail}"
-            ) from exc
-        wall, spent = time.monotonic() - started, meter.cpu() - cpu
-        self.measures.append(
-            {"function": function, "side": side, "cached": False, "seconds": round(wall, 1), "cpu": round(spent, 1)}
-        )
-        if wall > self.config["slow_seconds"]:
-            self.landing.findings.append(
-                {
-                    "key": "land.evidence_slow",
-                    "blocking": False,
-                    "message": f"behave of {function} ({side}) took {wall:.0f}s wall, {spent:.0f}s CPU",
-                }
-            )
-        # the sidecar fields let `decomp owes` find this measure again after the tool version moved the key
-        facts = {
-            "function": function,
-            "text": text_digest(text),
-            "headers": self.header_hash(side),
-            "roms": self.rom_hash(),
-        }
-        cached.write_text(json.dumps({**score.__dict__, **facts}))
-        return score
+            if wall > self.config["slow_seconds"]:
+                self.landing.findings.append(
+                    {
+                        "key": "land.evidence_slow",
+                        "blocking": False,
+                        "message": f"behave of {function} ({side}) took {wall:.0f}s wall, {spent:.0f}s CPU",
+                    }
+                )
+            # the sidecar fields let `decomp owes` find this measure again after the tool version moved the key
+            facts = {
+                "function": function,
+                "text": text_digest(text),
+                "headers": self.header_hash(side),
+                "roms": self.rom_hash(),
+            }
+            cached.write_text(json.dumps({**score.__dict__, **facts}))
+            return score
 
     def run_behave(self, function: str, path: Path) -> dict[str, Any]:
         from abu_decomp.behave.run import Options, run

@@ -10,7 +10,7 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              CakeUnbake64 deploys its own toolkit, never this one, so only this deploy moves them), so the name digests
              all of them. The deploy deletes nothing: the activation prunes old builds, sealed ones included;
              name and build run with the repository's clean environment (ci/ensure_venv.py), whose declared siblings
-             are resolved by deploy.clean_requirements and installed at their landed commits before importing the
+             are resolved by sources.clean_requirements and installed at their landed commits before importing the
              checkout's CLI. The live toolkit is only the source of the carried package inventory;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
              SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every tool of ours the live
@@ -158,7 +158,7 @@ import importlib.metadata
 import json
 import sys
 
-from abu_decomp import deploy, tools
+from abu_decomp import deploy, sources, tools
 
 sha = sys.argv[1]
 
@@ -180,7 +180,7 @@ if here != sha:
 # resolves (deploy.landed_tools). A tool that landed again since the build is behind and reported, not refused; a
 # commit that is not on its source's main (a handgate branch's, an unpushed one) is refused.
 for name, landed in sorted(deploy.landed_tools().items()):
-    have, url = installed(name), deploy.PACKAGES[name]
+    have, url = installed(name), sources.PACKAGES[name]
     if len(have) != 40:
         state = "refused"
         bad.append(f"{name} is {have}, it must be installed from its source {url}")
@@ -271,12 +271,13 @@ class Tally:
 
 
 tally = Tally()
-start = time.monotonic()
-# rootdir and config pinned to the checkout: node ids stay checkout-relative wherever the checkout sits
-config = os.path.join(root, "pyproject.toml")
-args = ["-q", "-p", "no:cacheprovider", "-rfE", "--tb=short", "--rootdir", root, "-c", config]
-code = int(pytest.main(args + ["tests"], plugins=[tally]))
-seconds = time.monotonic() - start
+from abucache import stages
+with stages.timed("ci.suite") as elapsed:
+    # rootdir and config pinned to the checkout: node ids stay checkout-relative wherever the checkout sits
+    config = os.path.join(root, "pyproject.toml")
+    args = ["-q", "-p", "no:cacheprovider", "-rfE", "--tb=short", "--rootdir", root, "-c", config]
+    code = int(pytest.main(args + ["tests"], plugins=[tally]))
+seconds = elapsed.seconds
 outside = [path for path in imported() if not inside(path)]
 if outside:
     emit("suite-import: " + outside[0])

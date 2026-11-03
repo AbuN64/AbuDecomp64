@@ -1,6 +1,7 @@
 """`decomp behave --precapture` (behave/precapture.py): the list, the plan from behave's own describe runs, one batch
 call to the oracle tool and the report, with the tools mocked."""
 
+import contextlib
 import json
 import tempfile
 import unittest
@@ -143,6 +144,26 @@ class PrecaptureTests(unittest.TestCase):
         table = {"bad": {"function": "bad", "status": "unplanned", "message": "x"}}
         result, _, _ = self.go("bad", table, [])
         self.assertEqual((self.calls, result["captures"], result["oracle"]["oracle_runs"]), ([], 0, 0))
+
+    def test_public_precapture_reports_shared_planning_and_capture_seconds(self):
+        events = []
+
+        @contextlib.contextmanager
+        def timed(name):
+            events.append(("open", name))
+            try:
+                yield SimpleNamespace(seconds=12.3456 if name.endswith("started") else 5.6789)
+            finally:
+                events.append(("closed", name))
+
+        table = {"bad": {"function": "bad", "status": "unplanned", "message": "x"}}
+        with mock.patch.object(precapture.cache_stages, "timed", timed):
+            result, code, _ = self.go("bad", table, [])
+        self.assertEqual(code, 0)
+        self.assertEqual(result["timing"]["plan_seconds"], 12.346)
+        self.assertEqual(result["timing"]["capture_seconds"], 5.679)
+        self.assertEqual(result["timing"]["wall_seconds"], 12.346)
+        self.assertEqual([e[0] for e in events], ["open", "open", "closed", "closed"])
 
     def test_an_empty_list_is_refused(self):
         with (

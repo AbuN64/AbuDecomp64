@@ -32,6 +32,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from abucache import stages as cache_stages
+
 from abu_decomp import DecompError, evidence, tas, tas_coverage, tas_fn, tas_phasemap
 from abu_decomp.admission import slots
 
@@ -804,13 +806,13 @@ def bake(
         raise DecompError("tas.bake", f"--what takes {', '.join(WHAT)}; not {', '.join(sorted(unknown))}")
     if movie and what and what != {"movie"}:
         raise DecompError("tas.bake", "--movie bakes one movie: use it with --what movie")
-    started = time.monotonic()
-    with slots.hold("batch", 1, "tas bake"):
-        inputs = Inputs(profile, union)
-        with locked(inputs.runs):
-            result = _bake(inputs, what, movie)
-    result["seconds"] = round(time.monotonic() - started, 2)
-    return result
+    with cache_stages.timed("abu_decomp.tas_bake.bake.started") as started:
+        with slots.hold("batch", 1, "tas bake"):
+            inputs = Inputs(profile, union)
+            with locked(inputs.runs):
+                result = _bake(inputs, what, movie)
+        result["seconds"] = round(started.seconds, 2)
+        return result
 
 
 def _bake(inputs: Inputs, what: set[str] | None, movie: str | None) -> dict[str, Any]:

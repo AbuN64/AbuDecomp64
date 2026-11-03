@@ -29,7 +29,7 @@ HEADS = {
     URL["cake-taste-64"]: "6" * 40,
     URL["abu-decomp-64"]: D1,
 }
-MOVED = [f"recipemaker @ git+{URL['recipemaker']}@{R3}", f"unbake @ git+{URL['unbake']}@{U3}"]
+MOVED = [f"{name} @ git+{url}@{HEADS[url]}" for name, url in URL.items() if name != "abu-decomp-64"]
 KEPT = ["pycparser==3.0"]  # carried as installed
 NAME1 = deploy.content_name([deploy.requirement("abu-decomp-64", D1), *MOVED], KEPT)  # the default deploy's name
 
@@ -525,15 +525,35 @@ def get_requires_for_build_wheel(config_settings=None):
 class CarryTests(DeployTests):
     """The carry-over of the packages the deployed one does not replace."""
 
+    def test_stale_abucache_and_missing_siblings_install_landed_commits_before_new_source(self):
+        self.carried = ["pycparser==3.0", f"abucache @ git+{URL['abucache']}@{'0' * 40}"]
+        result, code, findings = self.deploy()
+        self.assertEqual((code, findings), (0, []))
+        built = result["venvs"][0]
+        self.assertEqual(built["moved"], MOVED)
+        self.assertEqual(built["carried"], KEPT)
+        install = next(c for c in self.commands if "install" in c and MOVED[0] in c)
+        self.assertEqual(install[install.index("install") + 2 :], MOVED)
+        self.assertLess(install.index(MOVED[0]), install.index(MOVED[1]))  # abucache before unbake
+        smoke = next(c for c in self.commands if c[0].endswith("decomp") and c[1] == "dependencies")
+        self.assertLess(self.commands.index(install), self.commands.index(smoke))
+
     def test_every_tool_of_ours_the_live_venv_holds_moves_to_its_landed_commit_and_the_rest_stay_as_installed(self):
         """11-02: venv-decomp kept unbake 55c9a21, 48 behind main b7675b8: the carry reinstalled it as installed, and
         unbake's own land deploys CakeUnbake64's toolkit, never this one, so nothing ever moved it."""
         taste = f"Cake_Taste.64 @ git+https://example.lan/x@{U1}"  # names compare normalised
         moved, rest = deploy.landed_carry([*CARRIED, taste], "unbake", self.runner)
-        self.assertEqual(moved, [MOVED[0], f"cake-taste-64 @ git+{URL['cake-taste-64']}@{'6' * 40}"])
+        self.assertEqual(moved, [MOVED[2], MOVED[3]])
         self.assertEqual(rest, ["pycparser==3.0", CARRIED[2]])  # the package being deployed is not moved
         asked = [c[2] for c in self.commands if c[:2] == ["git", "ls-remote"]]
         self.assertEqual(asked, [URL["recipemaker"], URL["cake-taste-64"]])
+
+    def test_a_sibling_deploy_also_resolves_a_carried_decomp_from_its_landed_source(self):
+        moved, rest = deploy.landed_carry(
+            [f"abu-decomp-64 @ git+{URL['abu-decomp-64']}@{'0' * 40}"], "unbake", self.runner
+        )
+        self.assertEqual(moved, [f"abu-decomp-64 @ git+{URL['abu-decomp-64']}@{D1}"])
+        self.assertEqual(rest, [])
 
     def test_a_tool_whose_source_does_not_answer_refuses_the_deploy_before_anything_installs(self):
         self.heads.pop(URL["unbake"])
@@ -550,7 +570,7 @@ class CarryTests(DeployTests):
         self.assertEqual(asked[0], str(self.root / "venv-a" / "bin" / "python"))  # the live venv lists itself
         self.assertEqual(asked[3:], ["unbake", "splat64"])
         install = [c for c in self.commands if "install" in c][-1]
-        self.assertEqual(install[-3:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", MOVED[0], "splat64[mips]==0.50.0"])
+        self.assertEqual(install[-3:], [f"unbake[dev] @ git+{URL['unbake']}@{U2}", MOVED[2], "splat64[mips]==0.50.0"])
 
     def test_the_carried_set_is_read_from_carry_from_and_the_scratch_venv_is_never_run(self):
         """ed1c85a: the rig's `venv-decomp-stage` is scratch the deploy recreates; the live toolkit link is carried."""

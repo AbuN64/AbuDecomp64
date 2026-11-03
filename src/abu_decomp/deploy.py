@@ -144,8 +144,9 @@ def clean_requirements(dependencies: Sequence[str], run: Run = run_command) -> l
     landed: dict[str, str] = {}
     for row in dependencies:
         name = row.strip()
-        if name in PACKAGES and name != tools.DISTRIBUTION:
-            landed = landed or landed_tools(run)
+        if name in PACKAGES:
+            if name not in landed:
+                landed[name] = landed_commit(PACKAGES[name], run)
             row = f"{name} @ git+{PACKAGES[name]}@{landed[name]}"
         rows.append(row)
     return rows
@@ -227,14 +228,19 @@ def landed_carry(carry: Sequence[str], package: str, run: Run) -> tuple[list[str
     11-02: venv-decomp kept unbake and cake-taste-64 at the commits a past deploy installed, 48 and more behind their
     main, because the carry reinstalled them as installed); every other row stays as installed."""
     ours = {re.sub(r"[-_.]+", "-", name).lower(): name for name in PACKAGES if name != package}
-    moved: list[str] = []
+    selected: set[str] = set()
     rest: list[str] = []
     for row in carry:
         tool = ours.get(re.sub(r"[-_.]+", "-", re.split(r"\s*@|==|\[", row, maxsplit=1)[0].strip()).lower())
         if tool:
-            moved.append(f"{tool} @ git+{PACKAGES[tool]}@{landed_commit(PACKAGES[tool], run)}")
+            selected.add(tool)
         else:
             rest.append(row)
+    # A new decomp checkout may declare tools the live toolkit has never held. Resolve the same declared sibling
+    # set as its clean environment, in PACKAGES dependency order (abucache before unbake).
+    if package == tools.DISTRIBUTION:
+        selected.update(ours.values())
+    moved = clean_requirements([name for name in PACKAGES if name in selected], run)
     return moved, rest
 
 

@@ -322,13 +322,16 @@ class BuildScriptTests(ScriptCase):
         super().setUp()
         self.toolkit = self.root / "venv-decomp"
         self.build = self.root / f"venv-decomp.{NAME}"
+        self.checkout = self.root / "checkout"
+        (self.checkout / "ci").mkdir(parents=True)
+        (self.checkout / "ci/ensure_venv.py").write_text(f"print({str(self.toolkit / 'bin/python')!r})\n")
 
     def decomp(self, body):
         wrapper(self.toolkit / "bin/python", body)
 
     def run_build(self):
         env = sh_env(BUILD=str(self.build), HOME=str(self.root))  # the caller's own environment, as Dos admits it
-        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, str(self.root), env=env)
+        return self.bash(deploy_rig.BUILD, SHA, str(self.toolkit), NAME, str(self.root), cwd=self.checkout, env=env)
 
     def test_the_build_links_build_to_its_own_venv_and_never_touches_the_live_link(self):
         live = self.root / "live-target"
@@ -374,6 +377,9 @@ class NameScriptTests(ScriptCase):
     def setUp(self):
         super().setUp()
         self.toolkit = self.root / "venv-decomp"
+        self.checkout = self.root / "checkout"
+        (self.checkout / "ci").mkdir(parents=True)
+        (self.checkout / "ci/ensure_venv.py").write_text(f"print({str(self.toolkit / 'bin/python')!r})\n")
 
     def test_the_name_script_runs_the_worktree_engine_over_the_live_link_and_a_failure_exits_1(self):
         live = self.root / "live-target"
@@ -387,13 +393,21 @@ class NameScriptTests(ScriptCase):
         )
         self.toolkit.symlink_to(live)
         env = sh_env(HOME=str(self.root))
-        done = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), env=env)
+        done = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), cwd=self.checkout, env=env)
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertEqual(deploy_rig.build_name(done.stdout), NAME)
         wrapper(live / "bin/python", "exit 3")
-        failed = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), env=env)
+        failed = self.bash(deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), cwd=self.checkout, env=env)
         self.assertEqual(failed.returncode, 1)
         self.assertIn("name-error", failed.stderr)
+
+    def test_an_environment_install_failure_refuses_before_importing_the_checkout(self):
+        (self.checkout / "ci/ensure_venv.py").write_text("raise SystemExit(3)\n")
+        done = self.bash(
+            deploy_rig.NAME, SHA, str(self.toolkit), str(self.root), cwd=self.checkout, env=sh_env(HOME=str(self.root))
+        )
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("name-error: clean environment failed", done.stderr)
 
 
 class BuildNameTests(unittest.TestCase):
@@ -403,6 +417,97 @@ class BuildNameTests(unittest.TestCase):
         for bad in ("", "no json", '{"result": {}}', '{"result": {"name": "../x"}}'):
             with self.assertRaisesRegex(deploy_rig.Refused, "no build name"):
                 deploy_rig.build_name(bad)
+
+
+class BootstrapScriptTests(ScriptCase):
+    """The stale toolkit cannot import the checkout; the deploy prepares landed siblings before that import."""
+
+    def test_name_bootstraps_landed_siblings_without_writing_the_live_toolkit(self):
+        from abu_decomp import deploy
+
+        source = Path(__file__).parent.parent
+        checkout = self.root / "checkout"
+        (checkout / "ci").mkdir(parents=True)
+        shutil.copy(source / "ci/ensure_venv.py", checkout / "ci/ensure_venv.py")
+        shutil.copytree(source / "src/abu_decomp", checkout / "src/abu_decomp")
+        (checkout / "src/abu_decomp/__main__.py").write_text(
+            f"from abucache.slots import AdmissionError\nprint({ENVELOPE.strip()!r})\n"
+        )
+        siblings = [name for name in deploy.PACKAGES if name != deploy.tools.DISTRIBUTION]
+        (checkout / "pyproject.toml").write_text(
+            f'[project]\nname = "test-deploy"\nrequires-python = ">=3.13"\ndependencies = {json.dumps(siblings)}\n'
+        )
+        landed = {}
+        for name in siblings:
+            repository = self.root / "sources" / deploy.PACKAGES[name].rsplit("/", 1)[-1]
+            repository.mkdir(parents=True)
+            wheel_name = name.replace("-", "_")
+            content = {"abucache/slots.py": "class AdmissionError(Exception): pass\n"} if name == "abucache" else {}
+            if name == "abucache":
+                content["abucache/__init__.py"] = ""
+            content[f"{wheel_name}-1.dist-info/METADATA"] = f"Metadata-Version: 2.1\nName: {name}\nVersion: 1\n" + (
+                "Requires-Dist: abucache\n" if name == "unbake" else ""
+            )
+            content[f"{wheel_name}-1.dist-info/WHEEL"] = (
+                "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+            )
+            content[f"{wheel_name}-1.dist-info/RECORD"] = ""
+            (repository / "pyproject.toml").write_text(
+                '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n'
+            )
+            (repository / "backend.py").write_text(
+                "import zipfile\n"
+                "def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):\n"
+                f"    name = {wheel_name + '-1-py3-none-any.whl'!r}\n"
+                "    with zipfile.ZipFile(wheel_directory + '/' + name, 'w') as archive:\n"
+                f"        for path, text in {content!r}.items(): archive.writestr(path, text)\n"
+                "    return name\n"
+            )
+            git("init", "-q", "-b", "main", cwd=repository)
+            git("add", ".", cwd=repository)
+            git("commit", "-q", "-m", "landed sibling", cwd=repository)
+            landed[name] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+
+        live = self.root / "live"
+        live_site = self.root / "old-site/abucache"
+        live_site.mkdir(parents=True)
+        (live_site / "__init__.py").write_text("")
+        (live_site / "slots.py").write_text("# older than AdmissionError\n")
+        wrapper(live / "bin/python", f'exec "{sys.executable}" "$@"')
+        env = sh_env(
+            HOME=str(self.root),
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0=f"url.file://{self.root}/sources/.insteadOf",
+            GIT_CONFIG_VALUE_0="https://github.com/AbuN64/",
+        )
+        old = subprocess.run(
+            [str(live / "bin/python"), "-m", "abu_decomp", "tools", "name"],
+            cwd=self.root,
+            env={**env, "PYTHONPATH": f"{checkout}/src:{live_site.parent}"},
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(old.returncode, 0)
+        self.assertIn("cannot import name 'AdmissionError'", old.stderr)
+        done = self.bash(deploy_rig.NAME, SHA, str(live), str(self.root), cwd=checkout, env=env)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertEqual(deploy_rig.build_name(done.stdout), NAME)
+
+        def run(argv, cwd=None):
+            return deploy.run_command(argv, cwd, env)
+
+        build = self.root / "build"
+        steps = deploy.install(build, checkout / ".venv", deploy.clean_requirements(siblings, run), [], run)
+        self.assertTrue(all(step["ok"] for step in steps), steps)
+        for venv in (checkout / ".venv", build):
+            installed = subprocess.check_output(
+                [str(venv / "bin/python"), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+                text=True,
+            ).strip()
+            for name, commit in landed.items():
+                direct = Path(installed) / f"{name.replace('-', '_')}-1.dist-info/direct_url.json"
+                self.assertEqual(json.loads(direct.read_text())["vcs_info"]["commit_id"], commit)
+        self.assertEqual((live_site / "slots.py").read_text(), "# older than AdmissionError\n")
 
 
 class ReadbackCase(ScriptCase):

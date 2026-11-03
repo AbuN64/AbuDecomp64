@@ -9,6 +9,9 @@ A step prints its facts and exits 0, or prints one line on stderr and exits 1; i
              build holds several packages (unbake, recipemaker and cake-taste-64 move to their landed commits:
              CakeUnbake64 deploys its own toolkit, never this one, so only this deploy moves them), so the name digests
              all of them. The deploy deletes nothing: the activation prunes old builds, sealed ones included;
+             name and build run with the repository's clean environment (ci/ensure_venv.py), whose declared siblings
+             are resolved by deploy.clean_requirements and installed at their landed commits before importing the
+             checkout's CLI. The live toolkit is only the source of the carried package inventory;
   build      the activation (`activate`, BUILD is <toolkit>.<SHA>): `decomp tools deploy --package abu-decomp-64 --sha
              SHA` installs the landed commit into a fresh venv `<BUILD>.<NAME>` beside every tool of ours the live
              toolkit holds, at its landed commit, and every other package of it carried over as installed
@@ -80,7 +83,8 @@ Bash = Callable[..., "tuple[int, str]"]
 NAME = r"""set -u
 sha=$1 toolkit=$2 home=$3
 work=$(pwd -P)
-(cd "$home" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools name --package abu-decomp-64 \
+python=$(python3 "$work/ci/ensure_venv.py") || { echo "name-error: clean environment failed" >&2; exit 1; }
+(cd "$home" && PYTHONPATH="$work/src" "$python" -m abu_decomp tools name --package abu-decomp-64 \
   --sha "$sha" --carry-from "$toolkit") || { echo "name-error: decomp tools name exit $?" >&2; exit 1; }
 """
 
@@ -93,9 +97,10 @@ BUILD = r"""set -u
 sha=$1 toolkit=$2 name=$3 home=$4
 : "${BUILD:?the close sets BUILD for an activation}"
 work=$(pwd -P)
+python=$(python3 "$work/ci/ensure_venv.py") || { echo "deploy-error: clean environment failed" >&2; exit 1; }
 # the link the deploy swaps is scratch it never reads: the packages carried over are the live toolkit's
 ln -sfn "$(readlink -f "$toolkit")" "$BUILD" || exit 1
-(cd "$home" && PYTHONPATH="$work/src" "$toolkit/bin/python" -m abu_decomp tools deploy --package abu-decomp-64 \
+(cd "$home" && PYTHONPATH="$work/src" "$python" -m abu_decomp tools deploy --package abu-decomp-64 \
   --sha "$sha" --venv "$BUILD" --carry-from "$toolkit" --name "$name") \
   || { echo "deploy-error: decomp tools deploy exit $?" >&2; exit 1; }
 built=$(readlink -f "$BUILD")

@@ -224,6 +224,7 @@ void *n64c_memory_ram(unsigned physical, unsigned bytes) {
 unsigned n64c_memory_physical(const void *p) { return (unsigned)(uintptr_t)p; }
 void n64c_fpu_thread_start(void) {}
 void n64c_vi_interrupt(void) {}
+unsigned osViGetRetraceCount(void) { return 0; }
 /* n64c_sched.c is linked for the scheduler half of the entry charge, so its baton holder is charged: the charged
  * table (n64c_charge.c) is not linked, and an empty one stands in. */
 static const void *const no_functions[1];

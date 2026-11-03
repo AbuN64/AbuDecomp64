@@ -1,0 +1,2 @@
+080fd240 T Sound_GetCachedAudioBlockAddress
+080fd380 T Sound_GetSampleDmaWindowAddress

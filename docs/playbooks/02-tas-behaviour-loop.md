@@ -119,3 +119,9 @@ inside a function's prologue).
 | Describe / compare | `decomp behave --project TREE --host FILE --function SYM [--candidate FILE.c]` |
 | Name | `recipe name`, `recipe structure` |
 | Land | `decomp land`, `decomp ship` |
+
+To compare entry counts in a retrace window, use `tas entries` with the saved movie,
+explicit window, comma-separated function names, instrumented port, manifest and a new
+output directory (see CONTRACTS.md). A card Proof can invoke that same command directly;
+its nonzero comparison exit is the gate. Keep `entries.tsv` for the per-retrace counts
+and oracle order, and `comparison.json` for totals and the differing-retrace count.

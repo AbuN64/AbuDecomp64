@@ -56,8 +56,11 @@ static void rsp_task_done(void *graphics)
     n64c_event_post(OS_EVENT_SP);
     if (graphics) n64c_event_post(OS_EVENT_DP);
 }
+void n64c_entry_trace_note(const char *what, unsigned entries) __attribute__((weak)); /* N64C_ENTRY_TRACE (boot/trace.c) */
 void osSpTaskStartGo(OSTask *t)
 {
+    if (n64c_entry_trace_note)
+        n64c_entry_trace_note(t->type == M_GFXTASK ? "task:gfx" : "task:other", 0);
     if (t->type < 3 && handlers[t->type].fn) {
         fenv_t saved;
         host_fpu_enter(&saved);

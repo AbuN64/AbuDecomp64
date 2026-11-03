@@ -225,3 +225,24 @@ Every HTML page the site answers (`/`, `/coverage/...`) links the one stylesheet
 Phase playbooks (generic, one per phase plus the names/real-C track): [docs/playbooks](docs/playbooks/README.md).
 
 Header identity: `header_moves.correspondence(diff)` pairs only complete, unique deleted/added guarded header bodies using the public unbake guard-content contract. Only the two whole-file guard tokens may differ; type, initializer, include, conditional, literal and comment bytes remain exact. Data gate reconciles these file pairs before classifying new declarations and removed data reads; stamp requirements and full-tree type validation remain unchanged. Port remap uses the same evidence when Git reports delete/add instead of a rename, with one additional diff for the whole unresolved header cohort. Partial, duplicate or changed bodies retain normal refusals.
+
+## TAS entry comparison
+
+`decomp --profile PROFILE tas entries MOVIE --window FROM:TO --fn NAME[,NAME] --port PORT --manifest MANIFEST --out NEW_DIRECTORY`
+replays the saved movie once on each side using the ordinary `tas play --oracle` runner.
+The profile owns the oracle executable, ROM, movie inputs, environment and replay bounds.
+The output directory must be new: traces, `port.nm`, private replay evidence, `comparison.json`
+and `entries.tsv` belong to that invocation. The TSV has one row per inclusive retrace,
+oracle/port counts for each requested function, and the oracle's run-length encoded entry order.
+Exit 0 means all requested per-retrace counts match; exit 1 means a difference. Missing
+trace coverage, malformed input, or failed replay refuses instead of passing empty evidence.
+Port symbol names come from `nm` and manifest string bindings; `_recomp`, `_kept` and
+`addrLow_NAME_de` normalize as in the existing port naming contract. Scheduler notes are
+excluded from function counts. Count equality does not assert identical function order.
+
+`N64C_ENTRY_TRACE=PATH[:FROM:TO]` is the shim diagnostic environment input owned by
+`shim/boot/trace.c`. Each instrumented entry writes `vi thread charged address ns` in
+its inclusive window (all retraces when omitted); scheduler stand-ins write
+`vi thread entries sc:note ns`. Addresses are executable link addresses (`nm`),
+not oracle addresses. The environment input is diagnostic only and changes no guest charge.
+Invalid windows and unopenable files exit immediately. This trace is independent of lockstep.

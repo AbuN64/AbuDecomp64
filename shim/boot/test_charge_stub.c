@@ -8,3 +8,6 @@ _Thread_local char n64c_tls_mark;
 const void *const *n64c_charged_fns;
 unsigned n64c_charged_mask;
 void n64c_work_due(void) {}
+
+unsigned osViGetRetraceCount(void) { return 7; }
+unsigned long long n64c_clock_peek_ns(void) { return 123; }

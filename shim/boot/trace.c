@@ -50,6 +50,7 @@ static volatile int armed;
 static int summarised;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static const char *events[8];
+static void et_init(void); /* N64C_ENTRY_TRACE, below */
 static unsigned event_count;
 static __thread N64cTraceStack *own;   /* this thread's live instrumented frames */
 static N64cTraceStack *stacks, *last_stack;
@@ -898,6 +899,7 @@ NOINST void n64c_trace_init(void)
     fprintf(stderr, "boot-step: trace armed: %u of %u functions watched (%u shim-bound, %u not linked)\n",
             eligible, total, shim_bound, unresolved);
     fflush(stderr);
+    et_init();
     ls_init();
     ca_init();
     reach_init();
@@ -954,9 +956,72 @@ NOINST RAWSTACK static void push_frame(void *fn, void *call_site, const unsigned
     mine->depth++;
     last_stack = mine;
 }
+
+/* Entry trace (N64C_ENTRY_TRACE=PATH[:FROM:TO], diagnostic): one "vi thread charged address" line per instrumented
+ * entry while the retrace count is in [FROM, TO] (default every retrace), the port half of the oracle's N64R_TRACE. */
+extern uint32_t osViGetRetraceCount(void);
+extern unsigned long long n64c_clock_peek_ns(void);
+static FILE *et_file;
+static unsigned et_from, et_to = ~0u;
+NOINST static void et_init(void)
+{
+    const char *spec = getenv("N64C_ENTRY_TRACE");
+    if (!spec || !*spec)
+        return;
+    char path[1024];
+    snprintf(path, sizeof path, "%s", spec);
+    char *colon = strchr(path, ':');
+    if (colon) {
+        *colon = 0;
+        char extra;
+        if (sscanf(colon + 1, "%u:%u%c", &et_from, &et_to, &extra) != 2 || et_from > et_to) {
+            fprintf(stderr, "N64C_ENTRY_TRACE: expected PATH[:FROM:TO] with FROM <= TO\n");
+            exit(2);
+        }
+    }
+    et_file = fopen(path, "w");
+    if (!et_file) {
+        perror("N64C_ENTRY_TRACE");
+        exit(2);
+    }
+}
+NOINST static int et_charged(const void *fn)
+{
+    if (!n64c_charged_fns)
+        return 0;
+    unsigned s = (((unsigned)(uintptr_t)fn * 2654435761u) >> 7) & n64c_charged_mask;
+    for (const void *f; (f = n64c_charged_fns[s]); s = (s + 1) & n64c_charged_mask)
+        if (f == fn)
+            return 1;
+    return 0;
+}
+/* A scheduler stand-in's charge (n64c_scsched.c): "vi thread charged sc:<step>xN". */
+NOINST void n64c_entry_trace_note(const char *what, unsigned entries)
+{
+    if (!et_file)
+        return;
+    unsigned vi = (unsigned)osViGetRetraceCount();
+    if (vi >= et_from && vi <= et_to)
+        fprintf(et_file, "%u %lx %u sc:%s %llu\n", vi, (unsigned long)pthread_self(), entries, what, n64c_clock_peek_ns());
+}
+NOINST static void et_entry(const void *fn)
+{
+    static __thread int inside; /* the shim is instrumented too: osViGetRetraceCount enters this hook again */
+    if (inside)
+        return;
+    inside = 1;
+    unsigned vi = (unsigned)osViGetRetraceCount();
+    unsigned long long ns = vi >= et_from && vi <= et_to ? n64c_clock_peek_ns() : 0;
+    inside = 0;
+    if (vi < et_from || vi > et_to)
+        return;
+    fprintf(et_file, "%u %lx %d %lx %llu\n", vi, (unsigned long)pthread_self(), et_charged(fn), (unsigned long)(uintptr_t)fn, ns);
+}
 NOINST RAWSTACK static void trace_enter(void *fn, void *call_site, const unsigned long *regs)
 {
     n64c_charge_entry(fn); /* the guest work measure, traced or not (n64c_charge.h) */
+    if (et_file)
+        et_entry(fn);
     if (!__atomic_load_n(&armed, __ATOMIC_ACQUIRE))
         return;
     HookSlot *h = &hooks[slot_of(fn) & hook_mask];

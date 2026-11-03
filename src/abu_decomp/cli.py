@@ -319,6 +319,13 @@ def _run_probe(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 
 def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
+    entries = actions.add_parser("entries", help="compare oracle and port function entries per retrace")
+    entries.add_argument("name", help="saved movie name")
+    entries.add_argument("--window", required=True, help="inclusive FROM:TO retraces")
+    entries.add_argument("--fn", required=True, help="comma-separated manifest function names")
+    entries.add_argument("--port", required=True, type=Path, help="instrumented port executable")
+    entries.add_argument("--manifest", required=True, type=Path, help="port manifest bindings")
+    entries.add_argument("--out", required=True, type=Path, help="new private evidence directory")
     monkey = actions.add_parser(
         "monkey", help="seeded random controller input on the sanitizer port; keeps the movies that find something"
     )
@@ -573,6 +580,11 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     from abu_decomp import tas
 
     profile = _profile(args.profile)
+    if args.action == "entries":
+        from abu_decomp import tas_entries
+
+        result = tas_entries.run(profile, args.name, args.window, args.fn, args.port, args.manifest, args.out)
+        return result, result["exit"], []
     if args.action == "save":
         saved = tas.save(
             profile, args.name, source=args.source, note=args.note, replace=args.replace, pak=args.pak, cpak=args.cpak

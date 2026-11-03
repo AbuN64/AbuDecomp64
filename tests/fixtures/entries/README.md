@@ -1,0 +1,1 @@
+Captured from the wl3 4800–4895 diagnostic pair in dw-bc; retraces 4800–4802, retaining the two audio functions and their nm symbols. Thread and time columns are unmodified. This is an intentionally unequal pair, independent of the implementation.

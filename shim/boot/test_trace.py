@@ -4,6 +4,7 @@
 import argparse
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -147,6 +148,15 @@ class TraceTests(unittest.TestCase):
         )
         result = subprocess.run([str(exe)], capture_output=True, text=True, timeout=5, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
+        entry_path = self.path / "entries.txt"
+        traced = subprocess.run([str(exe)], env={**os.environ, "N64C_ENTRY_TRACE": f"{entry_path}:7:7"}, capture_output=True, text=True, check=False)
+        self.assertEqual(traced.returncode, 0, traced.stderr)
+        lines = [line.split() for line in entry_path.read_text().splitlines()]
+        self.assertGreater(len(lines), 0)
+        self.assertTrue(all(len(row) == 5 and row[0] == "7" and row[2] == "0" and row[4] == "123" for row in lines))
+        for bounds in ("8:9", "0:6"):
+            subprocess.run([str(exe)], env={**os.environ, "N64C_ENTRY_TRACE": f"{entry_path}:{bounds}"}, check=True, capture_output=True)
+            self.assertEqual(entry_path.read_text(), "")
         self.assertEqual(
             result.stderr.splitlines(),
             [

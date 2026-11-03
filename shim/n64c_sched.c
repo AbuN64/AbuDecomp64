@@ -329,9 +329,16 @@ static void deliver_pending(void)
         if (mq) osSendMesg(mq, msg, OS_MESG_NOBLOCK);
     }
 }
+void n64c_entry_trace_note(const char *what, unsigned entries) __attribute__((weak)); /* N64C_ENTRY_TRACE (boot/trace.c) */
 void n64c_event_post(u32 event)
 {
     if (event >= OS_NUM_EVENTS) return;
+    if (n64c_entry_trace_note) {
+        static const char *const names[] = {"ev:SW1", "ev:SW2", "ev:CART", "ev:COUNTER", "ev:SP", "ev:SI", "ev:AI",
+                                            "ev:VI", "ev:PI", "ev:DP", "ev:CPU_BREAK", "ev:SP_BREAK", "ev:FAULT",
+                                            "ev:THREADSTATUS", "ev:PRENMI"};
+        n64c_entry_trace_note(event < sizeof names / sizeof names[0] ? names[event] : "ev:?", 0);
+    }
     pthread_mutex_lock(&big);
     pending_events |= 1u << event;
     pthread_mutex_unlock(&big);
@@ -755,6 +762,20 @@ OSTime n64c_clock_now_ns(void)
     OSTime ns = (clock_now * 64 + clock_sub) / 3;
     pthread_mutex_unlock(&big);
     return ns;
+}
+/* The clock as work_sync would fold it, read without the lock and changing nothing: for the diagnostic entry trace
+ * (boot/trace.c), whose hook also runs inside shim functions that hold the lock. Racy by design; only the baton
+ * holder charges. */
+__attribute__((no_instrument_function)) unsigned long long n64c_clock_peek_ns(void)
+{
+    long long used = (long long)work_base - __atomic_load_n(&n64c_work_budget, __ATOMIC_RELAXED);
+    OSTime now = clock_now;
+    unsigned long long sub = clock_sub;
+    if (used > 0 && work_fx) {
+        unsigned long long whole = (work_carry + (unsigned long long)used * work_fx) >> WORK_FRAC;
+        sub += whole * 3;
+    }
+    return (now * 64 + sub) / 3;
 }
 /* A scheduler stand-in charges one entry as the original function it replaces would: the same counter the entry hook uses. */
 __attribute__((no_instrument_function)) void n64c_clock_work(void)

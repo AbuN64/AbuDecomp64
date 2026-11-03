@@ -103,11 +103,15 @@ static void drain(OSSched *sc)
  * __scSchedule, entered once more after each pass that took a unit; a task started is __scExec; a unit reporting done
  * is __scTaskComplete. Entries of the game's own functions, SetN64_OnFrameComplete among them, are charged by their
  * own instrumented entry, never here. */
-static void charge(unsigned entries)
+void n64c_entry_trace_note(const char *what, unsigned entries) __attribute__((weak)); /* N64C_ENTRY_TRACE (boot/trace.c) */
+static void charge_as(const char *what, unsigned entries)
 {
+    if (n64c_entry_trace_note)
+        n64c_entry_trace_note(what, entries);
     while (entries--)
         n64c_clock_work();
 }
+#define charge(n) charge_as(__func__, n)
 
 static OSScTask *pop(OSScTask **head, OSScTask **tail)
 {

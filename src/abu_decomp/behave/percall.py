@@ -21,10 +21,11 @@ from __future__ import annotations
 import json
 import struct
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from abu_decomp import arity
 from abu_decomp.behave.prototype import Prototype, argument_slots
 
 MASKS = {"int8": 0xFF, "uint8": 0xFF, "int16": 0xFFFF, "uint16": 0xFFFF}
@@ -135,8 +136,15 @@ def _oracle_value(call: Call, where: tuple[str, ...], kind: str) -> int | None:
     return value & MASKS.get(kind, value)
 
 
+def bounded_call(proto: Prototype, call: Call, side: str) -> Call:
+    """A comparison view; preserve recorded evidence and refuse an unknown argument boundary."""
+    words, writes = arity.trace_fields(proto, side, call.words, call.writes)
+    return replace(call, words=words, writes=writes)
+
+
 def diff_args(proto: Prototype, oracle: Call, port: Call, same: Same = default_same) -> list[dict[str, str]]:
     """Every argument the prototype reads that differs, in parameter order: {field, kind, oracle, port}."""
+    oracle, port = bounded_call(proto, oracle, "oracle"), bounded_call(proto, port, "port")
     out: list[dict[str, str]] = []
     word = 0
     for param, slot in ((s.param, s) for s in argument_slots(proto)):
@@ -201,6 +209,7 @@ def _window_text(call: Call, proto: Prototype, side: int) -> str | None:
 def diff_windows(proto: Prototype, oracle: Call, port: Call) -> list[dict[str, str]]:
     """The first differing word of each pointer parameter's window that both sides recorded: {field `*name[word]`,
     kind `memory`, oracle, port}. A window one side did not record (a null or foreign pointer) is not compared."""
+    oracle, port = bounded_call(proto, oracle, "oracle"), bounded_call(proto, port, "port")
     out: list[dict[str, str]] = []
     for name, ok, pk in _window_keys(proto):
         ow, pw = (oracle.writes or {}).get(ok), (port.writes or {}).get(pk)
@@ -259,6 +268,7 @@ class Verdict:
 
 
 def _call_row(proto: Prototype, oracle: Call, port: Call, diffs: list[dict[str, str]], what: str) -> dict[str, Any]:
+    oracle, port = bounded_call(proto, oracle, "oracle"), bounded_call(proto, port, "port")
     return {
         "what": what,
         "caller": oracle.caller,
@@ -291,6 +301,8 @@ def align(
             names.setdefault(key[0], []).append(key)
     out: dict[str, Verdict] = {}
     for name in sorted(names):
+        proto = protos(name)
+        arity.trace_fields(proto, "port", [], None)
         keys = set(names[name])
         o_keys = sorted((k for k in keys if k in oracle), key=lambda k: oracle[k].seq)
         p_keys = [k for k in keys if k in port]
@@ -300,7 +312,6 @@ def align(
         if not o_keys:
             out[name] = Verdict("port-only", unmatched_port=len(p_keys))
             continue
-        proto = protos(name)
         both = [k for k in o_keys if k in port]
         verdict = Verdict(
             "behaves",

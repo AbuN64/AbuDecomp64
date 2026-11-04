@@ -33,7 +33,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import DecompError, layout, procguard, tas, tas_coverage, tas_oracle, tas_seat
+from abu_decomp import DecompError, arity, layout, procguard, tas, tas_coverage, tas_oracle, tas_seat
 from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
@@ -314,6 +314,7 @@ def comparable_return(proto: prototype.Prototype) -> bool:
 def native_words(proto: prototype.Prototype, sample: Sample, native_of: dict[int, int]) -> tuple[list[int], bool]:
     """The cdecl argument words for the sample, and whether the prototype is a guess (the comparison then leaves the
     return value out). o32 slots come from `argument_slots`; a 64-bit value is a big-endian register pair."""
+    arity.trace_fields(proto, "port", [], None)
     blind = proto.blind  # an unknown, variadic or by-value-struct prototype: the argument words are a guess
     registers = {f"a{i}": sample.args[i] for i in range(4)}
     words: list[int] = []

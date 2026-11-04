@@ -1,0 +1,1 @@
+{"k": "call", "order": 2, "i": 0, "thr": 3556457, "sp": "ffe329a8", "fn": "XPlus_FillMemory", "frame": 0, "caller": "ItemMenu_RestoreBootMemory", "o": 0, "a": ["ffe329ef", "00000000", "00000001", "00000000", "0000a007", "080dfa80", "f3feafec", "f3cff788"]}

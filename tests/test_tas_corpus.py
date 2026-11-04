@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from abu_decomp import DecompError, tas, tas_corpus, tas_coverage
+from abu_decomp import DecompError, arity, tas, tas_corpus, tas_coverage
 from abu_decomp.config import load_profile
 
 
@@ -240,7 +240,7 @@ class CompareTests(Fixture):
         (run / name).parent.mkdir(parents=True, exist_ok=True)
         (run / name).write_text("\n".join(json.dumps(r) for r in out) + "\n")
 
-    def test_a_function_that_stops_behaving_like_the_original_fails(self):
+    def test_corpus_compare_refuses_unknown_arity_instead_of_comparing_returns(self):
         reference = self.make_run("m")
         golden = reference / tas_coverage.ORACLE_DIR
         golden.mkdir()
@@ -250,11 +250,10 @@ class CompareTests(Fixture):
         self.calls(base, tas_coverage.PORT_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 9)])
         self.calls(now, tas_coverage.PORT_CALLS, [("f1", "main", 0, 1, 7), ("f2", "main", 0, 2, 5)])
         entry = self.entry(base, oracle=reference.name)
-        row = tas_corpus.compare(self.cfg, entry, base, now, {})
-        self.assertEqual(row["verdict"], "fail")
-        self.assertEqual(row["behaviour"]["lost"], ["f2"])
-        back = tas_corpus.compare(self.cfg, self.entry(now, oracle=reference.name), now, base, {})
-        self.assertEqual((back["verdict"], back["behaviour"]["won"]), ("improved", ["f2"]))
+        with self.assertRaisesRegex(arity.ArityError, "f1: no fixed, known argument-word arity"):
+            tas_corpus.compare(self.cfg, entry, base, now, {})
+        with self.assertRaisesRegex(arity.ArityError, "f1: no fixed, known argument-word arity"):
+            tas_corpus.compare(self.cfg, self.entry(now, oracle=reference.name), now, base, {})
 
 
 class GateTests(Fixture):
@@ -365,6 +364,21 @@ class GateTests(Fixture):
             tas_corpus.drop(self.profile, "menu")
         tas_corpus.drop_spot(self.profile, "menu-reached")
         self.assertEqual(tas_corpus.drop(self.profile, "menu"), {"dropped": "menu"})
+
+
+class BehaviourArityTests(Fixture):
+    def test_captured_calls_without_known_prototype_refuse_by_name(self):
+        port, oracle = self.make_run("boot"), self.make_run("boot")
+        recorded = (Path(__file__).parent / "fixtures/trace_arity/calls.jsonl").read_text()
+        for path in (port / tas_coverage.PORT_CALLS, oracle / tas_coverage.ORACLE_CALLS):
+            path.parent.mkdir(parents=True)
+            path.write_text(recorded)
+        with self.assertRaisesRegex(arity.ArityError, "Cache_AllocatePinnedResourceBlock"):
+            tas_corpus.behaviour_of(self.cfg, port, oracle.name)
+
+    def test_missing_capture_has_no_verdict(self):
+        port, oracle = self.make_run("boot"), self.make_run("boot")
+        self.assertIsNone(tas_corpus.behaviour_of(self.cfg, port, oracle.name))
 
 
 if __name__ == "__main__":

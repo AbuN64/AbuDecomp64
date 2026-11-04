@@ -503,6 +503,25 @@ def argument_words(kinds: list[str]) -> int:
     return words
 
 
+def trace_fields(
+    proto: prototype.Prototype, side: str, words: list[Any], windows: dict[str, str] | None
+) -> tuple[list[Any], dict[str, str] | None]:
+    """The meaningful part of a recorded call, in that recorder's ABI.
+
+    The port captures a fixed cdecl stack window, not eight arguments. Unknown
+    widths or a variadic tail cannot establish its boundary and must be refused.
+    """
+    if not proto.known or proto.variadic or any(p.kind in ("word", "struct") for p in proto.params):
+        raise ArityError("arity.unknown", f"{proto.name}: no fixed, known argument-word arity")
+    if side == "port":
+        count = sum(p.words for p in proto.params)
+    elif side == "oracle":
+        count = min(4, argument_words([p.kind for p in proto.params]))
+    else:
+        raise ValueError(f"unknown trace side: {side}")
+    return words[:count], None if windows is None else {k: v for k, v in windows.items() if 0 <= int(k) < count}
+
+
 def build(rows: dict[str, list[list[Any]]], asm: dict[str, dict[str, Any]], aliases: dict[str, str]) -> dict[str, Any]:
     """The per-symbol verdicts from per-file rows."""
     table: dict[str, dict[str, Any]] = {}

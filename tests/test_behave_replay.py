@@ -130,10 +130,9 @@ class ArgumentTests(unittest.TestCase):
         )
         self.assertEqual(words, [1, 2, 3, 4, 77])
 
-    def test_unknown_prototype_is_four_blind_words(self):
-        words, blind = replay.native_words(prototype.inferred("f"), sample(args=(1, 2, 3, 4)), {})
-        self.assertEqual(words, [1, 2, 3, 4])
-        self.assertTrue(blind)
+    def test_unknown_prototype_refuses_instead_of_replaying_stack_garbage(self):
+        with self.assertRaisesRegex(DecompError, "known argument-word arity"):
+            replay.native_words(prototype.inferred("f"), sample(args=(1, 2, 3, 4)), {})
 
 
 class PlanTests(unittest.TestCase):

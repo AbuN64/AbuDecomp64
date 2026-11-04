@@ -557,7 +557,10 @@ def first_change(base: Path, now: Path) -> int | None:
 
 
 def behaviour_of(cfg: dict[str, Any], run: Path, oracle: str | None) -> dict[str, str] | None:
-    """Per function the per-call verdict of this run's port calls against the reference run's original calls."""
+    """Compare captured calls with the reference; inferred prototypes refuse explicitly at the arity boundary.
+
+    Without captures there is no verdict. With captures, a missing declaration must never yield a return-only match.
+    """
     reference = _run(cfg, oracle)
     if reference is None:
         return None

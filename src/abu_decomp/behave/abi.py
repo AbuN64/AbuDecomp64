@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from abu_decomp import layout
+
 SAVED = frozenset({f"$s{i}" for i in range(9)} | {"$fp"})
 _INSN = re.compile(r"^\s*/\*.*?\*/\s+(\w[\w.]*)\s*(.*?)\s*(?:#.*)?$")
 _STORES = frozenset({"sb", "sh", "sw", "sd", "swl", "swr", "swc1", "sdc1", "swc2", "sdc2", "sc", "sdl", "sdr"})
@@ -48,7 +50,7 @@ def _hand_written(text: str) -> bool:
 
 def opaque(project: Path, version: str, names: set[str]) -> set[str]:
     """The names, among `names`, whose assembly in the project is hand-written with the register convention above."""
-    home = project / "asm" / version
+    home = layout.path(project, "asm_root") / version
     found: set[str] = set()
     for name in sorted(names):
         path = next(iter(sorted(home.rglob(f"{name}.s"))), None) if home.is_dir() else None
@@ -85,7 +87,7 @@ def enters_mid_frame(text: str) -> int | None:
 
 def entry_defect(project: Path, version: str, name: str) -> str | None:
     """Why `name` cannot be entered at its symbol address (see enters_mid_frame), from the project's assembly."""
-    home = project / "asm" / version
+    home = layout.path(project, "asm_root") / version
     path = next(iter(sorted(home.rglob(f"{name}.s"))), None) if home.is_dir() else None
     released = enters_mid_frame(path.read_text(errors="replace")) if path is not None else None
     if released is None:

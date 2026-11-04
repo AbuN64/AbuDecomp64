@@ -24,7 +24,7 @@ from pathlib import Path
 
 from unbake import api
 
-from abu_decomp import DecompError, deaddecls
+from abu_decomp import DecompError, deaddecls, layout
 
 SOURCE_SUFFIXES = (".c", ".cpp", ".cc")
 SHARED = 3  # a declaration used by more modules than this stays in the shared folder
@@ -203,9 +203,9 @@ def run(
     return result
 
 
-def include_path(header: str) -> str:
+def include_path(header: str, root: Path | None = None) -> str:
     """The `#include` spelling of a header path of the tree (the include/ folder is the search root)."""
-    return header.removeprefix("include/")
+    return layout.header_relative(root or Path.cwd(), header)
 
 
 def move_packs(root: Path, moves: list[dict[str, object]], packs: Path) -> list[dict[str, object]]:
@@ -244,8 +244,8 @@ def move_packs(root: Path, moves: list[dict[str, object]], packs: Path) -> list[
             at = 0
             for a, b in spans:
                 keep += text[at:a]
-                if at == 0 or not any(f'#include "{include_path(dest)}"' in line for line in keep):
-                    keep.append(f'#include "{include_path(dest)}"\n')
+                if at == 0 or not any(f'#include "{include_path(dest, root)}"' in line for line in keep):
+                    keep.append(f'#include "{include_path(dest, root)}"\n')
                 at = b
             keep += text[at:]
             texts[header] = keep

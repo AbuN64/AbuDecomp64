@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+from abu_decomp import layout
 from abu_decomp.files import atomic_json, sha256_file
 
 from .release import prepare, promote
@@ -38,7 +39,7 @@ class Runner:
         self.profile_hash = profile.digest
         if sha256_file(Path(profile.source_file)) != self.profile_hash:
             raise BuildFailure("Loaded project profile bytes changed before build setup")
-        workspace_value = self.config.get("workspace", str(Path(profile.runtime_root) / "build"))
+        workspace_value = self.config.get("workspace", str(layout.path(Path(profile.runtime_root), "build_root")))
         self.workspace = profile.resolve_path(workspace_value)
         self.workspace.mkdir(parents=True, exist_ok=True)
 

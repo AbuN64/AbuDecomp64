@@ -27,7 +27,7 @@ from typing import Any
 from unbake import build as unbake_build
 from unbake import treelock
 
-from abu_decomp import DecompError, claims, events, land, meter, nextcmd, priority, shipproof, tools
+from abu_decomp import DecompError, claims, events, land, layout, meter, nextcmd, priority, shipproof, tools
 from abu_decomp.config import Profile
 from abu_decomp.ship_batch import Batch, restrict
 
@@ -497,6 +497,7 @@ class Ship:
                 lambda *args: self.git(*args, ok=False),
                 generated,
                 inputs,
+                self.tree,
             )
             if not ok:
                 self.carry_why = f"{lane}: {why}"
@@ -850,11 +851,12 @@ class Ship:
             message = f"HEAD {base[:12]} builds on this tree: the refused build is the input's"
             found.append({"key": "ship.base_ok", "blocking": False, "message": message})
         else:
-            versions = sorted(set(re.findall(r"build/([\w-]+)/", text))) or [
-                p.name for p in (self.tree / "build").iterdir() if p.is_dir()
+            built = re.escape(layout.folder(self.tree, "build_root"))
+            versions = sorted(set(re.findall(built + r"/([\w-]+)/", text))) or [
+                p.name for p in layout.path(self.tree, "build_root").iterdir() if p.is_dir()
             ]
             for version in versions:
-                for obj in (self.tree / "build" / version).rglob("*.o"):
+                for obj in layout.path(self.tree, "build_root", version).rglob("*.o"):
                     obj.unlink()
             code, text = build()
             tail = "\n".join(text.strip().splitlines()[-8:])
@@ -876,10 +878,10 @@ class Ship:
         kept = self.tree / ".unbake/ship-asm"  # under .unbake (git-ignored): never an untracked .s of the tree
         shutil.rmtree(self.tree / "asm.pre-ship", ignore_errors=True)  # where an earlier ship version kept it
         shutil.rmtree(kept, ignore_errors=True)  # a killed ship's leftover
-        if not (self.tree / "asm").is_dir():
+        if not layout.path(self.tree, "asm_root").is_dir():
             return None
         kept.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["cp", "-al", str(self.tree / "asm"), str(kept)], check=True)
+        subprocess.run(["cp", "-al", str(layout.path(self.tree, "asm_root")), str(kept)], check=True)
         return kept
 
     def unwind(self, kept: Path | None) -> None:
@@ -891,7 +893,7 @@ class Ship:
         dropping every object a refused ship built made the next ship rebuild ~2000 units, 182 s CPU)."""
         if kept is None or not kept.is_dir():
             return
-        asm = self.tree / "asm"
+        asm = layout.path(self.tree, "asm_root")
         changed = _changed(asm, kept)
         shutil.rmtree(asm, ignore_errors=True)
         kept.rename(asm)
@@ -901,11 +903,11 @@ class Ship:
                 with suppress(FileNotFoundError):
                     os.utime(asm / version / name)
             if any("/" not in name for name in names):  # a top-level include: every object of the version
-                for obj in (self.tree / "build" / version).rglob("*.o"):
+                for obj in layout.path(self.tree, "build_root", version).rglob("*.o"):
                     obj.unlink()
             else:
                 unbake_build.drop_including(held, version, names)
-            for script in (self.tree / "build" / version).glob("*.ld"):
+            for script in layout.path(self.tree, "build_root", version).glob("*.ld"):
                 script.unlink()
 
     def drop(self, kept: Path | None) -> None:

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 from abu_decomp.behave import names
 from abu_decomp.config import Profile
 from abu_decomp.tools import DependencyError, api_call, invoke, settings
@@ -103,7 +103,7 @@ def auto_symbols(project: Path, version: str) -> dict[str, int]:
     found: dict[str, int] = {}
     for name in ("undefined_funcs_auto.txt", "undefined_syms_auto.txt"):
         try:
-            lines = (project / "build" / version / name).read_text().splitlines()
+            lines = (layout.path(project, "build_root") / version / name).read_text().splitlines()
         except OSError:
             continue
         for line in lines:

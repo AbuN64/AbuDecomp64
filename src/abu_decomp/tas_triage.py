@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, evidence
+from abu_decomp import DecompError, arity, evidence, layout
 
 _FUNCTION = re.compile(r"func_[0-9A-Fa-f]{8}\w*")
 _POINTER = re.compile(r"(?:code-pointer-|D_)([0-9A-Fa-f]{8})$")
@@ -34,7 +34,11 @@ def _grep(project: Path | None, pattern: str, keep: re.Pattern[str]) -> str | No
     """The first `file:line` under project/src and include whose line matches `keep`."""
     if project is None:
         return None
-    dirs = [str(d) for d in (project / "src", project / "include") if d.is_dir()]
+    dirs = [
+        str(d)
+        for d in (project / r for r in (*layout.source_roots(project), *layout.header_roots(project)))
+        if d.is_dir()
+    ]
     if not dirs:
         return None
     try:
@@ -146,7 +150,7 @@ def claim(profile: Any, outcome: dict[str, Any], stacks: list[str] | None = None
         out.update(
             kind="unmapped data word",
             cannot_help="input cannot pass this point: a stored code pointer has no native target",
-            next=f"grep -rn {word} {project / 'src' if project else 'src'}",
+            next=f"grep -rn {word} {project / layout.source_roots(project)[0] if project else '.'}",
         )
         site = _grep(project, f"D_{word}", re.compile(r"."))
         if site:

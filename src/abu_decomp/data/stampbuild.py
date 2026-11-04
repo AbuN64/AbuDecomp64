@@ -31,7 +31,7 @@ from typing import Any
 from abucache import stages as cache_stages
 from unbake import api
 
-from abu_decomp import DecompError, meter, worktree
+from abu_decomp import DecompError, layout, meter, worktree
 from abu_decomp.data import check as check_mod
 from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import stamp as stamp_mod
@@ -343,7 +343,7 @@ def at_rev(cfg: DataConfig, profile: Any, shared: Path, rev: str, wait: float = 
 def missing_versions(cfg: DataConfig, shared: Path) -> list[str]:
     """Versions the project builds (versions/<v>/splat.yaml) that the data config does not list: a stamp run without the
     host profile and config checks only the default pseudo-version and passes (10-25: a false pass missed the eu build)."""
-    found = sorted(p.parent.name for p in (shared / "versions").glob("*/splat.yaml"))
+    found = sorted(p.parent.name for p in (layout.path(shared, "versions_root")).glob("*/splat.yaml"))
     return [v for v in found if v not in cfg.versions]
 
 
@@ -444,7 +444,7 @@ def skipped(r: dict) -> int:
 
 def header_files(files: list[str]) -> list[str]:
     """The headers among a diff's files (what `expand_units` counts as one), for the ROM link to treat as old."""
-    return sorted(f for f in files if f.startswith("include/") or f.lower().endswith(".h"))
+    return sorted(f for f in files if Path(f).suffix.lower() == ".h")
 
 
 def closure_line(r: dict[str, Any]) -> str:

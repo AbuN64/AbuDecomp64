@@ -70,7 +70,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, sources, tools
+from abu_decomp import DecompError, layout, sources, tools
 from abu_decomp.config import ConfigError, Profile
 
 SHA = re.compile(r"[0-9a-f]{40}")
@@ -378,7 +378,7 @@ def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequ
         results.append(
             {"check": "import " + " ".join(packages), "ok": code == 0, "tail": output[-300:] if code else ""}
         )
-    root = project / "versions" if project else None
+    root = layout.path(project, "versions_root") if project else None
     versions = sorted(p.name for p in root.iterdir() if p.is_dir()) if root and root.is_dir() else []
     if not project or not versions:
         results.append(

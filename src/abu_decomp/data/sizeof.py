@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
 
+from abu_decomp import layout
 from abu_decomp.data.cdecl import decl_kind
 from abu_decomp.data.config import DataConfig, expand
 
@@ -58,10 +59,10 @@ def probe_all(
     byunit: dict[str, set[str]] = defaultdict(set)
     for sym, rows in decl.items():
         for f, t in rows:
-            if f.startswith("include/") and decl_kind([t]) & {"s", "a"}:
+            if layout.under_header(tree, f) and decl_kind([t]) & {"s", "a"}:
                 byhdr[f].add(sym)
     for sym, rows in localdef.items():
-        if sym in decl and any(f.startswith("include/") for f, _ in decl[sym]):
+        if sym in decl and any(layout.under_header(tree, f) for f, _ in decl[sym]):
             continue
         for f, t in rows:
             if decl_kind([t]) & {"s", "a"}:
@@ -71,7 +72,9 @@ def probe_all(
     for v in versions or list(cfg.versions):
         for hdr, ss in sorted(byhdr.items()):
             ss = ss & only if only is not None else ss
-            body = (f'#include "{cfg.prelude}"\n' if cfg.prelude else "") + f'#include "{hdr[len("include/") :]}"\n'
+            body = (
+                f'#include "{cfg.prelude}"\n' if cfg.prelude else ""
+            ) + f'#include "{layout.header_relative(tree, hdr)}"\n'
             for sym, n in comm_sizes(cfg, tree, v, body, sorted(ss), run, scratch).items():
                 sizes[sym][v] = n
                 where[sym] = "decl:" + hdr

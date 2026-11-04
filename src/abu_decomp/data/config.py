@@ -40,11 +40,12 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 
 ENV = "DECOMP_DATA_CONFIG"
 
@@ -54,6 +55,22 @@ def user_config() -> Path:
     return Path.home() / ".config" / "abu-decomp" / "data.toml"
 
 
+_CPP = ("cpp", "-P", "-undef", "-nostdinc", "-D_LANGUAGE_C")
+# The folder templates DataConfig fills from [layout], each spelled exactly as the tree's [layout] names its roots.
+_LAYOUT_DEFAULTS: dict[str, Callable[[Mapping[str, Any]], Any]] = {
+    "symbols_file": lambda lay: f"{lay['versions_root']}/{{v}}/symbol_addrs.txt",
+    "data_asm": lambda lay: f"{lay['asm_root']}/{{v}}/data",
+    "fn_asm": lambda lay: f"{lay['asm_root']}/{{v}}/nonmatchings",
+    "source_dirs": lambda lay: (*lay["source_roots"], *lay["header_roots"]),
+    "object": lambda lay: f"{lay['build_root']}/{{v}}/{{unit}}.o",
+    "extract_mark": lambda lay: f"{lay['asm_root']}/{{v}}/.extracted",
+    "extract_facts": lambda lay: (
+        f"{lay['versions_root']}/{{v}}/symbol_addrs.txt",
+        f"{lay['versions_root']}/{{v}}/splat.yaml",
+    ),
+}
+
+
 @dataclass(frozen=True)
 class DataConfig:
     reference: str = "ref"
@@ -61,16 +78,16 @@ class DataConfig:
     symbol: str = r"^D_(auto_)?[0-9A-F]{8}(_\w+)?$"
     data_prefix: str = "D_"
     symbol_token: str = r"D_(?:auto_)?[0-9A-Fa-f]{8}\w*"
-    symbols_file: str = "versions/{v}/symbol_addrs.txt"
-    data_asm: str = "asm/{v}/data"
-    fn_asm: str = "asm/{v}/nonmatchings"
+    symbols_file: str = ""  # an empty template is filled from the tree's [layout] (see _LAYOUT_DEFAULTS)
+    data_asm: str = ""
+    fn_asm: str = ""
     map_file: str = "docs/map-{v}.json"
     map_columns: dict[str, int] = field(default_factory=lambda: {"name": 0, "score": 3, "unit": 4})
-    source_dirs: tuple[str, ...] = ("src", "include")
+    source_dirs: tuple[str, ...] = ()
     source_suffixes: tuple[str, ...] = (".c", ".cpp", ".h")
     prelude: str = ""
     version_define: str = "VERSION_{V}"
-    cpp: tuple[str, ...] = ("cpp", "-P", "-undef", "-nostdinc", "-D_LANGUAGE_C", "-Iinclude")
+    cpp: tuple[str, ...] = _CPP  # -I<each header root> follows from [layout] when cpp is left as this
     cc1: str = ""
     cc1_flags: tuple[str, ...] = ("-quiet", "-G0", "-O2")
     make: tuple[str, ...] = ("make",)
@@ -79,11 +96,9 @@ class DataConfig:
     rom_check: tuple[str, ...] = ()
     rom_image: str = ""
     rom_base: str = ""
-    object: str = "build/{v}/{unit}.o"
-    extract_mark: str = (
-        "asm/{v}/.extracted"  # holds the sha1 of extract_facts, in order, the version's asm was split from
-    )
-    extract_facts: tuple[str, ...] = ("versions/{v}/symbol_addrs.txt", "versions/{v}/splat.yaml")
+    object: str = ""
+    extract_mark: str = ""  # holds the sha1 of extract_facts, in order, the version's asm was split from
+    extract_facts: tuple[str, ...] = ()
     fncmp: tuple[str, ...] = ()
     fncmp_score: str = r"edit=(\d+)"
     fncmp_batch: tuple[
@@ -94,6 +109,15 @@ class DataConfig:
     )
     evidence_tree: str = ""  # a tree whose asm/<v>/ the gate reads to tell a separate global from a struct member
     stamp_trees: int = 4  # warm trees of the stamp pool: stamps running at once (4 on a 12-core rig, ~6.6 GB each)
+    tree: Path | None = None  # the project whose [layout] spells the folder templates left empty; unbake's own if None
+
+    def __post_init__(self) -> None:
+        lay = layout.read(self.tree or Path.cwd())
+        for key, make in _LAYOUT_DEFAULTS.items():
+            if not getattr(self, key):
+                object.__setattr__(self, key, make(lay))
+        if self.cpp == _CPP and not any(f.startswith("-I") for f in self.cpp):
+            object.__setattr__(self, "cpp", (*_CPP, *(f"-I{h}" for h in lay["header_roots"])))
 
     def define(self, version: str) -> str:
         return "-D" + self.version_define.format(V=version.upper().replace("-", "_"))
@@ -115,10 +139,10 @@ _TUPLES = {
     "rom_check",
     "extract_facts",
 }
-_KEYS = {f for f in DataConfig.__dataclass_fields__}
+_KEYS = set(DataConfig.__dataclass_fields__) - {"tree"}
 
 
-def parse(table: dict[str, Any], source: str = "config") -> DataConfig:
+def parse(table: dict[str, Any], source: str = "config", tree: Path | None = None) -> DataConfig:
     unknown = sorted(set(table) - _KEYS)
     if unknown:
         # A key this tool does not know yet is ignored with a warning, never a refusal: a config deployed before its tool
@@ -128,7 +152,7 @@ def parse(table: dict[str, Any], source: str = "config") -> DataConfig:
             file=sys.stderr,
         )
     values = {k: (tuple(v) if k in _TUPLES else v) for k, v in table.items() if k in _KEYS}
-    cfg = DataConfig(**values)
+    cfg = DataConfig(**values, tree=tree)
     if not isinstance(cfg.stamp_trees, int) or isinstance(cfg.stamp_trees, bool) or cfg.stamp_trees < 1:
         raise DecompError("data.config", f"{source}: stamp_trees must be a whole number of at least 1")
     if cfg.reference not in cfg.versions and cfg.versions != ("ref",):
@@ -150,7 +174,7 @@ def load(path: Path | None, tree: Path | None = None) -> DataConfig:
                 text = tomllib.loads(c.expanduser().read_text(encoding="utf-8"))
             except tomllib.TOMLDecodeError as exc:
                 raise DecompError("data.config", f"{c}: {exc}") from exc
-            return parse(text.get("data", text), str(c))
+            return parse(text.get("data", text), str(c), tree)
     raise DecompError(
         "data.config",
         "no data config: pass --config FILE, set DECOMP_DATA_CONFIG or add <tree>/docs/data.toml",

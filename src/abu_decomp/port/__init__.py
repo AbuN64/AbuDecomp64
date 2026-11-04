@@ -15,7 +15,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 
 TEMPLATE = "template"
 LICENSES = {"GPL-3.0-or-later": "Released under [GNU GPL version 3 or later](LICENSE), as the shim it builds on."}
@@ -30,7 +30,9 @@ _DUMP_KEYS = frozenset({"id", "label", "cart", "revision", "sha256", "sha1", "si
 FORMAT = 1
 SCHEMA = 3
 # Files copied byte-identical from the format contract: never rendered.
-_VERBATIM = frozenset({"docs/FORMAT.md", "ci/format-check", "src/game/g_public.h"})
+_VERBATIM = frozenset(
+    {"docs/FORMAT.md", "ci/format-check", layout.source_roots(Path(__file__).parent / TEMPLATE)[0] + "/game/g_public.h"}
+)
 _EXECUTABLE = frozenset({"ci/check", "ci/format-check"})
 _SYMBOL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PIN = re.compile(r"^[0-9a-f]{40}$")

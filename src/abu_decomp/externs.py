@@ -29,7 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from abu_decomp import DecompError, deaddecls, owners
+from abu_decomp import DecompError, deaddecls, layout, owners
 from abu_decomp.data import config as data_config
 from abu_decomp.data import gate as data_gate
 
@@ -65,6 +65,7 @@ class Decl:
 
 @dataclass
 class Scan:
+    root: Path | None = None
     externs: dict[str, list[Decl]] = field(default_factory=lambda: defaultdict(list))  # unit-local, by id
     in_headers: dict[str, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))  # id -> hdr -> protos
     definitions: dict[str, list[tuple[str, str]]] = field(default_factory=lambda: defaultdict(list))  # (unit, proto)
@@ -119,12 +120,11 @@ def unconditional_includes(text: str, is_header: bool) -> list[str]:
 
 
 def scan(root: Path, files: list[str], texts: dict[str, str] | None = None) -> Scan:
-    found = Scan()
+    found = Scan(root=root)
     clash: set[str] = set()
     for name in files:
-        low = name.lower()
-        is_header = low.endswith(HEADER_SUFFIXES)
-        if not (is_header or (name.startswith("src/") and low.endswith(owners.SOURCE_SUFFIXES))):
+        is_header = name.lower().endswith(HEADER_SUFFIXES)
+        if not (is_header or (layout.under_source(root, name) and name.lower().endswith(owners.SOURCE_SUFFIXES))):
             continue
         raw = texts[name] if texts and name in texts else (root / name).read_bytes().decode("latin-1")
         found.texts[name] = raw
@@ -225,7 +225,7 @@ def split_compound(
     symbol of `keep`; `names`, when given, collects every identifier of the lines rewritten."""
     changed: dict[str, str] = {}
     for name in files:
-        if not (name.startswith("src/") and name.lower().endswith(owners.SOURCE_SUFFIXES)):
+        if not (layout.under_source(root, name) and name.lower().endswith(owners.SOURCE_SUFFIXES)):
             continue
         raw = (root / name).read_bytes().decode("latin-1")
         if not re.search(r"\bextern\b[^;{}()=]*,", raw):
@@ -307,9 +307,9 @@ def header_rules(module_header: dict[str, str]) -> Callable[[str], str]:
     return derive
 
 
-def new_header(path: str, includes: list[str]) -> str:
-    guard = re.sub(r"\W", "_", owners.include_path(str(PurePosixPath(path).with_suffix("")))).upper() + "_H"
-    body = "".join(f'#include "{owners.include_path(h)}"\n' for h in includes)
+def new_header(path: str, includes: list[str], root: Path | None = None) -> str:
+    guard = layout.guard(owners.include_path(str(PurePosixPath(path).with_suffix("")), root))
+    body = "".join(f'#include "{owners.include_path(h, root)}"\n' for h in includes)
     return f"#ifndef {guard}\n#define {guard}\n{body}#endif\n"
 
 
@@ -324,7 +324,7 @@ def unseen_types(found: Scan, ident: str, proto: str, visible: set[str]) -> list
 
 
 def resolve(index: dict[str, list[str]], including: str, target: str) -> str | None:
-    cands = index.get(target.lower(), [])
+    cands = index.get(layout.lookup_key(target), [])
     if not cands:
         return None
     here = str(Path(including).parent)
@@ -336,11 +336,11 @@ def closures(found: Scan, files: list[str]) -> dict[str, set[str]]:
     index: dict[str, list[str]] = defaultdict(list)
     for h in files:
         if h.lower().endswith(HEADER_SUFFIXES):
-            parts = h.lower().split("/")
+            parts = layout.lookup_key(h).split("/")
             for i in range(len(parts)):
                 index["/".join(parts[i:])].append(h)
     direct = {
-        n: [r for t in targets if (r := resolve(index, n, t.lower().replace("\\", "/")))]
+        n: [r for t in targets if (r := resolve(index, n, layout.lookup_key(t).replace("\\", "/")))]
         for n, targets in found.plain_includes.items()
     }
     seen: dict[str, set[str]] = {}
@@ -529,7 +529,7 @@ def plan(
                 refused.append({"id": ident, "reason": f"no header for {owner or 'any module'}", "protos": protos})
                 continue
             if dest not in found.texts:  # the module has none: the plan creates it, with the includes its types need
-                found.texts[dest] = new_header(dest, [])
+                found.texts[dest] = new_header(dest, [], root)
                 found.created.add(dest)
                 sees.setdefault(dest, set())
             held = found.in_headers.get(ident, {})
@@ -542,7 +542,7 @@ def plan(
                     t: sorted(
                         h
                         for h in found.types.get(t, set()) | found.tags.get(t, set())
-                        if h.lower().endswith(HEADER_SUFFIXES) and h != dest and h.startswith("include/")
+                        if h.lower().endswith(HEADER_SUFFIXES) and h != dest and layout.under_header(root, h)
                     )
                     for t in absent
                 }
@@ -550,7 +550,7 @@ def plan(
                     for t in absent:
                         found.needs[dest].add(provide[t][0])
                         sees[dest] |= {provide[t][0], *sees.get(provide[t][0], ())}
-                    found.texts[dest] = new_header(dest, sorted(found.needs[dest]))
+                    found.texts[dest] = new_header(dest, sorted(found.needs[dest]), root)
                     absent = unseen_types(found, ident, protos[0], sees[dest] | {dest})
             if absent:
                 why = "type not visible from " + dest + ": " + ", ".join(absent[:4])
@@ -885,9 +885,9 @@ def write_batches(
                 if i not in drop:
                     out.append(ln)
                 if i == last_inc:
-                    out += [f'#include "{owners.include_path(h)}"' + eol(cur) for h in sorted(wants[n])]
+                    out += [f'#include "{owners.include_path(h, found.root)}"' + eol(cur) for h in sorted(wants[n])]
             if last_inc < 0:
-                out = [f'#include "{owners.include_path(h)}"' + eol(cur) for h in sorted(wants[n])] + out
+                out = [f'#include "{owners.include_path(h, found.root)}"' + eol(cur) for h in sorted(wants[n])] + out
             texts[n] = out
             for h in wants[n]:
                 seen[n] |= {h, *seen.get(h, ())}

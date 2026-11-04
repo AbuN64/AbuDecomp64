@@ -53,7 +53,7 @@ from abucache import memo
 from abucache import stages as cache_stages
 from unbake import api
 
-from abu_decomp import DecompError, remap, tas_oracle, tas_symbolize
+from abu_decomp import DecompError, layout, remap, tas_oracle, tas_symbolize
 from abu_decomp.admission import slots
 from abu_decomp.behave import abi, percall, prototype, replay
 from abu_decomp.config import Profile, check_keys
@@ -307,14 +307,6 @@ def read_oracle(run: Path) -> tuple[dict[str, tuple[int, int]], int] | None:
     return hits, len(vis)
 
 
-HEADERS = (
-    "include/**/*.h",
-    "include/**/*.H",
-    "src/**/*.c",
-    "src/**/*.C",
-    "src/**/*.CPP",
-    "src/**/*.cpp",
-)  # where the prototypes are read from: the project's functions are defined (and so declared) in its .CPP units
 PORT_CALLS, ORACLE_CALLS = (
     Path("lockstep") / "port" / "calls.jsonl",
     Path("lockstep") / "oracle" / "lockstep.jsonl",
@@ -686,7 +678,13 @@ def lists(report: dict[str, Any], limit: int = LISTED) -> dict[str, Any]:
 # --- driving it ---
 
 LINK = "ragewars-decomp"  # a coverage build tree's link to the source it compiled
-FILTER = ".*/src/"  # the original game's sources (not the headers, not the generated stubs)
+
+
+def source_filter(build: Path) -> str:
+    return ".*/(?:" + "|".join(re.escape(r) for r in layout.source_roots((build / LINK).resolve())) + ")/"
+
+
+#  # the original game's sources (not the headers, not the generated stubs)
 
 
 def build_dir(cfg: dict[str, Any]) -> Path:
@@ -710,7 +708,7 @@ def _gcovr_base(build: Path) -> list[str]:
             f"{build} is not a coverage build (no ragewars-decomp link): "
             "configure the port with -DRAGE_DECOMP_COVERAGE=ON",
         )
-    return ["--root", str(build), "--gcov-ignore-errors=all", "--filter", FILTER]
+    return ["--root", str(build), "--gcov-ignore-errors=all", "--filter", source_filter(build)]
 
 
 def run_report(profile: Profile, cfg: dict[str, Any], run: Path) -> Path | None:
@@ -881,7 +879,7 @@ def _build(
         symbols = symbol_tables(cov)
         rows, totals = universe(cov, symbols)
         resolve = resolver(rows, cov["version"], symbols[0])
-    prototypes = replay.Prototypes(cov["source"], HEADERS) if cov.get("source") else None
+    prototypes = replay.Prototypes(cov["source"], layout.code_globs(Path(cov["source"]))) if cov.get("source") else None
     protos = prototypes.get if prototypes else prototype.inferred
     with stage("signature"):
         signature = behaviour_signature(cov["version"], symbols[0], prototypes)
@@ -1088,7 +1086,7 @@ MERGE_KEY = ".merge-key"  # in the page folder: the tracefiles (path, size, date
 def merge_key(tracefiles: list[Path], build: Path) -> str:
     """What one HTML merge of these tracefiles reads: each path, size and date, the build tree, the filter."""
     rows = [(str(p), *((p.stat().st_size, p.stat().st_mtime_ns) if p.is_file() else (-1, -1))) for p in tracefiles]
-    return hashlib.sha256(json.dumps([rows, str(build), FILTER]).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([rows, str(build), source_filter(build)]).encode()).hexdigest()
 
 
 def _merge_page(build: Path, page: Path, summary: Path, tracefiles: list[Path]) -> None:

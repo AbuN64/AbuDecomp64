@@ -1525,7 +1525,7 @@ def _run_cleanup_verb(
             )
             return dict(called.document) if called.ok else {}
 
-        found = cleanup.evidence(dict(shown), ask)
+        found = cleanup.evidence(dict(shown), ask, root)
     for folder, row in shown:
         names = " ".join(f"{what}={v['namable']}/{v['no_evidence']}" for what, v in found.get(folder, {}).items())
         print(f"  {row['count']:>6}  {folder}" + (f"  namable/no-evidence: {names}" if names else ""), file=sys.stderr)

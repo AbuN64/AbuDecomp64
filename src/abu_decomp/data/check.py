@@ -12,14 +12,14 @@ from pathlib import Path
 
 from abucache import stages as cache_stages
 
-from abu_decomp import meter
+from abu_decomp import layout, meter
 from abu_decomp.data import objsyms, source
 from abu_decomp.data.config import DataConfig
 from abu_decomp.data.trial import Builder, fn_unit  # noqa: F401  re-export for callers
 
 _MARK = ".unbake/data-extracted.json"
 _SPLAT = re.compile(r"(^|/)splat\.ya?ml$")
-_FACTS_REFUSED = re.compile(r"asm/\S+ was extracted from other symbol_addrs\.txt/splat\.yaml")
+_FACTS_REFUSED = re.compile(r"\S+ was extracted from other symbol_addrs\.txt/splat\.yaml")
 
 
 def marker_refusal(tree: Path) -> str | None:
@@ -28,7 +28,7 @@ def marker_refusal(tree: Path) -> str | None:
     CLEAN-P1-DECLS14). None when the tree carries a marker."""
     from unbake.hdrnarrow import BUILT_MARKER, EXTRACTED_MARKER
 
-    if any((tree / name).is_file() for name in (BUILT_MARKER, EXTRACTED_MARKER)):
+    if any(layout.path(tree, "build_root", name).is_file() for name in (BUILT_MARKER, EXTRACTED_MARKER)):
         return None
     return (
         f"{tree} has no pool marker ({EXTRACTED_MARKER}): the check cannot narrow the includers of a changed header and "
@@ -59,7 +59,7 @@ def _moved_splat(tree: Path, mark: dict, run=subprocess.run) -> list[str]:
     old = mark.get("head")
     if not old:
         try:
-            old = (tree / "build/.pool-extracted-at").read_text().strip()
+            old = layout.path(tree, "build_root", ".pool-extracted-at").read_text().strip()
         except OSError:
             return []
     out = run(["git", "-C", str(tree), "diff", "--name-only", old, "HEAD"], capture_output=True, text=True)
@@ -75,7 +75,7 @@ def _extracted_from(tree: Path, config: str) -> bool:
 
     folder = (tree / config).parent
     try:
-        recorded = (tree / "build" / f".extract-src-{folder.name}").read_text().split()[0]
+        recorded = layout.path(tree, "build_root", f".extract-src-{folder.name}").read_text().split()[0]
         h = hashlib.sha1((tree / config).read_bytes())
         with contextlib.suppress(OSError):
             h.update((folder / "symbol_addrs.txt").read_bytes())
@@ -175,9 +175,15 @@ def header_dependents(tree: Path, version: str, headers: list[str], run=subproce
     """Units whose dependency file (build/<version>/<unit>.d of an earlier build) names one of HEADERS."""
     if not headers:
         return []
-    cmd = ["grep", "-rlF", "--include=*.d", *[a for h in headers for a in ("-e", h)], f"build/{version}"]
+    cmd = [
+        "grep",
+        "-rlF",
+        "--include=*.d",
+        *[a for h in headers for a in ("-e", h)],
+        f"{layout.folder(tree, 'build_root')}/{version}",
+    ]
     out = run(cmd, cwd=tree, capture_output=True, text=True).stdout.split()
-    prefix = f"build/{version}/"
+    prefix = f"{layout.folder(tree, 'build_root')}/{version}/"
     units = (p[len(prefix) : -2] for p in out if p.startswith(prefix) and p.endswith(".d"))
     # a .d of an earlier build outlives its source: a unit moved or retired since (10-25 P2b: src/FRONTEND/... after the
     # move to src/game/) is no unit to rebuild, and asking for it failed the stamp of a diff whose 5-ROM proof passed
@@ -196,8 +202,8 @@ def expand_units(
     """The units to rebuild for changed FILES: the changed units themselves, and every unit including a changed header
     that the header edit can reach (CFG given: `hdrnarrow` drops includers whose compile key the edit cannot change;
     STATS receives what it did, SKIPPED[version] the includers it dropped)."""
-    units = [f for f in files if f.startswith("src/") and not f.lower().endswith(".h")]
-    heads = [f for f in files if f.startswith("include/") or f.lower().endswith(".h")]
+    units = [f for f in files if layout.under_source(tree, f) and not f.lower().endswith(".h")]
+    heads = [f for f in files if layout.under_header(tree, f) or f.lower().endswith(".h")]
     deps = header_dependents(tree, version, heads, run)
     if cfg is not None and deps:
         from unbake import hdrnarrow  # the build's own narrowing (one copy: unbake owns hdrkey)
@@ -229,7 +235,7 @@ def referencing_units(cfg: DataConfig, tree: Path, symbols: list[str], run=subpr
     cmd = ["grep", "-rlwF", *[a for s in symbols for a in ("-e", s)], *cfg.source_dirs]
     out = run(cmd, cwd=tree, capture_output=True, text=True).stdout.split()
     return sorted(
-        u for u in out if u.lower().endswith(suffixes) and u.startswith("src/") and not u.lower().endswith(".h")
+        u for u in out if u.lower().endswith(suffixes) and layout.under_source(tree, u) and not u.lower().endswith(".h")
     )
 
 
@@ -276,7 +282,7 @@ def changed_units(
         ["git", "-C", str(tree), "diff", "--name-only", base or "HEAD"], capture_output=True, text=True
     ).stdout.split()
     if not version:
-        return [u for u in out if u.startswith("src/")]
+        return [u for u in out if layout.under_source(tree, u)]
     return expand_units(tree, version, out, run, cfg, stats, skipped)
 
 
@@ -290,9 +296,9 @@ def moved_units(tree: Path, base: str | None = None, run=subprocess.run) -> dict
     moves = {}
     for line in out.splitlines():
         cols = line.split("\t")
-        if len(cols) == 3 and cols[0].startswith("R") and cols[1].startswith("src/"):
+        if len(cols) == 3 and cols[0].startswith("R") and layout.under_source(tree, cols[1]):
             moves[cols[1]] = cols[2]
-        elif len(cols) == 2 and cols[0] == "D" and cols[1].startswith("src/"):
+        elif len(cols) == 2 and cols[0] == "D" and layout.under_source(tree, cols[1]):
             moves[cols[1]] = ""  # removed
     return moves
 
@@ -326,7 +332,7 @@ def current_symbols(tree: Path, version: str) -> tuple[set[str], dict[int, str]]
     written by the progress run and lags a rename; a function asked of fncmp by its stale name is "not found" and the
     check then searched every other unit for it (10-25 CLEAN-P1-EXTERNS4: 212 CPU s on the first version). Resolving by
     ROM offset asks for the name the objects and assembly carry. Empty when the table is not there."""
-    path = tree / "versions" / version / "symbol_addrs.txt"
+    path = layout.path(tree, "versions_root", version, "symbol_addrs.txt")
     try:
         text = path.read_text(errors="replace")
     except OSError:

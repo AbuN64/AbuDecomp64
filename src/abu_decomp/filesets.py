@@ -23,11 +23,10 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from abu_decomp import files
+from abu_decomp import files, layout
 
 GLOBALS = "GLOBALS"
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\n]+)[>"]', re.MULTILINE)
-INCLUDE_ROOTS = ("include/", "")
 
 
 def store() -> Path:
@@ -43,12 +42,14 @@ def _resolver(paths: Collection[str]) -> Any:
     exact = set(paths)
     folded: dict[str, str | None] = {}
     for p in sorted(paths):
-        folded[p.lower()] = None if p.lower() in folded else p  # a folded name two files share resolves to neither
+        folded[layout.lookup_key(p)] = (
+            None if layout.lookup_key(p) in folded else p
+        )  # a folded name two files share resolves to neither
 
     def find(name: str) -> str | None:
         if name in exact:
             return name
-        return folded.get(name.lower())
+        return folded.get(layout.lookup_key(name))
 
     return find
 
@@ -57,12 +58,15 @@ def includes(text: str) -> list[str]:
     return INCLUDE.findall(text)
 
 
-def _included(path: str, text: str, find: Any) -> list[str]:
+def _included(path: str, text: str, find: Any, root: Path | None = None) -> list[str]:
     """The tracked files `text` of `path` includes: next to it, under include/, or from the root."""
     here = PurePosixPath(path).parent
     out = []
     for name in includes(text):
-        candidates = [PurePosixPath(here, name).as_posix(), *(root + name for root in INCLUDE_ROOTS)]
+        candidates = [
+            PurePosixPath(here, name).as_posix(),
+            *(root + name for root in (*(h + "/" for h in layout.header_roots(root or Path.cwd())), "")),
+        ]
         found = next((hit for hit in map(find, candidates) if hit), None)
         if found and found != path:
             out.append(found)
@@ -76,6 +80,7 @@ def partition(
     module_header: Mapping[str, str],
     lanes: Sequence[str],
     kept: Mapping[str, str] | None = None,
+    root: Path | None = None,
 ) -> dict[str, Any]:
     """The file sets of `lanes` over the files `sizes` (path -> bytes): {lanes: {lane: {modules, files}}, globals:
     {file: [reading modules]}, modules: {module: lane}}. `kept` is the module -> lane of the last run."""
@@ -97,7 +102,7 @@ def partition(
     readers: dict[str, set[str]] = defaultdict(set)
     chain: dict[str, list[str]] = {}  # an unowned header -> the headers it includes: its readers read them too
     for path in sorted(sizes):
-        found = _included(path, texts.get(path, ""), find)
+        found = _included(path, texts.get(path, ""), find, root)
         if path in module_of:
             for header in found:
                 readers[header].add(module_of[path])
@@ -241,7 +246,7 @@ def build(
     target = (root / module_map) if module_map else None
     unit_module, module_header = owners.read_map(target) if target and target.is_file() else ({}, {})
     held = lane_names(names, count or max(1, len({*slice_lanes(names), *earlier})), earlier)
-    doc = partition(sizes, texts, unit_module, module_header, held, kept(names))
+    doc = partition(sizes, texts, unit_module, module_header, held, kept(names), root)
     if wrong := check(doc, sizes):
         raise ValueError("; ".join(wrong[:5]))
     doc["map"] = str(target) if unit_module else None

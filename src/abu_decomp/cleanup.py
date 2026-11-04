@@ -20,6 +20,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from abu_decomp import layout
+
 CLASSES: dict[str, re.Pattern[str]] = {
     "func": re.compile(r"\bfunc_[0-9A-F]{8}"),
     "data": re.compile(r"\bD_[0-9A-F]{8}"),
@@ -37,7 +39,6 @@ EVIDENCE: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 LOCAL = frozenset({"sp", "var", "arg"})  # a slot is scoped by its function: distinct names are counted per file
 SUFFIXES = (".c", ".cpp", ".h")
-ROOTS = ("src/", "include/")
 
 
 def slices_argv(lanes: int | None, module_map: str | None, assign: list[str], out: str | None) -> list[str]:
@@ -61,10 +62,10 @@ def slices_lines(document: Mapping[str, Any]) -> list[str]:
     return [*document.get("summary", []), f"slices {document.get('path', '?')}", *document.get("lane_files", [])]
 
 
-def folder_of(path: str) -> str:
+def folder_of(path: str, root: Path | None = None) -> str:
     """The folder a file is counted under: its directory without the leading `src/` (include/ keeps its own name)."""
     parent = PurePosixPath(path).parent.as_posix()
-    return parent[4:] if parent.startswith("src/") else parent
+    return layout.source_relative(root or Path.cwd(), parent)
 
 
 def count_text(text: str) -> Counter[str]:
@@ -82,7 +83,8 @@ def distinct_text(path: str, text: str) -> dict[str, set[Any]]:
 
 def tracked(root: Path, rev: str | None = None) -> list[str]:
     """The source files under src/ and include/: tracked in the work tree, or held by commit REV."""
-    argv = ["ls-tree", "-r", "-z", "--name-only", rev, "--", *ROOTS] if rev else ["ls-files", "-z", "--", *ROOTS]
+    roots = (*layout.source_roots(root), *layout.header_roots(root))
+    argv = ["ls-tree", "-r", "-z", "--name-only", rev, "--", *roots] if rev else ["ls-files", "-z", "--", *roots]
     done = subprocess.run(["git", "-C", str(root), *argv], capture_output=True, check=False)
     if rev and done.returncode:
         raise ValueError(f"{rev} is no commit of {root}")
@@ -118,10 +120,13 @@ def count(root: Path, only: str | None = None, rev: str | None = None, distinct:
     folders: dict[str, Counter[str]] = {}
     files: Counter[str] = Counter()
     names: dict[str, dict[str, set[Any]]] = {}  # folder -> class -> distinct names (only with `distinct`)
-    want = (only or "").strip("/").removeprefix("src/")
-    if want in ("src", "include"):  # a whole root: every folder of it (`--dir src` matched no folder and counted 0)
+    want = layout.source_relative(root, (only or "").strip("/"))
+    if want in (
+        *layout.source_roots(root),
+        *layout.header_roots(root),
+    ):  # a whole root: every folder of it (`--dir src` matched no folder and counted 0)
         paths = [p for p in tracked(root, rev) if p.startswith(want + "/")]
-    elif want.startswith("include/"):
+    elif layout.under_header(root, want):
         paths = [
             p for p in tracked(root, rev) if p.startswith(want + "/") or PurePosixPath(p).parent.as_posix() == want
         ]
@@ -129,11 +134,14 @@ def count(root: Path, only: str | None = None, rev: str | None = None, distinct:
         paths = [
             p
             for p in tracked(root, rev)
-            if not want or (f := folder_of(p)) == want or f.startswith(want + "/") or PurePosixPath(f).name == want
+            if not want
+            or (f := folder_of(p, root)) == want
+            or f.startswith(want + "/")
+            or PurePosixPath(f).name == want
         ]
     held = _texts(root, rev, paths) if rev else {}
     for path in paths:
-        folder = folder_of(path)
+        folder = folder_of(path, root)
         try:
             text = held[path] if rev else (root / path).read_text(errors="replace")
         except (OSError, KeyError):
@@ -164,7 +172,9 @@ def count(root: Path, only: str | None = None, rev: str | None = None, distinct:
 
 
 def evidence(
-    folders: Mapping[str, Mapping[str, Any]], ask: Callable[[list[str], list[str]], Mapping[str, Any]]
+    folders: Mapping[str, Mapping[str, Any]],
+    ask: Callable[[list[str], list[str]], Mapping[str, Any]],
+    root: Path | None = None,
 ) -> dict[str, Any]:
     """Per folder (a row of `count`) and per step of EVIDENCE: `namable` (slots or targets a step packs with evidence)
     and `no_evidence`. `ask(steps, target_folders)` runs `recipe name count --steps S,.. --targets F..` once (one
@@ -173,15 +183,15 @@ def evidence(
     wanted = {
         folder: [step for step, (_what, classes) in EVIDENCE.items() if any(row.get(c) for c in classes)]
         for folder, row in folders.items()
-        if not folder.startswith("include")
+        if not layout.under_header(root or Path.cwd(), folder)
     }
     steps = [step for step in EVIDENCE if any(step in got for got in wanted.values())]
-    found = ask(steps, ["src/" + f for f in wanted]) if steps else {}
+    found = ask(steps, [layout.source_roots(root or Path.cwd())[0] + "/" + f for f in wanted]) if steps else {}
     rows = found.get("folders", {}) if isinstance(found, Mapping) else {}
     out: dict[str, Any] = {folder: {} for folder in folders}
     for folder, mine in wanted.items():
         for step in mine:
-            result = rows.get("src/" + folder, {}).get(step) or {}
+            result = rows.get(layout.source_roots(root or Path.cwd())[0] + "/" + folder, {}).get(step) or {}
             if "namable" in result:
                 what = EVIDENCE[step][0]
                 out[folder][what] = {

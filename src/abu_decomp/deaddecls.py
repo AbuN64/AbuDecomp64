@@ -31,6 +31,8 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from abu_decomp import layout
+
 IDENT = re.compile(r"[A-Za-z_]\w*")
 COMMENT = re.compile(r'"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|/\*.*?\*/|//[^\n]*', re.S)
 KEYWORDS = frozenset(
@@ -244,6 +246,7 @@ class Index:
     words of its preprocessor lines: what a scope reads of the files around it. `put` swaps in a reduced text."""
 
     def __init__(self, root: Path) -> None:
+        self.root = root
         self.words: dict[str, set[str]] = {}
         self.includes: dict[str, list[str]] = {}
         self.directives: dict[str, set[str]] = {}
@@ -258,11 +261,11 @@ class Index:
                 continue
         lower: dict[str, list[str]] = {}
         for name in self.words:
-            lower.setdefault(name.lower(), []).append(name)
+            lower.setdefault(layout.lookup_key(name), []).append(name)
         self.by_lower = {k: v[0] for k, v in lower.items() if len(v) == 1}
         base: dict[str, list[str]] = {}
         for name in self.words:
-            base.setdefault(posixpath.basename(name).lower(), []).append(name)
+            base.setdefault(layout.lookup_key(posixpath.basename(name)), []).append(name)
         self.by_base = {k: v[0] for k, v in base.items() if len(v) == 1}
 
     def put(self, name: str, text: str) -> None:
@@ -279,12 +282,16 @@ class Index:
         """The tracked file `#include "name"` of `includer` reads: next to it, from the root, under include/, else the
         one file of that name (case folded)."""
         here = posixpath.dirname(includer)
-        for cand in (posixpath.normpath(posixpath.join(here, name)), name, "include/" + name):
+        for cand in (
+            posixpath.normpath(posixpath.join(here, name)),
+            name,
+            *(h + "/" + name for h in layout.header_roots(self.root)),
+        ):
             if cand in self.words:
                 return cand
-            if cand.lower() in self.by_lower:
-                return self.by_lower[cand.lower()]
-        return self.by_base.get(posixpath.basename(name).lower())
+            if layout.lookup_key(cand) in self.by_lower:
+                return self.by_lower[layout.lookup_key(cand)]
+        return self.by_base.get(layout.lookup_key(posixpath.basename(name)))
 
     def outside(self, exclude: set[str]) -> set[str]:
         """Every word of the tracked files but `exclude`: the names the project spells."""

@@ -28,7 +28,7 @@ from typing import Any
 
 from unbake import api
 
-from abu_decomp import DecompError, land, meter, tools, worktree
+from abu_decomp import DecompError, land, layout, meter, tools, worktree
 from abu_decomp.config import Profile
 
 VERSION = 1
@@ -37,9 +37,16 @@ LANDED = "decomp-ship.landed"
 NOTES = "ship-proof"  # refs/notes/ship-proof
 # Files every unit's object reads without naming them in its .d: a commit touching one of these proves nothing carries.
 # The project's own are named by `global_inputs`.
-GLOBAL_INPUTS = ("config.toml", "Makefile", "local.mk", "versions/*/text_sizes.mk", "tools/*")
+GLOBAL_INPUTS = ("config.toml", "Makefile", "local.mk", "tools/*")
+
+
 # Rows merged one by one (a commit and a patch editing different rows never conflict).
-ROW_FILES = ("versions/*/symbol_addrs.txt", "versions/*/aliases.txt", "versions/*/splat.yaml")
+def row_files(root: Path) -> tuple[str, ...]:
+    return tuple(
+        layout.folder(root, "versions_root") + "/*/" + n for n in ("symbol_addrs.txt", "aliases.txt", "splat.yaml")
+    )
+
+
 # What `unbake sync` writes after a build: never part of a patch, regenerated in a batch (ship --regen).
 GENERATED = ("README.md", "progress.json", "docs/*")
 HEADER = re.compile(r"\.(h|hpp|inc)$", re.I)
@@ -71,7 +78,13 @@ def global_inputs(root: Path) -> tuple[str, ...]:
     """GLOBAL_INPUTS and the project's own: its platform and blobs files (config.toml [paths]) and its link script
     (`<name>.ld`, the config.toml `name`)."""
     paths = api.paths(root)
-    return (*GLOBAL_INPUTS, paths["platform"], paths["blobs"], f"{project_name(root)}.ld")
+    return (
+        *GLOBAL_INPUTS,
+        layout.folder(root, "versions_root") + "/*/text_sizes.mk",
+        paths["platform"],
+        paths["blobs"],
+        f"{project_name(root)}.ld",
+    )
 
 
 def is_generated(name: str, extra: Sequence[str] = ()) -> bool:
@@ -90,14 +103,14 @@ def row_ids(added: Sequence[str], removed: Sequence[str]) -> list[str]:
     return sorted(ids)
 
 
-def describe(text: str, generated: Sequence[str] = ()) -> dict[str, Any]:
+def describe(text: str, generated: Sequence[str] = (), root: Path | None = None) -> dict[str, Any]:
     """What a patch touches: files, headers among them, the rows of the row files, the generated files."""
     changed = land.diff_lines(text)
     files = sorted(changed)
     return {
         "files": [f for f in files if not is_generated(f, generated)],
         "headers": [f for f in files if HEADER.search(f) and not is_generated(f, generated)],
-        "rows": {f: row_ids(*changed[f]) for f in files if matches(f, ROW_FILES)},
+        "rows": {f: row_ids(*changed[f]) for f in files if matches(f, row_files(root or Path.cwd()))},
         "generated": [f for f in files if is_generated(f, generated)],
     }
 
@@ -153,7 +166,7 @@ def collect_units(tree: Path, touched: set[str]) -> dict[str, dict[str, Any]]:
     """Per `version:source`, every built unit whose source is touched or whose preprocessed text reads a touched file:
     the units whose `.i` the patch can change, with the `.i` hash the proof built and the files it reads."""
     out: dict[str, dict[str, Any]] = {}
-    build = tree / "build"
+    build = layout.path(tree, "build_root")
     for dep in sorted(build.rglob("*.d")):
         try:
             deps = parse_deps(dep.read_text(errors="replace"))
@@ -169,14 +182,14 @@ def collect_units(tree: Path, touched: set[str]) -> dict[str, dict[str, Any]]:
 def rom_report(tree: Path) -> dict[str, dict[str, Any]]:
     """Each version's built ROM hashed against the SHA1 row of its generated facts (versions/<v>/text_sizes.mk)."""
     try:
-        facts = sorted(tree.glob("versions/*/text_sizes.mk"))
+        facts = sorted(layout.path(tree, "versions_root").glob("*/text_sizes.mk"))
         wanted = dict(row for mk in facts for row in SHA1_ROW.findall(mk.read_text()))
         name = project_name(tree)
     except OSError:
         return {}
     report = {}
     for version, expected in sorted(wanted.items()):
-        rom = tree / "build" / version / f"{name}.z64"
+        rom = layout.path(tree, "build_root", version, f"{name}.z64")
         try:
             got = hashlib.sha1(rom.read_bytes()).hexdigest()
         except OSError:
@@ -275,7 +288,7 @@ def prove(
     started, cpu = clock(), meter.cpu()
     text = patch.read_text(errors="replace")
     table = land.settings(profile, shared)
-    shape = describe(text, table["regenerated_paths"])
+    shape = describe(text, table["regenerated_paths"], work)
 
     def git(*args: str, ok: bool = True) -> tuple[int, str]:
         code, out, err = run(["git", "-C", str(work), "-c", "core.quotepath=off", *args], work, None, 600)
@@ -351,7 +364,8 @@ def judge(
     tip: str,
     git: Callable[..., tuple[int, str]],
     generated: Sequence[str] = (),
-    inputs: Sequence[str] = GLOBAL_INPUTS,
+    inputs: Sequence[str] | None = None,
+    root: Path | None = None,
 ) -> tuple[bool, str]:
     """(True, why) when the proof of `record` still holds on `tip`: nothing landed since its base touched a file the
     patch's units read or a row the patch edits. `git(*args)` runs git in the shared tree as (exit, output)."""
@@ -368,6 +382,8 @@ def judge(
         return False, f"proof base {base[:12]} is not an ancestor of {tip[:12]}: rebase the work tree"
     names = git("diff", "--name-only", "--no-renames", base, tip)[1].split()
     others = [n for n in names if not is_generated(n, generated)]
+    if inputs is None:
+        inputs = (*GLOBAL_INPUTS, layout.folder(root or Path.cwd(), "versions_root") + "/*/text_sizes.mk")
     for name in others:
         if matches(name, inputs):
             return False, f"{name} changed since the proof: every unit reads it"
@@ -377,7 +393,7 @@ def judge(
     for name in others:
         if name in blobs and git("rev-parse", f"{tip}:{name}")[1].strip() == blobs[name]:
             continue  # the branch holds exactly the header text the proof built with (the types train landed it)
-        if matches(name, ROW_FILES):
+        if matches(name, row_files(root or Path.cwd())):
             mine = set(rows.get(name, ()))
             if mine:
                 added, removed = land.diff_lines(git("diff", "-U0", "--no-renames", base, tip, "--", name)[1]).get(

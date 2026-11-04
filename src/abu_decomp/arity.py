@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -30,14 +31,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 from abu_decomp.behave import prototype
 
 DEFAULTS: dict[str, Any] = {
-    "dirs": ["src", "include"],
+    "dirs": None,
     "suffixes": (".c", ".cpp", ".h"),
     "symbols": r"func_[0-9A-Fa-f]{8}\w*",
-    "asm": "asm/us-rev1/nonmatchings",
+    "asm": None,
 }
 VERSION = 4
 KEYWORDS = frozenset(
@@ -431,7 +432,7 @@ def tree_rows(project: Path, cfg: dict[str, Any], cache: Cache) -> dict[str, lis
     symbols = re.compile(cfg["symbols"])
     cache.check(cfg["symbols"])
     out: dict[str, list[list[Any]]] = {}
-    for directory in cfg["dirs"]:
+    for directory in cfg["dirs"] or (*layout.source_roots(project), *layout.header_roots(project)):
         for base, _, names in os.walk(project / directory):
             for name in names:
                 if not name.lower().endswith(cfg["suffixes"]):
@@ -456,7 +457,7 @@ def tree_rows(project: Path, cfg: dict[str, Any], cache: Cache) -> dict[str, lis
 
 
 def asm_counts(project: Path, cfg: dict[str, Any], cache: Cache, wanted: set[str]) -> dict[str, dict[str, Any]]:
-    root = project / cfg["asm"]
+    root = project / cfg["asm"] if cfg["asm"] else layout.path(project, "asm_root", "us-rev1", "nonmatchings")
     out: dict[str, dict[str, Any]] = {}
     if not root.is_dir():
         return out
@@ -480,7 +481,7 @@ def asm_counts(project: Path, cfg: dict[str, Any], cache: Cache, wanted: set[str
 
 def aliases_of(project: Path, cfg: dict[str, Any]) -> dict[str, str]:
     texts = []
-    for base, _, names in os.walk(project / "include"):
+    for base, _, names in itertools.chain.from_iterable(os.walk(project / h) for h in layout.header_roots(project)):
         for name in names:
             if name.lower().endswith((".h",)):
                 texts.append((Path(base) / name).read_text(errors="replace"))

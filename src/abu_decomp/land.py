@@ -113,7 +113,7 @@ import time
 import tomllib
 from collections import deque
 from collections.abc import Callable, Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from abu_decomp import (
@@ -124,6 +124,7 @@ from abu_decomp import (
     evidence,
     evidence_gate,
     filesets,
+    layout,
     meter,
     nextcmd,
     proposals,
@@ -312,15 +313,17 @@ def sentence_list(names: Sequence[str]) -> str:
     return ", ".join(names[:-1]) + " and " + names[-1] if len(names) > 1 else "".join(names)
 
 
-def top_dirs(files: Sequence[str]) -> list[str]:
-    """The source directories a commit touches: the first directory below src/ of each source file, sorted, case-folded
-    once (headers, versions/ and generated files are not where a function was matched)."""
-    found: dict[str, str] = {}
+def top_dirs(files: Sequence[str], roots: Sequence[str]) -> list[str]:
+    """The source directories a commit touches: the first directory below a [layout] source root of each source file,
+    spelled verbatim and sorted (headers, versions and generated files are not where a function was matched)."""
+    found: set[str] = set()
     for name in files:
-        parts = name.split("/")
-        if parts[0] == "src" and len(parts) > 2:
-            found.setdefault(parts[1].casefold(), parts[1])
-    return [found[key] for key in sorted(found)]
+        parts = PurePosixPath(name).parts
+        for root in roots:
+            depth = len(PurePosixPath(root).parts)
+            if parts[:depth] == PurePosixPath(root).parts and len(parts) > depth + 1:
+                found.add(parts[depth])
+    return sorted(found)
 
 
 def commit_message(
@@ -1146,7 +1149,7 @@ class Landing:
         """The patch as main now names things: re-cut through the renames (files, symbols) main made since the patch
         was cut (abu_decomp.retarget); the original path when no rename touches it or nothing can be told."""
         try:
-            text, renames = retarget.translate(self.git, path.read_text(errors="replace"))
+            text, renames = retarget.translate(self.git, path.read_text(errors="replace"), self.tree)
         except (LandError, OSError, ValueError) as error:
             self.findings.append(
                 {
@@ -2048,7 +2051,8 @@ class Landing:
         message = self.messages.get(row["lane"])
         names = row["functions"]["names"] if row.get("functions") else []
         if message is None and names:
-            dirs = top_dirs(row["files"]) or top_dirs(group_files)
+            roots = layout.source_roots(self.tree)
+            dirs = top_dirs(row["files"], roots) or top_dirs(group_files, roots)
             return commit_message(
                 self.config["markers"][0], names, dirs, self.config["subject_limit"], self.hook_accepts
             )

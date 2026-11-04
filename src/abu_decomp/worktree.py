@@ -23,7 +23,7 @@ from typing import Any
 from abucache import stages as cache_stages
 from unbake import treelock
 
-from abu_decomp import DecompError, land, meter, tools
+from abu_decomp import DecompError, land, layout, meter, tools
 from abu_decomp.config import Profile
 
 LINKED = ("roms", "tools")  # ignored inputs the worktree reads in place
@@ -158,11 +158,11 @@ def mark(shared: Path, target: Path, rev: str) -> str:
 
     clean = not _git(shared, "status", "--porcelain", "--untracked-files=no").strip()
     exact = clean and tree_id(shared, "HEAD") != "" and tree_id(shared, "HEAD") == tree_id(target, rev)
-    built = target / BUILT_MARKER
+    built = layout.path(target, "build_root", BUILT_MARKER)
     with contextlib.suppress(OSError):
         if built.exists() and (not exact or built.read_text().strip() != rev):
             built.unlink()
-    path = target / EXTRACTED_MARKER
+    path = layout.path(target, "build_root", EXTRACTED_MARKER)
     path.parent.mkdir(exist_ok=True)
     path.write_text(rev + "\n")
     if not exact:

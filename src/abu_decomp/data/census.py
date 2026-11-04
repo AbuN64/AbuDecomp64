@@ -7,6 +7,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from abu_decomp import layout
 from abu_decomp.data import asm, cdecl, classify, clayout, report, sizeof
 from abu_decomp.data.config import DataConfig
 from abu_decomp.data.evidence import World
@@ -59,7 +60,6 @@ def owner_type(types: clayout.Types, w: World, owner: str, header: str) -> clayo
 def resolve_paths(tree: Path, cfg: DataConfig, w: World, data: dict) -> int:
     """Fill `path` ('OWNER.a.b[2]') and `path_note` for every member that lies inside a declared aggregate. A layout is
     used only when it reproduces the compiler's sizeof of the owner, read from the headers the owner's header includes."""
-    include = tree / "include"
     done = 0
     cache: dict[str, clayout.CType | None] = {}
     by_header: dict[str, clayout.Types] = {}
@@ -71,8 +71,9 @@ def resolve_paths(tree: Path, cfg: DataConfig, w: World, data: dict) -> int:
             if owner not in cache:
                 cache[owner] = None
                 for f, _t in w.decl.get(owner, []):
-                    if f.startswith("include/"):
-                        rel = f[len("include/") :]
+                    if layout.under_header(tree, f):
+                        rel = layout.header_relative(tree, f)
+                        include = tree / f.removesuffix(rel).rstrip("/")
                         if rel not in by_header:
                             by_header[rel] = clayout.read_closure(include, rel)
                         cache[owner] = owner_type(by_header[rel], w, owner, f)

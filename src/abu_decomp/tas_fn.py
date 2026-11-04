@@ -21,7 +21,7 @@ import struct
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import evidence
+from abu_decomp import evidence, layout
 
 DIFF_LINES = 300
 RUNS_SHOWN = 60
@@ -265,9 +265,9 @@ def static_path(callers: dict[str, list[str]], name: str, live: set[str] | None,
 # --- the maze ---
 
 
-def module_of(file: str) -> str:
-    parts = file.split("/")
-    return "/".join(parts[1:-1]) if len(parts) > 2 and parts[0] == "src" else "/".join(parts[:-1]) or "(no source)"
+def module_of(file: str, root: Path | None = None) -> str:
+    parts = layout.source_relative(root or Path.cwd(), file).split("/")
+    return "/".join(parts[:-1]) or "(no source)"
 
 
 def movie_covered(table: dict[str, Any]) -> tuple[list[list[int]], bool]:

@@ -450,11 +450,11 @@ def _apply_literals(cfg, tree: Path, census: dict, fn: str, unit: str) -> str:
 
 
 def _rewrite(args: argparse.Namespace, cfg) -> Result:
-    expr, header, member = rewrite_mod.resolve(args.census, args.symbol, args.expr, args.header)
-    if member is None and args.census:
-        member = rewrite_mod.member_info(json.loads(args.census.read_text()), args.symbol)
     if args.census:
         rewrite_mod.refuse_interior(json.loads(args.census.read_text()), args.symbol)
+    expr, header, member = rewrite_mod.resolve(args.census, args.symbol, args.expr, args.header, args.tree)
+    if member is None and args.census:
+        member = rewrite_mod.member_info(json.loads(args.census.read_text()), args.symbol)
     skipped: dict[str, str] = {}
     files = rewrite_mod.run(cfg, args.tree, args.symbol, expr, header, args.only, args.dry, member, skipped)
     result: dict[str, Any] = {"symbol": args.symbol, "expr": expr, "header": header, "files": files, "skipped": skipped}

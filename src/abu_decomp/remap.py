@@ -23,7 +23,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, header_moves
+from abu_decomp import DecompError, header_moves, layout
 
 Run = Callable[[Sequence[str], Path, "dict[str, str] | None", "float | None"], "tuple[int, str, str]"]
 FACT = re.compile(r"^\s*(\w+)\s*=\s*(0x[0-9A-Fa-f]+)\s*;(.*)$")
@@ -175,9 +175,9 @@ def _drop_members(text: str, names: Sequence[str]) -> tuple[str, list[str]]:
 
 
 DEFINED = re.compile(r"^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{?\s*$", re.M)
-SOURCE_DIRS = ("src",)
-FILE_DIRS = (*SOURCE_DIRS, "include")
 
+
+SOURCE_DIRS = layout.source_roots(Path.cwd())
 
 DEFINITIONS_PER_GREP = 400
 
@@ -199,7 +199,7 @@ def definitions(run: Run, source: Path, rev: str, names: Sequence[str]) -> dict[
                 rf"^[A-Za-z_][^;]*\b({batch})\s*\(",
                 rev,
                 "--",
-                *SOURCE_DIRS,
+                *layout.source_roots(source),
             ],
             source,
             None,
@@ -218,7 +218,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
     code, out, err = run(  # the rename limit is raised past the files a long range moves: none is left as delete + add
         [
             *("git", "-C", str(source), "-c", "diff.renameLimit=20000", "diff", "--name-status", "-M", "-z"),
-            *(old, new, "--", *FILE_DIRS),
+            *(old, new, "--", *layout.source_roots(source), *layout.header_roots(source)),
         ],
         source,
         None,
@@ -255,7 +255,8 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
                 old,
                 new,
                 "--",
-                *FILE_DIRS,
+                *layout.source_roots(source),
+                *layout.header_roots(source),
             ],
             source,
             None,
@@ -269,7 +270,7 @@ def moves(run: Run, source: Path, old: str, new: str) -> dict[str, str | None]:
                 found[path] = now
     wanted: dict[str, list[str]] = {}
     for path, now in found.items():
-        if now is not None or Path(path).parts[0] not in SOURCE_DIRS:
+        if now is not None or not layout.under_source(source, path):
             continue
         code, text, _err = run(["git", "-C", str(source), "show", f"{old}:{path}"], source, None, 120)
         wanted[path] = list(dict.fromkeys(m.group(1) for m in DEFINED.finditer(text or "")))[:8] if not code else []

@@ -17,9 +17,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 
-SYMBOL_FILES = "versions/*/symbol_addrs.txt"
+
+def symbol_files(tree: Path) -> str:
+    return layout.folder(tree, "versions_root") + "/*/symbol_addrs.txt"
 
 
 class DiffOntoError(DecompError):
@@ -171,7 +173,11 @@ def rename_symbol(tree: Path, rev: str, index: dict[str, str], old: str, new: st
     """OLD -> NEW at the start of a line in every version's symbol file at REV, written into the scratch index."""
     changed = []
     names = git(tree, "ls-tree", "-r", "--name-only", rev, env=index).decode().split("\n")
-    for path in (n for n in names if re.fullmatch(r"versions/[^/]+/symbol_addrs\.txt", n)):
+    for path in (
+        n
+        for n in names
+        if re.fullmatch(re.escape(layout.folder(tree, "versions_root")) + r"/[^/]+/symbol_addrs\.txt", n)
+    ):
         text = git(tree, "show", f"{rev}:{path}").decode()
         updated = re.sub(rf"^{re.escape(old)}(\s*=)", rf"{new}\1", text, flags=re.M)
         if updated != text:
@@ -233,7 +239,7 @@ def run(
                 raise DiffOntoError("diff.args", "--rename-symbol takes OLD=NEW")
             renamed = rename_symbol(tree, onto, index, old, new)
             if not renamed:
-                raise DiffOntoError("diff.rename", f"{old} starts no line of {SYMBOL_FILES} at {onto}")
+                raise DiffOntoError("diff.rename", f"{old} starts no line of {symbol_files(tree)} at {onto}")
         result = git(tree, "write-tree", env=index).decode().strip()
     diff = git(tree, "diff", "--binary", onto, result)
     if not diff:

@@ -23,10 +23,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from abu_decomp import layout
+
 Git = Callable[..., str]
 _INDEX = re.compile(r"^index ([0-9a-f]+)\.\.([0-9a-f]+)", re.M)
 _SYMBOL = re.compile(r"^\s*([A-Za-z_.$][\w.$]*)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*;", re.M)
-_FACTS = "versions/*/symbol_addrs.txt"
 
 
 @dataclass
@@ -89,22 +90,23 @@ def symbol_pairs(before: str, after: str, still: set[str]) -> dict[str, str]:
     return pairs
 
 
-def renames_since(git: Git, base: str) -> Renames:
+def renames_since(git: Git, base: str, root: Path | None = None) -> Renames:
     found = Renames(base=base)
     for row in git("diff", "-M", "--name-status", base, "HEAD", ok=False).splitlines():
         parts = row.split("\t")
         if parts[0].startswith("R") and len(parts) == 3:
             found.files[parts[1]] = parts[2]
-    facts = git("ls-files", "--", _FACTS, ok=False).split()
+    pattern = layout.folder(root or Path.cwd(), "versions_root") + "/*/symbol_addrs.txt"
+    facts = git("ls-files", "--", pattern, ok=False).split()
     still = {n for path in facts for n, _ in _SYMBOL.findall(git("show", f"HEAD:{path}", ok=False))}
-    for path in git("diff", "--name-only", base, "HEAD", "--", _FACTS, ok=False).split():
+    for path in git("diff", "--name-only", base, "HEAD", "--", pattern, ok=False).split():
         found.symbols.update(
             symbol_pairs(git("show", f"{base}:{path}", ok=False), git("show", f"HEAD:{path}", ok=False), still)
         )
     return found
 
 
-def rewrite(text: str, renames: Renames) -> str:
+def rewrite(text: str, renames: Renames, root: Path | None = None) -> str:
     if renames.symbols:
         pattern = re.compile(
             r"(?<![\w])(" + "|".join(map(re.escape, sorted(renames.symbols, key=len, reverse=True))) + r")(?![\w])"
@@ -114,7 +116,10 @@ def rewrite(text: str, renames: Renames) -> str:
         if old.lower().endswith(
             (".h", ".hh", ".hpp", ".hxx")
         ):  # the includes that name a moved header, spelled with or without include/
-            for spelled, target in ((old, new), (old.removeprefix("include/"), new.removeprefix("include/"))):
+            for spelled, target in (
+                (old, new),
+                (layout.header_relative(root or Path.cwd(), old), layout.header_relative(root or Path.cwd(), new)),
+            ):
                 text = re.sub(
                     rf'(#[ \t]*include[ \t]*[<"]){re.escape(spelled)}([>"])',
                     lambda m, t=target: f"{m[1]}{t}{m[2]}",
@@ -129,12 +134,12 @@ def mentions(patch: str, renames: Renames) -> bool:
     return any(re.search(rf"(?<![\w]){re.escape(old)}(?![\w])", patch) for old in renames.symbols)
 
 
-def translate(git: Git, patch_text: str) -> tuple[str, Renames]:
+def translate(git: Git, patch_text: str, root: Path | None = None) -> tuple[str, Renames]:
     """The patch re-cut through the renames since its base; (patch, renames), the original text when nothing applies."""
     base = find_base(git, patch_text)
     if not base:
         return patch_text, Renames()
-    renames = renames_since(git, base)
+    renames = renames_since(git, base, root)
     if not renames or not mentions(patch_text, renames):
         return patch_text, renames
     git_dir = Path(git("rev-parse", "--absolute-git-dir").strip())
@@ -156,7 +161,7 @@ def translate(git: Git, patch_text: str) -> tuple[str, Renames]:
                 if "\ufffd" in content:
                     return patch_text, renames  # not text we can rewrite safely
                 blob_file = os.path.join(work, "blob")
-                Path(blob_file).write_text(rewrite(content, renames))
+                Path(blob_file).write_text(rewrite(content, renames, root))
                 blob = git("hash-object", "-w", blob_file).strip()
                 git(
                     "update-index",

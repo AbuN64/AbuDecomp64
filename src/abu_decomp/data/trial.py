@@ -22,7 +22,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import meter
+from abu_decomp import layout, meter
 from abu_decomp.admission import slots
 from abu_decomp.data import literals, source
 from abu_decomp.data.config import DataConfig, expand
@@ -282,8 +282,8 @@ class Builder:
                         if comm in ("make", "python3", "python", "ld", "mips-linux-gnu-ld"):
                             procs.append(f"{entry}:{comm}")
         locks = (
-            sorted(p.name for p in (self.tree / "build").glob(".extract-lock-*"))
-            if (self.tree / "build").is_dir()
+            sorted(p.name for p in (layout.path(self.tree, "build_root")).glob(".extract-lock-*"))
+            if (layout.path(self.tree, "build_root")).is_dir()
             else []
         )
         return f"[diag: make rc={rc}; {self._tail(log)}; processes in tree: {' '.join(procs[:8]) or 'none'}; locks: {' '.join(locks) or 'none'}]"

@@ -30,6 +30,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from abu_decomp import layout
+
 FILE = "findings.jsonl"
 BAD = ("crash", "stop", "hang", "exit")  # the outcomes of a movie run that are findings
 SANITIZED = "crash-sanitized"  # a crash of a sanitizer-build run (its stops, hangs and exits are the slow build's)
@@ -109,7 +111,7 @@ def project_symbols(project: Path | None) -> tuple[list[int], list[str]]:
     except OSError:
         return [], []
     match = re.search(r'(?m)^names_from\s*=\s*"([^"]+)"', config)
-    file = project / "versions" / (match[1] if match else "") / "symbol_addrs.txt"
+    file = layout.path(project, "versions_root") / (match[1] if match else "") / "symbol_addrs.txt"
     try:
         key = ("names", str(file), file.stat().st_mtime_ns)
     except OSError:

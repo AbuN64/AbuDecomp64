@@ -15,6 +15,8 @@ from pathlib import Path
 
 import yaml
 
+from abu_decomp import layout
+
 SHF_EXEC, SHF_ALLOC = 4, 2
 SHT_PROGBITS = 1
 
@@ -22,7 +24,7 @@ SHT_PROGBITS = 1
 def read_only_ranges(project: Path, version: str) -> tuple[tuple[int, int], ...]:
     """(start, end) vram of each `rodata` subsegment in versions/<version>/splat.yaml; () when it cannot be read."""
     try:
-        doc = yaml.safe_load((project / "versions" / version / "splat.yaml").read_text())
+        doc = yaml.safe_load((layout.path(project, "versions_root") / version / "splat.yaml").read_text())
         segments = [s for s in doc["segments"] if isinstance(s, dict) and "start" in s]
         found = []
         for index, seg in enumerate(segments):
@@ -59,7 +61,10 @@ def sections(elf: bytes) -> list[tuple[int, bytes]]:
 
 def linked_elf(project: Path, version: str) -> Path:
     """The version's linked ELF under build/<version>/ (named after the project, so found by suffix)."""
-    return next(iter(sorted((project / "build" / version).glob("*.elf"))), project / "build" / version / "missing.elf")
+    return next(
+        iter(sorted((layout.path(project, "build_root") / version).glob("*.elf"))),
+        layout.path(project, "build_root") / version / "missing.elf",
+    )
 
 
 def words(elf: Path, addresses: tuple[int, ...], ranges: tuple[tuple[int, int], ...]) -> dict[int, int]:

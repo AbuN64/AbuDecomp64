@@ -17,7 +17,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, arity, evidence, evidence_gate
+from abu_decomp import DecompError, arity, evidence, evidence_gate, layout
 
 _REACHED = re.compile(r"^(?:boot-step: \d+/\d+ |boot-missing: |debug-reason: )(\w+)$", re.M)
 _FRAME = re.compile(r"\bin (\w+) \(")
@@ -49,7 +49,7 @@ def reached(runs: Path) -> tuple[Counter[str], int]:
 def functions(project: Path, cfg: dict[str, Any]) -> dict[str, dict[str, str]]:
     """Every NON_MATCHING body and INCLUDE_ASM stand-in under src: name -> {file, kind}."""
     found: dict[str, dict[str, str]] = {}
-    for path in sorted((project / "src").rglob("*")):
+    for path in sorted({p for r in layout.source_roots(project) for p in (project / r).rglob("*")}):
         if path.suffix.lower() not in cfg["suffixes"] or not path.is_file():
             continue
         text = path.read_text(errors="replace")

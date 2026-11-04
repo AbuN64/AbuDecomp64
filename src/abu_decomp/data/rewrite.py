@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, layout
 from abu_decomp.data import cdecl, literals, source
 from abu_decomp.data.config import DataConfig
 
@@ -19,11 +19,11 @@ def member_info(census: dict, sym: str) -> dict | None:
     return next((m for m in census["lones"] if m["sym"] == sym), None)
 
 
-def owner_header(census: dict, owner: str) -> str:
+def owner_header(census: dict, owner: str, tree: Path | None = None) -> str:
     """The include path (below include/) of the header that declares OWNER."""
     m = member_info(census, owner)
-    files = [f for f in (m or {}).get("decl_files", []) if f.startswith("include/")]
-    return files[0][len("include/") :] if files else ""
+    files = [f for f in (m or {}).get("decl_files", []) if layout.under_header(tree or Path.cwd(), f)]
+    return layout.header_relative(tree or Path.cwd(), files[0]) if files else ""
 
 
 def refuse_interior(census: dict, sym: str) -> None:
@@ -32,7 +32,9 @@ def refuse_interior(census: dict, sym: str) -> None:
         raise DecompError("data.rewrite", literals.interior_refusal(sym, words))
 
 
-def resolve(census_path: Path | None, sym: str, expr: str | None, header: str | None) -> tuple[str, str, dict | None]:
+def resolve(
+    census_path: Path | None, sym: str, expr: str | None, header: str | None, tree: Path | None = None
+) -> tuple[str, str, dict | None]:
     if expr and header:
         return expr, header, None
     if census_path is None:
@@ -49,14 +51,14 @@ def resolve(census_path: Path | None, sym: str, expr: str | None, header: str | 
             f"{sym}: the census has no resolved member path ({(m or {}).get('path_note', 'not a member')})",
         )
     owner = m["path"].split(".")[0].split("[")[0]
-    return expr or m["path"], header or owner_header(census, owner), m
+    return expr or m["path"], header or owner_header(census, owner, tree), m
 
 
 def owner_header_types(tree: Path, expr: str, header: str) -> list[str]:
     """The type texts the owner header declares for the owner of EXPR (the real struct): a unit that declares the owner as
     another struct is a stand-in the rewrite must leave alone. [] when the header or the declaration is not found."""
     owner = expr.split(".")[0].split("[")[0]
-    path = tree / "include" / header
+    path = layout.header_path(tree, header)
     if not header or not path.is_file():
         return []
     ext, local = source.local_decls(path.read_text(errors="replace"), owner)

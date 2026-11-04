@@ -16,6 +16,8 @@ from typing import Any, cast
 from abucache import stages as cache_stages
 from unbake import api
 
+from abu_decomp import layout
+
 EXAMPLES = 3
 GENERATORS = (
     "dead-decls.include",
@@ -272,9 +274,9 @@ def _commands(
     recipe = [str(Path(sys.executable).parent / "recipe"), "--project", str(tree)]
     cleanup = [*decomp, "cleanup", "--project", str(tree)]
     out = {
-        "dead-decls.include": ([*cleanup, "dead-decls", "--dir", "include"], _dead),
-        "dead-decls.src": ([*cleanup, "dead-decls", "--dir", "src"], _dead),
-        "owners.include": ([*cleanup, "owners", "--dir", "include"], _owners_include),
+        "dead-decls.include": ([*cleanup, "dead-decls", "--dir", layout.header_roots(tree)[0]], _dead),
+        "dead-decls.src": ([*cleanup, "dead-decls", "--dir", layout.source_roots(tree)[0]], _dead),
+        "owners.include": ([*cleanup, "owners", "--dir", layout.header_roots(tree)[0]], _owners_include),
         "slices": ([*cleanup, "slices", "--names", str(names)], _slices),
         "name.auto": ([*recipe, "name", "--json", "auto", "--out", str(scratch / "auto-rows.jsonl")], _auto),
         "name.T": ([*recipe, "name", "--json", "--step", "T", "next"], _step_t),

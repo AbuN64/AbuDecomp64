@@ -17,6 +17,7 @@ from typing import Any
 from abucache import stages as cache_stages
 
 from abu_decomp import DecompError, arity
+from abu_decomp import layout as project_layout
 from abu_decomp.behave import abi, classify, compare, describe, hits, inputs, movie, permutations, prototype, rodata
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.config import Profile
@@ -38,7 +39,7 @@ DEFAULTS: dict[str, Any] = {
     "learn_cases": 8,
     "learn_rounds": 8,
     "min_compared": compare.MIN_COMPARED,  # cases that must compare before the verdict may be `same`
-    "headers": ["include/**/*.h", "include/**/*.H", "src/**/*.c", "src/**/*.C", "src/**/*.CPP", "src/**/*.cpp"],
+    "headers": None,
 }
 
 
@@ -447,7 +448,12 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             raise BehaveError("behave.entry_mid_frame", defect)
         mark = lap("symbols", mark)
         candidate_file = options.candidate.resolve() if options.candidate else None
-        proto = prototype.find(chosen.project, options.function, tuple(config["headers"]), candidate_file)
+        proto = prototype.find(
+            chosen.project,
+            options.function,
+            tuple(config["headers"] or project_layout.code_globs(chosen.project)),
+            candidate_file,
+        )
         if proto is None:
             proto = prototype.inferred(options.function)
             findings.append(
@@ -596,7 +602,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
                 options.seeded,
                 proto,
                 chosen.project,
-                tuple(config["headers"]),
+                tuple(config["headers"] or project_layout.code_globs(chosen.project)),
                 int(config["generated_cases"]),
                 readonly,
                 stage="singles",
@@ -629,7 +635,7 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
                     options.seeded,
                     proto,
                     chosen.project,
-                    tuple(config["headers"]),
+                    tuple(config["headers"] or project_layout.code_globs(chosen.project)),
                     int(config["generated_cases"]) - first,
                     readonly,
                     stage="pairs",
@@ -811,7 +817,18 @@ def _run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[
             vram = record.get("replaced", {}).get(name)
             same = [n for n, r in symbols.items() if vram and r[0] is not None and r[0] == int(vram, 0)]
             callee = next(
-                (c for n in (name, *same) if (c := prototype.find(chosen.project, n, tuple(config["headers"]), None))),
+                (
+                    c
+                    for n in (name, *same)
+                    if (
+                        c := prototype.find(
+                            chosen.project,
+                            n,
+                            tuple(config["headers"] or project_layout.code_globs(chosen.project)),
+                            None,
+                        )
+                    )
+                ),
                 None,
             )
             if callee:

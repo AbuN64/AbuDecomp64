@@ -34,7 +34,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import DecompError, evidence, tas, tas_coverage, tas_fn, tas_phasemap
+from abu_decomp import DecompError, evidence, layout, tas, tas_coverage, tas_fn, tas_phasemap
 from abu_decomp.admission import slots
 
 WHAT = ("source", "xref", "coverage", "movie")
@@ -212,11 +212,11 @@ def highlighter() -> Any:
     return lambda text: highlight(text, lexer, formatter).rstrip("\n").split("\n")
 
 
-def gcov_positions(union: dict[str, Any]) -> dict[tuple[str, str], tuple[int, int]]:
+def gcov_positions(union: dict[str, Any], root: Path | None = None) -> dict[tuple[str, str], tuple[int, int]]:
     """(source file, function) -> (first, last) line from the gcovr union's `functions[].pos`."""
     out = {}
     for entry in union.get("files", []):
-        rel = rel_path(entry.get("file", ""))
+        rel = rel_path(entry.get("file", ""), root)
         for fn in entry.get("functions", []):
             try:
                 first, last = (int(p.split(":")[0]) for p in fn["pos"])
@@ -226,10 +226,13 @@ def gcov_positions(union: dict[str, Any]) -> dict[tuple[str, str], tuple[int, in
     return out
 
 
-def rel_path(path: str) -> str:
+def rel_path(path: str, root: Path | None = None) -> str:
     """The source path as the map names it: from the `src/` folder on."""
-    _, sep, tail = path.rpartition("/src/")
-    return f"src/{tail}" if sep else path
+    for folder in layout.source_roots(root or Path.cwd()):
+        _, sep, tail = path.rpartition("/" + folder + "/")
+        if sep:
+            return folder + "/" + tail
+    return path
 
 
 def read_union(path: Path) -> dict[str, Any] | None:
@@ -253,7 +256,7 @@ def slices(inputs: Inputs, rows: list[list[Any]], files: list[str], union: dict[
     for the ones it misses, by the gcovr union's function positions; asm stand-ins get none."""
     if not inputs.pin:
         raise DecompError("tas.bake", "the profile has no tas.serve.pin: no source to slice")
-    positions = gcov_positions(union) if union else {}
+    positions = gcov_positions(union, inputs.pin) if union else {}
     highlight = highlighter()
     parsed: dict[str, tuple[list[str], dict[str, evidence.Fn]] | None] = {}
     out: dict[str, Any] = {}
@@ -285,14 +288,14 @@ def slices(inputs: Inputs, rows: list[list[Any]], files: list[str], union: dict[
     return out
 
 
-def gutters(slice_of: dict[str, Any], union: dict[str, Any] | None) -> dict[str, Any]:
+def gutters(slice_of: dict[str, Any], union: dict[str, Any] | None, root: Path | None = None) -> dict[str, Any]:
     """name -> one entry per slice line: null, [count] or [count, branches taken, branches total]. Empty while the
     gcovr union JSON does not exist: the page then says there are no line counts yet."""
     if not union:
         return {}
     by_file: dict[str, dict[int, Any]] = {}
     for entry in union.get("files", []):
-        by_file[rel_path(entry.get("file", ""))] = {row["line_number"]: row for row in entry.get("lines", [])}
+        by_file[rel_path(entry.get("file", ""), root)] = {row["line_number"]: row for row in entry.get("lines", [])}
     out = {}
     for name, got in slice_of.items():
         lines = by_file.get(got["file"])
@@ -839,7 +842,7 @@ def _bake(inputs: Inputs, what: set[str] | None, movie: str | None) -> dict[str,
         xref = xrefs(inputs, names)
         part_write(runs, "xref", xref)
     if gut is None:
-        gut = gutters(source, union)
+        gut = gutters(source, union, inputs.pin)
         part_write(runs, "gutter", gut)
     fns_body = dump(
         {

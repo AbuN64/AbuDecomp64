@@ -33,7 +33,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import DecompError, procguard, tas, tas_coverage, tas_oracle, tas_seat
+from abu_decomp import DecompError, layout, procguard, tas, tas_coverage, tas_oracle, tas_seat
 from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
@@ -241,7 +241,7 @@ def pick(samples: list[Sample], calls: int) -> dict[str, list[Sample]]:
 
 def guest_addresses(source: Path, version: str) -> dict[str, int]:
     """Function and data name -> its guest address in `version`, from the project's symbol facts."""
-    path = source / "versions" / version / "symbol_addrs.txt"
+    path = layout.path(source, "versions_root") / version / "symbol_addrs.txt"
     found: dict[str, int] = {}
     try:
         for line in path.read_text(errors="replace").splitlines():
@@ -709,7 +709,7 @@ def run(profile: Profile, options: Options) -> tuple[dict[str, Any], int, list[d
         version = options.version or _names_from(source)
         guest = guest_addresses(source, version)
         elf = Elf(port)
-        protos = Prototypes(source, tuple(config["headers"]))
+        protos = Prototypes(source, tuple(config["headers"] or layout.code_globs(source)))
         native_of = function_pointers(guest, elf.by_name)
         game = {n for n in guest if n in elf.by_name}
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

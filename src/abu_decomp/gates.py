@@ -46,7 +46,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import cleanup
+from abu_decomp import cleanup, layout
 from abu_decomp.config import ConfigError
 
 RECORD = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*\{")
@@ -141,12 +141,12 @@ def _files(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]
     drop = re.compile(spec["exclude"], re.I) if spec.get("exclude") else None
     every = _all_files(rev.root, rev.rev)
     mine = [p for p in every if keep.search(p) and not (drop and drop.search(p))]
-    return len(mine), {"examples": mine[:3], "folders": _by_folder(mine)}
+    return len(mine), {"examples": mine[:3], "folders": _by_folder(mine, rev.root)}
 
 
-def _by_folder(paths: Iterable[str]) -> dict[str, int]:
+def _by_folder(paths: Iterable[str], root: Path | None = None) -> dict[str, int]:
     """{folder: files} for PATHS, the largest folder first (the folder as `cleanup count` names it)."""
-    got = Counter(cleanup.folder_of(p) for p in paths)
+    got = Counter(cleanup.folder_of(p, root) for p in paths)
     return dict(sorted(got.items(), key=lambda kv: (-kv[1], kv[0])))
 
 
@@ -182,9 +182,9 @@ def _dead(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
 
 
 def _units(rev: Revision, spec: Mapping[str, Any]) -> tuple[list[str], dict[str, list[str]]]:
-    """The units of the revision (C and C++ sources under src/) and, for each, the modules the map `map` gives it: its
-    own row by path, else the rows of its file name (a rename moves a file; the map keeps the old path). A unit
-    nothing in the map names gets none."""
+    """The units of the revision (C and C++ sources under the source roots) and, for each, the modules the map `map`
+    gives it: its own row by path, else the rows of its file name (a rename moves a file; the map keeps the old
+    path). A unit nothing in the map names gets none."""
     done = subprocess.run(
         ["git", "-C", str(rev.root), "show", f"{rev.rev}:{spec['map']}"], capture_output=True, text=True
     )
@@ -198,7 +198,7 @@ def _units(rev: Revision, spec: Mapping[str, Any]) -> tuple[list[str], dict[str,
         module = rest.partition("\t")[0].strip()
         by_path[unit] = module
         by_name[PurePosixPath(unit).name].append(module)
-    units = [p for p in rev.paths if p.startswith("src/") and p.lower().endswith((".c", ".cpp"))]
+    units = [p for p in rev.paths if layout.under_source(rev.root, p) and p.lower().endswith((".c", ".cpp"))]
     return units, {u: [by_path[u]] if u in by_path else by_name.get(PurePosixPath(u).name, []) for u in units}
 
 
@@ -215,7 +215,7 @@ def _misfiled(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, An
         for u in mapped
         if PurePosixPath(u).parent.as_posix() not in {PurePosixPath(m).with_suffix("").as_posix() for m in modules[u]}
     ]
-    return len(bad), {"units": len(mapped), "unmapped": len(units) - len(mapped), "folders": _by_folder(bad)}
+    return len(bad), {"units": len(mapped), "unmapped": len(units) - len(mapped), "folders": _by_folder(bad, rev.root)}
 
 
 def _probe(rev: Revision, spec: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:

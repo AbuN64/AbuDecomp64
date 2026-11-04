@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import shipproof
+from abu_decomp import layout, shipproof
 
 Make = Callable[[list[str]], tuple[int, str]]  # make targets -> (exit, output tail)
 
@@ -37,7 +37,7 @@ def mtime(path: Path) -> float | None:
 def readers(tree: Path, touched: set[str]) -> dict[str, list[str]]:
     """Every built unit whose .d names a touched file: `build/<ver>/<src>.i.ok` stamp target -> its dependencies."""
     found: dict[str, list[str]] = {}
-    for dep in sorted((tree / "build").rglob("*.d")):
+    for dep in sorted((layout.path(tree, "build_root")).rglob("*.d")):
         try:
             text = dep.read_text(errors="replace")
         except OSError:
@@ -61,14 +61,14 @@ def prove(tree: Path, files: Sequence[str], make: Make) -> dict[str, Any]:
         return refuse("no changed file")
     if other := [n for n in names if not shipproof.HEADER.search(n)]:
         return refuse(f"{other[0]} is not a header" + (f" (and {len(other) - 1} more)" if len(other) > 1 else ""))
-    build = tree / "build"
+    build = layout.path(tree, "build_root")
     if not any(build.rglob("*.d")):
         return refuse("the tree holds no build state to compare with")
     units = readers(tree, set(names))
     roms: dict[str, float | None] = {}
     before: dict[str, dict[str, Any]] = {}
     for stamp in units:
-        version = Path(stamp).parts[1]
+        version = Path(stamp).relative_to(layout.folder(tree, "build_root")).parts[0]
         if version not in roms:
             made = [mtime(rom) for rom in sorted((build / version).glob("*.z64"))]
             roms[version] = made[0] if made else None

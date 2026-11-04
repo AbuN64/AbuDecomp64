@@ -519,8 +519,11 @@ class LandTests(unittest.TestCase):
         self.assertEqual(parse_messages(rows), {"B": "Fix a: with colons"})
         with self.assertRaises(LandError):
             parse_patches(["A=/x/a.patch:"])
-        self.assertEqual(top_dirs(["src/MENU/EVENT/z.c", "src/AI/NAV/x.c", "src/AI/y.c", "README.md"]), ["AI", "MENU"])
-        self.assertEqual(top_dirs(["include/A/x.h", "versions/de/t.mk", "src/SDK/a.c", "src/sdk/b.c"]), ["SDK"])
+        files = ["src/MENU/EVENT/z.c", "src/AI/NAV/x.c", "src/AI/y.c", "README.md"]
+        self.assertEqual(top_dirs(files, ["src"]), ["AI", "MENU"])
+        files = ["include/A/x.h", "versions/de/t.mk", "src/SDK/a.c", "src/sdk/b.c"]
+        self.assertEqual(top_dirs(files, ["src"]), ["SDK", "sdk"])
+        self.assertEqual(top_dirs(["Source/Engine/Unicol/collide.cpp", "src/AI/x.c"], ["Source"]), ["Engine"])
         self.assertEqual(sentence_list(["a", "b", "c"]), "a, b and c")
         self.assertEqual(sentence_list(["a"]), "a")
 

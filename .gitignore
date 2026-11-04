@@ -2,7 +2,7 @@ __pycache__/
 *.egg-info/
 /build/
 dist/
-.venv/
+.venv
 .ruff_cache/
 .abu/*
 !.abu/Playbooks/

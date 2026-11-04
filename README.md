@@ -17,6 +17,14 @@ pip install git+https://github.com/AbuN64/abu-decomp-64 && decomp dependencies
 
 ## Usage
 
+`decomp --profile seat.json tas serve` starts the TAS web page. Omitting `tas.serve.listen` binds all IPv4
+interfaces at `0.0.0.0:8099`, making the page available from the LAN. The existing `listen` field can be set
+explicitly in the seat profile (merge this fragment into its `tas` configuration):
+
+```json
+{"tas": {"serve": {"listen": "0.0.0.0:8099"}}}
+```
+
 ```sh
 decomp --profile seat.json unbake report --next
 decomp port new --spec port.json ../my-port   # a port on the n64 shim (shim/)

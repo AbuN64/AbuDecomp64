@@ -198,7 +198,7 @@ class Server:
         extra = serve.keys() - _SERVE_KEYS
         if extra:
             raise DecompError("tas.serve", f"unknown tas.serve keys: {', '.join(sorted(extra))}")
-        self.listen = str(serve.get("listen", "127.0.0.1:8099"))
+        self.listen = str(serve.get("listen", "0.0.0.0:8099"))
         self.jobs = int(serve.get("jobs", 4))
         # A play started here without the oracle pictures the port every `stream_every` polls (shots/port), so the
         # wall's tile and the stream show it; 0 or absent: no port pictures (an oracle play pictures both sides).

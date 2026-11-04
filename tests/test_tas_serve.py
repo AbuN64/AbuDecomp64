@@ -2,6 +2,7 @@
 under /data, /wall, the reach relay on /video, frames, logs, the 1x sound as a growing WAV, play / stop. Mocked: no
 port runs."""
 
+import contextlib
 import gzip
 import hashlib
 import io
@@ -25,6 +26,7 @@ from polls_record import write_polls
 
 from abu_decomp import (
     DecompError,
+    cli,
     serve_audio,
     serve_files,
     serve_pages,
@@ -201,6 +203,25 @@ class Base(unittest.TestCase):
 
 
 class ServeTests(Base):
+    def test_cli_serve_without_listen_binds_all_ipv4_interfaces(self):
+        self.profile()
+        profile = json.loads(self.seat.read_text())
+        del profile["tas"]["serve"]["listen"]
+        self.seat.write_text(json.dumps(profile))
+        with (
+            mock.patch.object(tas_serve, "ThreadingHTTPServer") as http,
+            mock.patch.object(tas_serve, "deployed_sha", return_value="a" * 40),
+            mock.patch.object(tas_serve, "notify_ready"),
+            mock.patch.object(tas_serve.Live, "start"),
+            mock.patch.object(tas_serve.site_core.Snapshots, "start"),
+            mock.patch.object(tas_serve.threading, "Thread"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(cli.main(["--profile", str(self.seat), "tas", "serve"]), 0)
+        http.assert_called_once_with(("0.0.0.0", 8099), mock.ANY)
+        http.return_value.serve_forever.assert_called_once_with()
+        http.return_value.server_close.assert_called_once_with()
+
     def test_unknown_serve_keys_are_refused(self):
         with self.assertRaises(DecompError):
             tas_serve.Server(self.profile(display=":97"))
@@ -963,23 +984,52 @@ class LiveTests(Base):
         child = subprocess.Popen(["sleep", "infinity"])
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)
-        going, gone = threading.Event(), threading.Event()
+        going, watched, gone = threading.Event(), threading.Event(), threading.Event()
+        exited = threading.Event()
+        owners_at_publication = []
 
         def seen(statuses):
             if statuses.get("own") == "running":
+                owners_at_publication.append(len(server.live.owners))
                 going.set()
             elif "own" in statuses:
                 gone.set()
 
         server, made = self.owned(child, seen)
+        state, watch_owners = server.state, server.live.watch_owners
+        owner_exited = server.live.owner_exited
+
+        def state_after_arrival():
+            # Force the run to arrive after sync's scan but before state publication. Publication alone cannot
+            # promise a pidfd: the queued inotify event registers the owner on the next sync.
+            if made.exists():
+                made.rename(self.plays / "own")
+            return state()
+
+        def watch_and_signal():
+            watch_owners()
+            if server.live.owners.get(self.plays / "own", -1) >= 0:
+                watched.set()
+
+        def exit_and_signal(ready):
+            changed = owner_exited(ready)
+            if changed:
+                exited.set()
+            return changed
+
+        server.state = state_after_arrival
+        server.live.watch_owners = watch_and_signal
+        server.live.owner_exited = exit_and_signal
         server.live.start()
         self.addCleanup(server.live.stop)
-        made.rename(self.plays / "own")
-        self.assertTrue(going.wait(30))  # live.json shows the owner running, so the loop holds its pidfd
+        going.wait()
+        self.assertEqual(owners_at_publication[0], 0)  # reproduce the former assertion's race on every run
+        watched.wait()  # only pidfd registration permits the owner-exit assertion; the test runner bounds hangs
         self.assertEqual(len(server.live.owners), 1)
         child.kill()
         child.wait()  # the process exits: no record write, no file event
-        self.assertTrue(gone.wait(30))  # only the pidfd can wake the loop; the idle refresh is 60 s away
+        exited.wait()  # prove select observed the pidfd, even if a pending publication also noticed the death
+        gone.wait()  # the feed must also report the dead owner
         self.assertEqual(server.live.owners[self.plays / "own"], -1)  # reported once, not watched again
 
     def test_an_owner_already_gone_when_first_watched_is_noticed_at_once(self):

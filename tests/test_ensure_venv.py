@@ -142,6 +142,53 @@ assert 'abu_decomp.tools' not in sys.modules
         self.assertFalse((self.root / ".venv").exists())
 
 
+class RepoEnvironmentIgnore(unittest.TestCase):
+    def test_symlinked_venv_leaves_git_status_clean(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            target = Path(directory) / "environment"
+            target.mkdir()
+            (root / ".gitignore").write_bytes((REPO / ".gitignore").read_bytes())
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", "-c", "core.excludesFile=/dev/null", *args],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+
+            git("init", "--quiet")
+            git("add", ".gitignore")
+            git(
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "Fixture",
+            )
+            venv = root / ".venv"
+            venv.symlink_to(target, target_is_directory=True)
+            self.assertEqual(git("status", "--porcelain"), "")
+            target.rmdir()
+            self.assertEqual(git("status", "--porcelain"), "", "dangling symlink")
+            venv.unlink()
+            venv.write_text("environment marker")
+            self.assertEqual(git("status", "--porcelain"), "", "regular file")
+            venv.unlink()
+            venv.mkdir()
+            (venv / "marker").touch()
+            self.assertEqual(git("status", "--porcelain"), "", "directory")
+            (root / "untracked.txt").touch()
+            self.assertEqual(git("status", "--porcelain"), "?? untracked.txt\n")
+
+
 class RepoDeclaresNoPins(unittest.TestCase):
     def test_every_own_tool_is_a_bare_name_and_nothing_pins_a_commit(self):
         text = (REPO / "pyproject.toml").read_text()

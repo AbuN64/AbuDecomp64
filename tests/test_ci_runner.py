@@ -33,7 +33,6 @@ class Scratch(unittest.TestCase):
             self.addCleanup(shutil.rmtree, scratch, True)
             self.assertEqual(scratch.parent, Path(workspace))
             self.assertEqual(Path(os.environ["TMPDIR"]), scratch)
-            self.assertEqual(Path(os.environ["XDG_RUNTIME_DIR"]).parent, scratch)
             self.assertEqual(Path(tempfile.mkdtemp(prefix="slots-mem-")).parent, scratch)
             register.assert_called_once_with(shutil.rmtree, str(scratch), ignore_errors=True)
             self.assertEqual(slots.policy.disk_gib, per_slot)

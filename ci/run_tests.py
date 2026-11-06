@@ -77,14 +77,13 @@ def hermetic_git():
 
 
 def hermetic_slots():
-    """Keep all test scratch on the workspace disk, including isolated slot pools. A host's /tmp may be a small
-    tmpfs that cannot satisfy the production disk floor; the guard still checks the actual workspace capacity."""
+    """Keep all test scratch on the workspace disk (the slot pool is isolated by tests/conftest.py ABU_RUNTIME).
+    A host's /tmp may be a small tmpfs that cannot satisfy the production disk floor; the guard still checks
+    the actual workspace capacity."""
     scratch = tempfile.mkdtemp(prefix=".abu-tests-", dir=os.getcwd())
     atexit.register(shutil.rmtree, scratch, ignore_errors=True)
     tempfile.tempdir = scratch
     os.environ["TMPDIR"] = scratch
-    pool = tempfile.mkdtemp(prefix="abu-slots-")
-    os.environ["XDG_RUNTIME_DIR"] = pool
 
 
 def main(start="tests", *names):

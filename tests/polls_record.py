@@ -16,7 +16,6 @@ def write_polls(env: dict[str, Any], raw: str) -> None:
     lines = [json.dumps({"k": "meta", "side": "port"})]
     for number, poll in enumerate(tas.parse_raw(raw), 1):
         pads = [word(*poll[i : i + 3]) for i in range(0, len(poll), 3)]
-        lines.append(
-            json.dumps({"k": "poll", "poll": number, "vi": number, "pad": pads, "pages": []}, separators=(",", ":"))
-        )
+        poll_line = {"k": "poll", "poll": number, "vi": number, "ns": number * 16683333, "pad": pads, "pages": []}
+        lines.append(json.dumps(poll_line, separators=(",", ":")))
     Path(env["N64C_LOCKSTEP_DIR"], "lockstep.jsonl").write_text("\n".join(lines) + "\n")

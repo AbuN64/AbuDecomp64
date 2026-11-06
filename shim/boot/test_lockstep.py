@@ -531,7 +531,7 @@ int main(void) { memcpy(ram + 0x2000, "\x78\x56\x34\x12", 4); n64c_trace_init();
 """
 
 
-ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381; its meta `frame`
+ORACLE_POLLS = ROOT / "fixtures" / "lockstep-poll-oracle"  # CakeTaste64 lockstep.cpp (4be5381 + ns; its meta `frame`
 # `poll` and the call's poll-index stamp 1 as lockstep.cpp writes them since rw1-rec), its 3-poll driver,
 # hashes only, and its dump replay (N64R_LOCKSTEP_DUMP=2:1,2): dump/2/dump.bin holds pages 1 and 2 at poll 2
 PORT_PADS = ["80000000", "1000b050", "040005fb"]  # the port row's n64c_tas_lockstep movie, polls 1..3
@@ -748,13 +748,15 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(report["polls"], {"oracle": 3, "port": 3, "common": 3})
         self.assertEqual(report["matched_through_poll"], 3)
         self.assertIsNone(report["first"])
-        self.assertEqual(report["divergences"], {"input": [], "vi": [], "calls": [], "memory": []})
+        self.assertEqual(report["divergences"], {"input": [], "vi": [], "clock": [], "calls": [], "memory": []})
 
     def test_divergences_listed_per_class_in_poll_order_with_the_first_and_matched_through(self):
         def edit(r, pages, current):
             r["pad"] = [PORT_PADS[r["poll"] - 1], *r["pad"][1:]]
             if r["poll"] >= 2:
                 r["vi"] += 1  # one retrace more from poll 2 on
+            if r["poll"] >= 3:
+                r["ns"] += 1000  # the port clock 1 us ahead from poll 3 on
             if r["poll"] == 2:
                 pages[0] = b"\x2a\x00\x00\x00" + bytes(4092)  # a word the game wrote differently, kept to the end
 
@@ -765,6 +767,7 @@ class MatchTests(unittest.TestCase):
         self.assertEqual([(x["poll"], x["port"][0]) for x in d["input"]], [(1, "80000000"), (2, "1000b050"),
                                                                            (3, "040005fb")])  # fmt: skip
         self.assertEqual(d["vi"], [{"poll": 2, "oracle": 4, "port": 5, "offset": 1}])
+        self.assertEqual(d["clock"], [{"poll": 3, "oracle": 50049999, "port": 50050999, "offset": 1000}])
         self.assertEqual([(x["poll"], x["address"], x["oracle"], x["port"]) for x in d["memory"]],
                          [(2, "80000000", "00000000", "0000002a")])  # fmt: skip
         self.assertEqual(report["first"]["class"], "input")
@@ -838,6 +841,18 @@ class MatchSliceTests(unittest.TestCase):
 BOOT_SLICE = ROOT / "fixtures" / "lockstep-boot-idle-580e.tar.xz"
 
 
+def clock_by_poll(path):
+    """Give each poll line of a record made before `ns` the clock poll * one NTSC retrace, the same on either side."""
+    lines = []
+    for line in path.read_text().splitlines():
+        r = json.loads(line)
+        if r["k"] == "poll":
+            r = {**{k: v for k, v in r.items() if k != "pad" and k != "pages"}, "ns": r["poll"] * 16683333,
+                 **{k: r[k] for k in ("pad", "pages") if k in r}}  # fmt: skip
+        lines.append(json.dumps(r, separators=(",", ":")))
+    path.write_text("\n".join(lines) + "\n")
+
+
 class MatchRecordSliceTests(unittest.TestCase):
     def test_real_boot_idle_slice_lists_only_the_calls_that_fall_in_another_poll(self):
         work = args.work / "boot-slice"
@@ -845,6 +860,8 @@ class MatchRecordSliceTests(unittest.TestCase):
         with tarfile.open(BOOT_SLICE) as archive:
             archive.extractall(work, filter="data")
         sides = work / "lockstep-boot-idle-580e"
+        for side in ("oracle", "port"):  # recorded before poll lines carried `ns`: one clock both sides share
+            clock_by_poll(sides / side / "lockstep.jsonl")
         report = args.work / "boot-slice.json"
         with contextlib.redirect_stdout(io.StringIO()):
             code = ls.main(["match", "--oracle", str(sides / "oracle"), "--port", str(sides / "port"),
@@ -943,7 +960,8 @@ class PortRecorderTests(unittest.TestCase):
             self.assertIn("boot-lockstep: 9 points written", result.stderr)
             polls = [json.loads(x) for x in (out / "lockstep.jsonl").read_text().splitlines() if '"k":"poll"' in x]
             # the oracle's poll line key for key, its own baseline: every page at poll 1, then those run() changed
-            self.assertEqual([list(x) for x in polls], [["k", "poll", "vi", "pad", "pages"]] * 3)
+            self.assertEqual([list(x) for x in polls], [["k", "poll", "vi", "ns", "pad", "pages"]] * 3)
+            self.assertEqual([x["ns"] for x in polls], [123] * 3)  # n64c_clock_peek_ns read at each poll (the stub)
             self.assertEqual(
                 [(x["poll"], x["vi"], x["pad"]) for x in polls],
                 [(1, 2, ["80000000", "00000000"]), (2, 4, ["1000b050", "040005fb"]), (3, 6, ["1000b050"])],

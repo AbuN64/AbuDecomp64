@@ -131,13 +131,19 @@ class StreamTests(unittest.TestCase):
                     "polls": {"oracle": 9, "port": 9, "common": 9},
                     "matched_through_poll": 4,
                     "first": {"poll": 5, "class": "vi"},
-                    "divergences": {"input": [], "vi": [{"poll": 5}, {"poll": 7}], "calls": [], "memory": []},
+                    "divergences": {
+                        "input": [],
+                        "vi": [{"poll": 5}, {"poll": 7}],
+                        "clock": [],
+                        "calls": [],
+                        "memory": [],
+                    },
                 }
             )
         )
         match = site_stream.answer(self.server, "GET", "r1", "", b"")[1]["match"]
         assert match["matched_through_poll"] == 4 and match["first"] == {"poll": 5, "class": "vi"}
-        assert match["divergences"] == {"input": 0, "vi": 2, "calls": 0, "memory": 0}
+        assert match["divergences"] == {"input": 0, "vi": 2, "clock": 0, "calls": 0, "memory": 0}
 
     def test_a_run_without_pictures_refuses(self):
         tmp_path = self.tmp

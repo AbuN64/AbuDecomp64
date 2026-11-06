@@ -49,7 +49,9 @@ def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=Tr
     for side, order in (("port", "native"), ("oracle", "canonical-be")):
         (run / "lockstep" / side).mkdir(parents=True)
         meta = {"k": "meta", "side": side, "ram": 16384, "page": 4096, "bytes": order, "hash": "fnv1a64-le64"}
-        polls = [{"k": "poll", "poll": n, "vi": n, "pad": ["80000000"], "pages": []} for n in range(9)]
+        polls = [
+            {"k": "poll", "poll": n, "vi": n, "ns": n * 16683333, "pad": ["80000000"], "pages": []} for n in range(9)
+        ]
         (run / "lockstep" / side / "lockstep.jsonl").write_text("".join(json.dumps(r) + "\n" for r in [meta, *polls]))
     data = "".join(n + "\n" for n in names).encode()
     (site / FNROWS).write_bytes(data)
@@ -70,7 +72,7 @@ def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=Tr
     (run / "lockstep" / "port" / "calls.jsonl").write_text("\n".join(lines))
     if divergences is None:
         word = {"poll": 3, "address": "80001000", "class": "value", "oracle": "00000001", "port": "00000002"}
-        divergences = {"input": [], "vi": [], "memory": [word], "calls": []}
+        divergences = {"input": [], "vi": [], "clock": [], "memory": [word], "calls": []}
         divergences["calls"] = [{"fn": NAMES[1], "i": 0, "caller": "c", "poll": 0, "field": "args"}]
     rows = sorted((r for cls in divergences for r in divergences[cls]), key=lambda r: r["poll"])
     first = next((dict(r, **{"class": c}) for r in rows for c in divergences if r in divergences[c]), None)

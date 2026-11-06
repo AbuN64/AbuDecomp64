@@ -452,6 +452,7 @@ NOINST static void ls_point(unsigned i)
 /* The per-poll point (n64c_hook.h): at every guest controller poll the poll index, the VI retrace count, the pad words the
  * guest read and the pages changed since the previous poll, the oracle's poll line key for key, so a matching poll is
  * the same line on both sides (lockstep.py match keys a whole movie by it). */
+extern unsigned long long n64c_clock_peek_ns(void); /* the port's virtual guest clock (n64c_sched.c) */
 NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, int pads)
 {
     if (ls_dump_poll >= 0 && poll == ls_dump_poll)
@@ -460,7 +461,7 @@ NOINST void n64c_trace_poll_point(long poll, unsigned vi, const unsigned *pad, i
         return;
     pthread_mutex_lock(&lock);
     char *p = ls_line;
-    p += sprintf(p, "{\"k\":\"poll\",\"poll\":%ld,\"vi\":%u,\"pad\":[", poll, vi);
+    p += sprintf(p, "{\"k\":\"poll\",\"poll\":%ld,\"vi\":%u,\"ns\":%llu,\"pad\":[", poll, vi, n64c_clock_peek_ns());
     for (int i = 0; i < pads && i < 4; i++)
         p += sprintf(p, "%s\"%08x\"", i ? "," : "", pad[i]);
     p += sprintf(p, "],\"pages\":[");
@@ -960,7 +961,6 @@ NOINST RAWSTACK static void push_frame(void *fn, void *call_site, const unsigned
 /* Entry trace (N64C_ENTRY_TRACE=PATH[:FROM:TO], diagnostic): one "vi thread charged address" line per instrumented
  * entry while the retrace count is in [FROM, TO] (default every retrace), the port half of the oracle's N64R_TRACE. */
 extern uint32_t osViGetRetraceCount(void);
-extern unsigned long long n64c_clock_peek_ns(void);
 static FILE *et_file;
 static unsigned et_from, et_to = ~0u;
 NOINST static void et_init(void)

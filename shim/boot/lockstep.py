@@ -1159,7 +1159,7 @@ def print_report(report):
 
 
 # ---- whole-movie match keyed by poll ----------------------------------------------------------------------------
-MATCH_CLASSES = ("input", "vi", "calls", "memory")
+MATCH_CLASSES = ("input", "vi", "clock", "calls", "memory")
 RUN_LOCKSTEP, RUN_SIDES, RUN_MATCH = "lockstep", {"oracle": "canonical-be", "port": "native"}, "match.json"
 HEX8, HEX16 = re.compile(r"[0-9a-f]{8}"), re.compile(r"[0-9a-f]{16}")
 
@@ -1184,6 +1184,22 @@ def match_vi(oracle, port, polls):
         now = p["vi"] - o["vi"]
         if now != offset:
             out.append({"poll": poll, "oracle": o["vi"], "port": p["vi"], "offset": now})
+            offset = now
+    return out
+
+
+def match_clock(oracle, port, polls):
+    """Polls where the clock offset (port ns - oracle ns, the virtual guest clock each side read at the poll) changes:
+    under one shared virtual clock every offset is 0, so the first row names the poll the two clocks parted at."""
+    out, offset = [], 0
+    for poll in polls:
+        o, p = oracle[poll], port[poll]
+        for side, r in (("oracle", o), ("port", p)):
+            if not isinstance(r.get("ns"), int):
+                raise ValueError(f"lockstep/{side} poll {poll} carries no virtual clock ns")
+        now = p["ns"] - o["ns"]
+        if now != offset:
+            out.append({"poll": poll, "oracle": o["ns"], "port": p["ns"], "offset": now})
             offset = now
     return out
 
@@ -1346,6 +1362,7 @@ def match(args):
     divergences = {
         "input": match_input(oracle.polls, port.polls, every),
         "vi": match_vi(oracle.polls, port.polls, common),
+        "clock": match_clock(oracle.polls, port.polls, common),
         "calls": match_calls(matcher, oracle, port, common[-1], read_types(args.types)),
         "memory": match_memory(matcher, oracle, port, common, args.persist),
     }
@@ -1414,6 +1431,8 @@ def check_side(side_dir, name):
         r = side.polls[poll]
         if not isinstance(r.get("vi"), int):
             problems.append(f"lockstep/{name} poll {poll} vi: {r.get('vi')!r}, expected an integer")
+        if not isinstance(r.get("ns"), int):
+            problems.append(f"lockstep/{name} poll {poll} ns: {r.get('ns')!r}, expected the virtual clock in ns")
         pad = r.get("pad")
         if not isinstance(pad, list) or not pad or not all(isinstance(w, str) and HEX8.fullmatch(w) for w in pad):
             problems.append(f"lockstep/{name} poll {poll} pad: {pad!r}, expected 8-hex-digit words")

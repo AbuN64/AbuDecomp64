@@ -1,5 +1,6 @@
 """`tas play --oracle` and the port | original comparison (module tas_oracle). Mocked: no port or oracle runs."""
 
+import contextlib
 import hashlib
 import io
 import json
@@ -17,7 +18,7 @@ from unittest import mock
 
 from polls_record import write_polls
 
-from abu_decomp import DecompError, enhanced, tas, tas_oracle, tas_serve
+from abu_decomp import DecompError, enhanced, tas, tas_bake, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
 
 W, H = tas_oracle.WIDTH, tas_oracle.HEIGHT
@@ -38,6 +39,60 @@ def picture(rgb=(0, 0, 0), box=None, box_rgb=(255, 255, 255)) -> bytes:
 def write_shot(folder: Path, poll: int, pixels: bytes) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"poll-{poll:06d}.ppm").write_bytes(tas_oracle.PPM_HEAD + pixels)
+
+
+class MatchResultTests(unittest.TestCase):
+    def test_match_exit_contract_and_stale_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            folder = run / "lockstep"
+            folder.mkdir()
+            report = folder / "match.json"
+            first = {"poll": 0, "class": "input"}
+            cases = [
+                (0, {"first": None, "matched_through_poll": 16}, False),
+                (1, {"first": first, "matched_through_poll": -1}, False),
+                (1, None, True),
+                (0, None, True),
+                (2, None, True),
+                (0, {}, True),
+                (0, [], True),
+                (0, "invalid", True),
+                (0, {"matched_through_poll": 16}, True),
+                (0, {"first": None, "matched_through_poll": True}, True),
+                (1, {"first": None, "matched_through_poll": -1}, True),
+                (0, {"first": first, "matched_through_poll": -1}, True),
+            ]
+            for code, data, failed in cases:
+                with self.subTest(code=code, data=data):
+                    report.write_text('{"first": null, "matched_through_poll": 999}')
+
+                    def launch(*args, data=data, code=code, **kwargs):
+                        self.assertFalse(report.exists())
+                        if data is not None:
+                            report.write_text(data if isinstance(data, str) else json.dumps(data))
+                        return subprocess.CompletedProcess(args, code)
+
+                    with (
+                        mock.patch.object(tas_oracle.subprocess, "run", launch),
+                        mock.patch.object(tas_oracle, "lockstep_script", return_value=Path("matcher.py")),
+                    ):
+                        result = tas_oracle.lockstep_match(run)
+                    self.assertEqual(result["exit"], 2 if failed else code)
+                    self.assertEqual("error" in result, failed)
+                    if failed:
+                        self.assertTrue(result["error"])
+                        self.assertNotIn("match", result)
+                    else:
+                        self.assertEqual(result["first"], data["first"])
+                        self.assertEqual(result["matched_through_poll"], data["matched_through_poll"])
+            with (
+                mock.patch.object(tas_oracle.subprocess, "run", side_effect=OSError("launch refused")),
+                mock.patch.object(tas_oracle, "lockstep_script", return_value=Path("matcher.py")),
+            ):
+                result = tas_oracle.lockstep_match(run)
+            self.assertEqual(result["exit"], 2)
+            self.assertIn("launch refused", result["error"])
 
 
 class VerdictTests(unittest.TestCase):
@@ -251,6 +306,9 @@ class GatedPictureTests(unittest.TestCase):
 
 class PlayTests(unittest.TestCase):
     def setUp(self):
+        # These tests mock the game processes; host admission and background baking are seams too.
+        self.enterContext(mock.patch.object(tas.slots, "hold", return_value=contextlib.nullcontext()))
+        self.enterContext(mock.patch.object(tas_bake, "movie_hook"))
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)

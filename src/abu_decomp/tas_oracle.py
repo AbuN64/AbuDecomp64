@@ -275,22 +275,36 @@ def lockstep_match(run: Path) -> dict[str, Any]:
     the first divergence."""
     folder = run / LOCKSTEP
     folder.mkdir(parents=True, exist_ok=True)
+    report = folder / LOCKSTEP_MATCH
+    report.unlink(missing_ok=True)  # A failed launch must never reuse the previous match.
     with (folder / LOCKSTEP_LOG).open("w") as output:
-        code = subprocess.run(
-            [sys.executable, str(lockstep_script()), "match", "--run", str(run)],
-            stdin=subprocess.DEVNULL,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            check=False,
-        ).returncode
+        try:
+            code = subprocess.run(
+                [sys.executable, str(lockstep_script()), "match", "--run", str(run)],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                check=False,
+            ).returncode
+        except OSError as error:
+            output.write(str(error))
+            code = 2
     found: dict[str, Any] = {"exit": code, "log": str(folder / LOCKSTEP_LOG)}
     data = read_match(run)
-    if code in (0, 1) and data is not None:
-        found.update(
-            match=str(folder / LOCKSTEP_MATCH), matched_through_poll=data["matched_through_poll"], first=data["first"]
-        )
+    valid = (
+        data is not None
+        and type(data["matched_through_poll"]) is int
+        and data["matched_through_poll"] >= -1
+        and (data["first"] is None or (isinstance(data["first"], dict) and bool(data["first"])))
+        and (code == 1) == (data["first"] is not None)
+    )
+    if code in (0, 1) and valid:
+        found.update(match=str(report), matched_through_poll=data["matched_through_poll"], first=data["first"])
     else:
-        found["error"] = (folder / LOCKSTEP_LOG).read_text(errors="replace").strip()[-400:]
+        found["exit"] = 2
+        found["error"] = (folder / LOCKSTEP_LOG).read_text(errors="replace").strip()[
+            -400:
+        ] or f"lockstep matcher exited {code} without a valid, consistent match.json"
     return found
 
 
@@ -302,11 +316,11 @@ def read_match(run: Path) -> dict[str, Any] | None:
         data = json.loads((run / LOCKSTEP / LOCKSTEP_MATCH).read_text())
         return {
             "polls": data.get("polls"),
-            "matched_through_poll": data.get("matched_through_poll"),
-            "first": data.get("first"),
+            "matched_through_poll": data["matched_through_poll"],
+            "first": data["first"],
             "divergences": {name: len(rows) for name, rows in (data.get("divergences") or {}).items()},
         }
-    except (OSError, ValueError, AttributeError, TypeError):
+    except (OSError, ValueError, AttributeError, TypeError, KeyError):
         return None
 
 

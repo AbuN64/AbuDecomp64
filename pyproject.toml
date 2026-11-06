@@ -17,6 +17,7 @@ dependencies = [
   "textual==8.2.8",
   "pycparser==3.0",
   "gcovr==8.3",
+  "numpy==2.2.4",  # TAS lockstep matcher, including play and dump/pages
   "pillow==13.0.0",  # shared capture decoder + bounded JPEG video for the TAS viewer
   "unbake",
   "recipemaker",
@@ -24,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4", "mypy==2.3.1"]  # numpy: RageWarsEnhanced shim/boot/lockstep.py, loaded by tests/test_check_run.py, test_lockstep.py, test_run_coverage.py
+dev = ["ruff==0.16.9", "pytest==9.1.1", "mypy==2.3.1"]
 
 [project.scripts]
 decomp = "abu_decomp.cli:main"

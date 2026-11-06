@@ -1,7 +1,7 @@
 """The repo-local virtual environment: made from pyproject.toml's dependencies (and the dev extra), keyed on what it
 installs: a hash of pyproject.toml and of the commit each of our tools has landed at. pyproject.toml names our tools
 bare (unbake, recipemaker, cake-taste-64) and pins no commit; abu_decomp.sources.clean_requirements turns each name into
-the `name @ git+URL@commit` pip can fetch, the same read the rig deploy's readback makes. An unchanged tree whose tools
+the `name @ git+URL@commit` pip can fetch, the same read `landed_tools` makes. An unchanged tree whose tools
 have not moved reuses the environment with no install. Standard library only, so any python3 of the required version
 can run it. Prints the environment's interpreter path on stdout (installer output goes to stderr)."""
 

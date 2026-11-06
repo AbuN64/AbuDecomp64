@@ -1,4 +1,4 @@
-"""Game state, port against the original, per region (tas_statediff and shim/tas_state.h). Runs no game."""
+"""Game state, port against the original, per region (tas_statediff and RageWarsEnhanced tas_state.h). Runs no game."""
 
 import contextlib
 import json
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import ClassVar
 from unittest import mock
 
-from abu_decomp import DecompError, statetypes
+from abu_decomp import DecompError, enhanced, statetypes
 from abu_decomp import tas_statediff as sd
 
 HARNESS = Path(__file__).parent / "fixtures" / "tas_state_harness.c"
@@ -35,8 +35,9 @@ class HeaderTests(unittest.TestCase):
             raise unittest.SkipTest("no gcc")
         cls.tmp = Path(tempfile.mkdtemp())
         for name, flags in (("port", []), ("original", ["-DTS_ORACLE"])):
+            include = f"-I{enhanced.shim_dir()}"
             built = subprocess.run(
-                ["gcc", "-O1", "-Wall", "-Werror", *flags, "-o", str(cls.tmp / name), str(HARNESS)],
+                ["gcc", "-O1", "-Wall", "-Werror", include, *flags, "-o", str(cls.tmp / name), str(HARNESS)],
                 capture_output=True,
                 text=True,
             )

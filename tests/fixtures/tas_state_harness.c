@@ -1,6 +1,6 @@
-/* Test harness for shim/tas_state.h: prints the trace line of one or two polls and writes the canonical dump of the first.
+/* Test harness for RageWarsEnhanced shim/tas_state.h: prints the trace line of one or two polls and writes the canonical dump of the first.
  * usage: harness SPEC RAM.bin DUMP.bin [RAM2.bin]   (compile with -DTS_ORACLE for the original's word-swizzled RDRAM) */
-#include "../../shim/tas_state.h"
+#include "tas_state.h" /* RageWarsEnhanced shim/, passed with -I */
 
 static uint8_t *load(const char *path, uint32_t bytes)
 {

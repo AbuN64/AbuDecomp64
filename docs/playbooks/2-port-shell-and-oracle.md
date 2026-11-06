@@ -2,7 +2,7 @@
 
 ## Goal
 Two programs that read the same controller input and can be compared poll by poll:
-- **The native port shell**: the project's C compiled for the host (`decomp port new` and the shared `shim/`), linked
+- **The native port shell**: the project's C compiled for the host (`decomp port new` and the shared RageWarsEnhanced `shim/`), linked
   against a small compatibility layer (video, audio, input, files, timing). It starts as soon as the boot path has C;
   the rest of the game runs as it gets C.
 - **The reference** (oracle): a static recompilation of the original cartridge, used only as a test instrument. It never

@@ -1,7 +1,8 @@
 #!/bin/sh
 # The one entry point: brings the repo's own environment (.venv, made from pyproject.toml and reused while it is unchanged),
 # then runs the tests. Run it from the repo dir:
-#   bin/test                      everything (lint, format, all tests, pytest modules, the shim build and its tests)
+#   bin/test                      everything (lint, format, all tests, pytest modules)
+#   (the n64 shim is RageWarsEnhanced's: its build and tests run there, tests here read the copy found beside this repo)
 #   bin/test --changed            lint and format of the changed files and only the tests that cover them (seconds)
 #   bin/test tests/test_x.py ...  just those test files (or modules: test_x)
 set -eu
@@ -40,22 +41,3 @@ fi
 pytest_files="$(grep -l '^import pytest' tests/*.py || true)"
 # shellcheck disable=SC2086
 [ -z "$pytest_files" ] || "$py" -m pytest -q -p no:cacheprovider $pytest_files
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
-# The n64 shim (shim/): its standalone 32-bit build with unit tests, and the boot tools' tests that need no port facts
-# (test_link.py and test_closure.py read a port's real files and run in the port's own ctest). Skipped without -m32.
-if echo 'int main(void){return 0;}' | cc -m32 -x c - -o "$scratch/m32probe" 2>/dev/null; then
-  cmake -S shim -B "$scratch/shim" -G Ninja -DBUILD_TESTING=ON >/dev/null
-  cmake --build "$scratch/shim" -j4
-  ctest --test-dir "$scratch/shim" --output-on-failure -j4
-  for t in charged digests fl0 prepare_failclosed prepare trace lockstep replay image tile_parity hangcore gates sweep; do
-    case $t in
-      prepare|trace|lockstep|replay|image) set -- --compiler cc --m32 --work "$scratch/boot-$t" ;;
-      fl0|prepare_failclosed) set -- --work "$scratch/boot-$t" ;;
-      *) set -- ;;
-    esac
-    "$py" -I "shim/boot/test_$t.py" "$@"
-  done
-else
-  echo "bin/test: no 32-bit toolchain, skipping the shim build and tests"
-fi

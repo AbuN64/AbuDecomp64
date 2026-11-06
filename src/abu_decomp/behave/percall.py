@@ -1,6 +1,6 @@
 """Behaviour per call: the port's calls against the original's, call by call.
 
-Both sides write calls.jsonl (port: shim/boot/trace.c with N64C_CALLS=DIR; oracle: the n64host lockstep hook). A `call`
+Both sides write calls.jsonl (port: RWE boot/trace.c with N64C_CALLS=DIR; oracle: the n64host lockstep hook). A `call`
 line names the function `fn`, its `caller` (the logical parent frame's function), the call's ordinal `o` among that
 caller's calls of the function, the `frame` (poll) it ran in, its argument words `a` (oracle: a0-a3 with `f12`/`f14`;
 port: the first 8 words of the cdecl stack area) and, for a function returning, a `ret` line `r` ([v0, v1] on the

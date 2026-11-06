@@ -51,7 +51,7 @@ import threading
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from abu_decomp import DecompError, procguard
+from abu_decomp import DecompError, enhanced, procguard
 from abu_decomp.config import ConfigError, Profile, check_keys
 
 _KEYS = frozenset(
@@ -81,7 +81,6 @@ SIDES = ("port", "oracle")
 LOCKSTEP = "lockstep"  # RUN/lockstep/{port,oracle}/ and RUN/lockstep/match.json (CONTRACTS.md "Run record")
 LOCKSTEP_MATCH = "match.json"
 LOCKSTEP_LOG = "lockstep.txt"  # lockstep.py match's own output
-LOCKSTEP_PY = Path(__file__).resolve().parents[2] / "shim" / "boot" / "lockstep.py"
 LOCKSTEP_REPLAY = "replay"  # RUN/lockstep/replay/<poll>/: a dump replay's own files (output, user dir, card copies)
 WIDTH, HEIGHT = 320, 240
 PPM_HEAD = f"P6\n{WIDTH} {HEIGHT}\n255\n".encode()
@@ -230,11 +229,12 @@ def lockstep_side(run: Path, side: str) -> Path:
 
 
 def lockstep_script() -> Path:
-    """shim/boot/lockstep.py of this checkout (the seat venv is `pip install -e`); refused before any process starts
-    when the package runs without its repository."""
-    if not LOCKSTEP_PY.is_file():
-        raise DecompError("tas.lockstep", f"--lockstep needs {LOCKSTEP_PY} (decomp installed from its checkout)")
-    return LOCKSTEP_PY
+    """RageWarsEnhanced's shim/boot/lockstep.py, found beside this checkout; refused before any process starts when
+    that repository is missing (the refusal names the path to clone)."""
+    script = enhanced.shim_dir() / "boot" / "lockstep.py"
+    if not script.is_file():
+        raise DecompError("tas.lockstep", f"--lockstep needs {script}: update the RageWarsEnhanced checkout")
+    return script
 
 
 def stored_record(oracle: dict[str, Any], run: Path, pak: str, pads: int, exit_after: int) -> dict[str, Any]:
@@ -377,7 +377,7 @@ def lockstep_dump(profile: Profile, run_id: str, poll: int | None = None) -> dic
     env = {
         **tas.port_env(port_cfg, replay),
         **port_env(original, replay),
-        # the port half of the dump replay (shim/boot/trace.c): the record's folder, those pages at that poll, then exit
+        # the port half of the dump replay (RWE boot/trace.c): the record's folder, those pages at that poll, then exit
         "N64C_LOCKSTEP": "1",
         "N64C_LOCKSTEP_DIR": str(lockstep_side(run, "port")),
         "N64C_LOCKSTEP_DUMP": spec,

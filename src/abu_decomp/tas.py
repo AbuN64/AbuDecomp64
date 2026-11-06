@@ -832,7 +832,7 @@ def _wait(
 
 VIEW, HASH, AUDIO, RECORD = "view.bmp", "hash.txt", "audio.pcm", "run.json"
 TAKEN = "taken"  # present once live input drives the run
-GATED = "gated"  # present while the poll gate may hold the run (shim/n64c_tas.c): no timeout applies
+GATED = "gated"  # present while the poll gate may hold the run (RageWarsEnhanced shim/n64c_tas.c): no timeout applies
 GATE_VERBS = ("hold", "step", "seek", "run")  # the gate's datagrams; step and seek take a poll count
 _HELD = re.compile(r"n64c-tas: (held at|running from) poll (\d+)")
 ORACLE_HOLD = "oracle-hold.raw"  # the movie prefix the original replays for a run held at a poll
@@ -1327,7 +1327,7 @@ def take_root(name: str) -> str:
 
 
 def gate_datagram(verb: str, count: int | None = None) -> bytes:
-    """The datagram of one gate verb: hold, run, `step N` (default 1) and `seek P` (shim/n64c_tas.c)."""
+    """The datagram of one gate verb: hold, run, `step N` (default 1) and `seek P` (RageWarsEnhanced n64c_tas.c)."""
     if verb not in GATE_VERBS:
         raise DecompError("tas.gate", f"gate verb {verb!r} is not one of {', '.join(GATE_VERBS)}")
     if verb == "seek" and (count is None or count < 0):

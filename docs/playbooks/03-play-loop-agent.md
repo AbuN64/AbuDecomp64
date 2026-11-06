@@ -47,10 +47,10 @@ not sleeps: `/video/RUN` and `/wall` send when the run's picture file is replace
 `tas watch --next` available to block for the page's next event when you wait on a person instead of playing:
 
 1. **Validate, reproduce and measure.** Before any reader trusts a run record, run
-   `shim/boot/lockstep.py check RUN`, where `RUN` is its completed run folder; stop the cycle if validation fails.
+   RageWarsEnhanced `shim/boot/lockstep.py check RUN`, where `RUN` is its completed run folder; stop the cycle if validation fails.
    The marked or crashing run is already a movie (mark saves one; otherwise `save NAME`). `play NAME`
    must reach the same stop at the same poll. Validate each replay's record before reading it, then run
-   `shim/boot/lockstep.py match --run RUN` to list divergences in `RUN/lockstep/match.json`, followed by
+   RageWarsEnhanced `shim/boot/lockstep.py match --run RUN` to list divergences in `RUN/lockstep/match.json`, followed by
    `decomp tas coverage` to measure covered/total functions in `runs/coverage-table.json`. If lockstep evidence
    is missing, capture it through playbook 02's lockstep replay before measuring; missing evidence is never zero.
 2. **Root cause, cheapest first** (playbook 02): read the stacks; describe the suspects with `behave`; compare

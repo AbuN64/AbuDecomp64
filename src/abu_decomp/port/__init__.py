@@ -1,6 +1,6 @@
 """Port boilerplate: a port format 1 repository (docs/FORMAT.md) on the n64 shim, from one port spec (schema 3).
 
-The port consumes the shim (abu-decomp-64 `shim/`) pinned by commit: the skeleton fixes the build presets, the
+The port consumes the shim (RageWarsEnhanced `shim/`) pinned by commit: the skeleton fixes the build presets, the
 shim pin, the port's facts directory (`platform/port`: manifest, bindings, boot trace, the ENTRY_POINTS ledger),
 the n64lint gate, a shim link test, ci/check and the README. Everything game-specific is the port's own work.
 Project facts come only from the spec, which is copied into the new repository as port.json.

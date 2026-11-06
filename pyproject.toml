@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4", "mypy==2.3.1"]  # numpy: the shim boot tests (shim/boot/fl0.py)
+dev = ["ruff==0.16.9", "pytest==9.1.1", "numpy==2.2.4", "mypy==2.3.1"]  # numpy: RageWarsEnhanced shim/boot/lockstep.py, loaded by tests/test_check_run.py, test_lockstep.py, test_run_coverage.py
 
 [project.scripts]
 decomp = "abu_decomp.cli:main"
@@ -39,7 +39,7 @@ include = ["abu_decomp", "abu_decomp.*"]
 "abu_decomp" = ["runner.html", "static/*", "static/site/*"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]  # a bare pytest imports this tree, never the venv copy
-testpaths = ["tests"]  # shim/boot/test_*.py are scripts that parse argv on import: a bare pytest must not collect them
+testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120

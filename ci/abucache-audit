@@ -4,10 +4,7 @@
 # abucache owner and leaves the list; nothing joins it.
 set -eu
 cd "$(dirname "$0")/.."
-OWNED='shim/boot/gates.py
-shim/boot/lockstep.py
-shim/boot/sweep.py
-src/abu_decomp/behave/hits.py
+OWNED='src/abu_decomp/behave/hits.py
 src/abu_decomp/behave/precapture.py
 src/abu_decomp/behave/rekey.py
 src/abu_decomp/behave/replay.py

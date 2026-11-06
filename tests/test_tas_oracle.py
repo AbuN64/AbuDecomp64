@@ -17,7 +17,7 @@ from unittest import mock
 
 from polls_record import write_polls
 
-from abu_decomp import DecompError, tas, tas_oracle, tas_serve
+from abu_decomp import DecompError, enhanced, tas, tas_oracle, tas_serve
 from abu_decomp.config import load_profile
 
 W, H = tas_oracle.WIDTH, tas_oracle.HEIGHT
@@ -262,6 +262,12 @@ class PlayTests(unittest.TestCase):
         (self.root / "movies").mkdir()
         sha = hashlib.sha1(b"rom").hexdigest()
         (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *50\n")
+        self.shim = self.root / "enhanced-shim"  # RageWarsEnhanced's shim/, found beside the checkout in a real run
+        (self.shim / "boot").mkdir(parents=True)
+        (self.shim / "boot" / "lockstep.py").write_text("")
+        patch = mock.patch.object(tas_oracle.enhanced, "shim_dir", return_value=self.shim)
+        patch.start()
+        self.addCleanup(patch.stop)
         self.seat = self.root / "seat.json"
         self.tas = {"movies": "movies", "runs": "runs", "port": "port", "rom": "game.z64", "args": [], "exit_after": 7}
         self.profile = self.load(oracle={"host": "n64host", "env": {"N64R_ROM": "orig.z64"}, "shot_every": 25})
@@ -406,7 +412,7 @@ class PlayTests(unittest.TestCase):
         self.assertEqual(seen["port"]["N64C_CALLS"], str(run / "lockstep" / "port"))  # the calls beside the polls
         self.assertEqual(seen["oracle"]["N64R_LOCKSTEP_DIR"], str(run / "lockstep" / "oracle"))
         self.assertTrue((run / "lockstep" / "port").is_dir() and (run / "lockstep" / "oracle").is_dir())
-        self.assertEqual(ran, [[sys.executable, str(tas_oracle.LOCKSTEP_PY), "match", "--run", str(run)]])
+        self.assertEqual(ran, [[sys.executable, str(self.shim / "boot" / "lockstep.py"), "match", "--run", str(run)]])
         lockstep = result["oracle"]["lockstep"]
         self.assertEqual((lockstep["exit"], lockstep["matched_through_poll"]), (1, 8))
         self.assertEqual(lockstep["first"], {"poll": 9, "class": "memory"})
@@ -553,8 +559,18 @@ class PlayTests(unittest.TestCase):
     def test_lockstep_is_refused_without_the_oracle_or_its_script(self):
         with self.assertRaises(DecompError):
             tas.play(self.profile, "m", lockstep=True)
-        with mock.patch.object(tas_oracle, "LOCKSTEP_PY", self.root / "missing.py"), self.assertRaises(DecompError):
+        empty = mock.patch.object(tas_oracle.enhanced, "shim_dir", return_value=self.root / "empty")
+        with empty, self.assertRaises(DecompError):
             tas.play(self.profile, "m", oracle=True, lockstep=True)
+
+    def test_a_missing_enhanced_checkout_is_refused_naming_the_path_to_clone(self):
+        beside = self.root / "work" / "AbuDecomp64"
+        beside.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", str(beside)], check=True)
+        with self.assertRaises(DecompError) as refused:
+            enhanced.sibling(beside)
+        self.assertEqual(refused.exception.key, "enhanced.missing")
+        self.assertIn(str(self.root / "work" / "RageWarsEnhanced"), str(refused.exception))
 
     def test_no_picture_is_dumped_unless_asked(self):
         # a monkey batch dumped ~650 .ppm per run and filled the rig disk; the oracle keeps its checkpoints

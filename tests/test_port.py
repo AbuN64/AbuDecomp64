@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from abu_decomp import DecompError
+from abu_decomp import DecompError, enhanced
 from abu_decomp.port import PortError, generate, load_spec
 
 PIN_SHIM, PIN_DECOMP = "a" * 40, "b" * 40
@@ -59,7 +59,7 @@ class PortTests(unittest.TestCase):
 
     def test_cmake_source_contract(self):
         result = subprocess.run(
-            [sys.executable, "-I", str(CONTRACT.parents[3] / "shim/boot/test_srcfiles.py")],
+            [sys.executable, "-I", str(enhanced.shim_dir() / "boot" / "test_srcfiles.py")],
             capture_output=True,
             text=True,
         )

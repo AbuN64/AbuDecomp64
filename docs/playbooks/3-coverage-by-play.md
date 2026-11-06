@@ -14,8 +14,8 @@ no other movie reaches. Bots replay and extend them at turbo speed.
 - **Behaviour**: each reached function compared with the original on the same inputs (`decomp behave`), and the game
   state compared region by region at every poll of a movie.
 Each cycle uses one coverage build and `decomp tas play --all`. For each completed run folder `RUN`, before any
-reader trusts its record, run `shim/boot/lockstep.py check RUN`; stop the cycle if validation fails. Then run
-`shim/boot/lockstep.py match --run RUN` to list divergences in `RUN/lockstep/match.json`, followed by
+reader trusts its record, run RageWarsEnhanced `shim/boot/lockstep.py check RUN`; stop the cycle if validation fails. Then run
+RageWarsEnhanced `shim/boot/lockstep.py match --run RUN` to list divergences in `RUN/lockstep/match.json`, followed by
 `decomp tas coverage` to measure covered/total functions in `runs/coverage-table.json`. Capture missing lockstep
 evidence with playbook 02's lockstep replay before measuring; missing evidence is never zero. Every cycle reports
 `covered/total functions` and `divergences left` as measured integer counts from that coverage table and the match
@@ -27,8 +27,8 @@ another version only), no function the reference reaches is missing on the port,
 differently. Lines and branches the original never takes (defensive code) are listed by file and line.
 
 ## Order of attack
-1. Run every movie; perform Measurements' `shim/boot/lockstep.py check RUN`,
-   `shim/boot/lockstep.py match --run RUN` and `decomp tas coverage` sequence before grouping the findings
+1. Run every movie; perform Measurements' RageWarsEnhanced `shim/boot/lockstep.py check RUN`,
+   RageWarsEnhanced `shim/boot/lockstep.py match --run RUN` and `decomp tas coverage` sequence before grouping the findings
    (crashes, hangs, state differences, sanitizer reports) by root cause, not by movie.
 2. Fix one root cause at a time in the shared C, then write it as a rule and sweep the whole tree for its siblings.
 3. Aim new movies at the largest unreached functions nearest to reached code: a start point (a saved game, a menu, a

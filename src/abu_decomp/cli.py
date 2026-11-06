@@ -542,7 +542,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "--lockstep",
         action="store_true",
         help="with --oracle: both sides record the whole-movie lockstep into RUN/lockstep/{port,oracle} and "
-        "shim/boot/lockstep.py match writes RUN/lockstep/match.json at the end",
+        "RageWarsEnhanced shim/boot/lockstep.py match writes RUN/lockstep/match.json at the end",
     )
     play.add_argument(
         "--from",

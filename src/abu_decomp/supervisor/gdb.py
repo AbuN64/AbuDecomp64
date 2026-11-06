@@ -28,7 +28,7 @@ _MI_ASYNC = re.compile(r"[=*+][a-z][a-z-]*(,|$)")
 RAM_FAULT = "ram-fault.bin"
 
 
-POLL = "*(long*)&polls"  # the shim's poll counter (shim/n64c_tas.c; a static: read through its address)
+POLL = "*(long*)&polls"  # the shim's poll counter (RageWarsEnhanced n64c_tas.c; a static: read through its address)
 
 
 def event_commands(spec, pointer_bytes, poll=None):

@@ -785,7 +785,7 @@ class Server:
         return {"ok": True}
 
     def gate(self, run_id: str, verb: str, count: int | None = None) -> dict[str, Any]:
-        """Hold, step, seek or let go a running replay on its own poll count (the gate, shim/n64c_tas.c). While the
+        """Hold, step, seek or let go a running replay on its own poll count (the gate, RWE n64c_tas.c). While the
         gate may hold the run the supervisor applies no timeout (tas.GATED); `run` gives the timeout back."""
         run = self.run_dir(run_id)
         if not run or not tas.running(run):

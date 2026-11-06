@@ -27,7 +27,7 @@ explicitly in the seat profile (merge this fragment into its `tas` configuration
 
 ```sh
 decomp --profile seat.json unbake report --next
-decomp port new --spec port.json ../my-port   # a port on the n64 shim (shim/)
+decomp port new --spec port.json ../my-port   # a port on the n64 shim (RageWarsEnhanced shim/)
 ```
 
 ```sh
@@ -71,10 +71,11 @@ name to its source repository's landed commit (`abu_decomp.sources.PACKAGES`, `l
 again. It needs only a
 `python3` of the version `pyproject.toml` asks for and reads no environment variable to find an interpreter.
 
-- `bin/test` runs the full check (lint, format, every test, the shim build and its tests).
+- `bin/test` runs the full check (lint, format, every test).
 - `bin/test tests/test_x.py tests/test_y.py` runs just those test files (or modules, `test_x`).
+- The n64 shim is owned by RageWarsEnhanced (`shim/`): this repository holds no copy and reads the one found beside it (`abu_decomp.enhanced`, the parent of the git common directory plus `RageWarsEnhanced`). A missing sibling is refused naming the path to clone.
 - `bin/test --changed` lints the changed files and runs only the tests that import the changed modules (under a second to
-  seconds); run the full `bin/test` before a push that touches `shim/` or `ci/`.
+  seconds); run the full `bin/test` before a push that touches `ci/`.
 
 A Proof for a card on this repo is `cd <repo> && bin/test <tests>`.
 

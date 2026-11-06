@@ -7,15 +7,29 @@ import hashlib
 import importlib.util
 import io
 import json
-import pathlib
 import sys
 
 import pytest
 
-LOCKSTEP = pathlib.Path(__file__).resolve().parent.parent / "shim" / "boot" / "lockstep.py"
-_spec = importlib.util.spec_from_file_location("lockstep_under_test", LOCKSTEP)
-lockstep = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(lockstep)
+from abu_decomp import enhanced
+
+LOCKSTEP = enhanced.shim_dir() / "boot" / "lockstep.py"  # RageWarsEnhanced owns the shim
+
+
+def _load_lockstep():
+    """RageWarsEnhanced's lockstep.py puts its own folder on sys.path when loaded; that shadowed tests/test_gates and
+    tests/test_sweep with the shim's test_gates and test_sweep for the rest of discovery, so the path is put back."""
+    before = list(sys.path)
+    spec = importlib.util.spec_from_file_location("lockstep_under_test", LOCKSTEP)
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = before
+    return module
+
+
+lockstep = _load_lockstep()
 
 # A captured slice of the RWE-COVERAGE lane's coverage.tsv function column (fnrows order).
 NAMES = [
@@ -133,11 +147,3 @@ def test_the_plays_reach_bin_is_zero_filled_to_the_census_rows_never_cut(tmp_pat
         collector.feed(tas_reach.full(1, sent))  # the port's bitset ends at the highest row it entered
         collector.finish()
         assert (run / "reach.bin").read_bytes() == want  # ceil(70/8) = 9 bytes; a longer one stays for check to refuse
-
-
-def test_loading_lockstep_leaves_sys_path_unchanged():
-    # A shim/boot entry on sys.path shadowed tests/test_sweep with shim/boot/test_sweep for the rest of discovery.
-    before = list(sys.path)
-    spec = importlib.util.spec_from_file_location("lockstep_path_probe", LOCKSTEP)
-    spec.loader.exec_module(importlib.util.module_from_spec(spec))
-    assert sys.path == before

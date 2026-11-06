@@ -1601,6 +1601,9 @@ def play(
         if original and lockstep:
             tas_oracle.lockstep_script()
             original["lockstep"] = True
+        stored = bool(
+            original and lockstep and original["record"] and not oracle_pictures
+        )  # the oracle half from the store
         if retry:
             name, polls = retry["movie"], retry["polls"]
             speed, label, pak = 0, label or HUMAN_LABEL, retry["pak"]
@@ -1736,7 +1739,15 @@ def play(
                 try:
                     with _starting_play_process():
                         state = tas_statediff.begin(
-                            profile, cfg, run, pak, card, polls, pads, attach=bool(original), stages=timed_work
+                            profile,
+                            cfg,
+                            run,
+                            pak,
+                            card,
+                            polls,
+                            pads,
+                            attach=bool(original) and not stored,
+                            stages=timed_work,
                         )
                         if state and state.process:
                             children.append(state.process)
@@ -1749,7 +1760,17 @@ def play(
                 elif "state_diff" not in record and (why := tas_statediff.available(profile)):
                     record["state_diff"] = {"skipped": why}  # said once per run, not a silent "no trace" after a replay
             oracle_process, oracle_end, oracle_waiter = None, {}, None
-            if original:
+            if original and stored:
+                env.update(tas_oracle.port_env(original, run))
+                with cache_stages.timed("tas.oracle.stored") as served:
+                    answer = tas_oracle.stored_record(original, run, pak, pads, cfg["exit_after"])
+                record["oracle"] = {
+                    "status": "stored",
+                    "host": str(original["host"]),
+                    "store": answer,
+                    "store_seconds": round(served.seconds, 3),
+                }
+            elif original:
                 env.update(tas_oracle.port_env(original, run))
                 record["oracle"] = {
                     "status": "running",
@@ -1888,6 +1909,8 @@ def play(
                     result["state_diff"] = {"error": str(error)}
             elif "state_diff" in record:
                 result["state_diff"] = record["state_diff"]
+            if stored:
+                record["oracle"]["lockstep"] = tas_oracle.lockstep_match(run)
             if oracle_waiter:
                 oracle_waiter.join()
                 wall, polls = oracle_end["wall"], tas_oracle.reached(run)

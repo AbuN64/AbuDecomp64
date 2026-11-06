@@ -67,6 +67,7 @@ _KEYS = frozenset(
         "pins",
         "pins_repo",
         "lockstep_calls",
+        "record",
     }
 )
 REMOVED_KEYS = {"cpu_profile": "the oracle's CPU profile is no longer read; delete the key"}
@@ -114,6 +115,12 @@ def settings(profile: Profile) -> dict[str, Any] | None:
     lead = int(table.get("render_lead", 2))
     if lead < 0:
         raise DecompError("tas.oracle", f"render_lead is a poll count >= 0, not {lead}")
+    record = table.get("record", [])
+    if not isinstance(record, list) or not all(isinstance(word, str) for word in record):
+        raise DecompError(
+            "tas.oracle",
+            "record is the argv of `taste` (a list of words) whose `oracle record` serves the golden store",
+        )
     keys = ("pins", "lock")
     from abu_decomp import tas_health
 
@@ -130,6 +137,7 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
         "lockstep_calls": calls,
+        "record": record,
     }
 
 
@@ -227,6 +235,38 @@ def lockstep_script() -> Path:
     if not LOCKSTEP_PY.is_file():
         raise DecompError("tas.lockstep", f"--lockstep needs {LOCKSTEP_PY} (decomp installed from its checkout)")
     return LOCKSTEP_PY
+
+
+def stored_record(oracle: dict[str, Any], run: Path, pak: str, pads: int, exit_after: int) -> dict[str, Any]:
+    """The oracle half of the lockstep from the golden store (`taste oracle record`, CakeTaste64): RUN/lockstep/oracle/
+    lockstep.jsonl linked from the record stored for (ROM sha1, oracle build key, movie sha256), the oracle run only if
+    the store holds none. Returns the store's answer: served, path, bytes, seconds, and the address."""
+    argv = [
+        *oracle["record"],
+        "oracle",
+        "record",
+        "--movie",
+        str(run / "movie.raw"),
+        "--into",
+        str(lockstep_side(run, "oracle")),
+        "--pak",
+        pak,
+        "--pads",
+        str(pads),
+        "--exit-after",
+        str(exit_after),
+        "--calls",
+        str(oracle["lockstep_calls"]),
+    ]
+    done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+    try:
+        answer = json.loads(done.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        answer = {}
+    if done.returncode or not answer.get("ok"):
+        why = [f["message"] for f in answer.get("findings", [])] or [(done.stderr or done.stdout).strip()[-400:]]
+        raise DecompError("tas.oracle", f"the golden store refused the oracle record: {'; '.join(why)}")
+    return answer["result"]
 
 
 def lockstep_match(run: Path) -> dict[str, Any]:

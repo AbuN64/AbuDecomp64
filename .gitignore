@@ -8,3 +8,4 @@ dist/
 !.abu/Playbooks/
 .unbake/
 unit.log
+/.abu-tests-*/

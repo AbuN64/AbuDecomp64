@@ -1,8 +1,9 @@
 """Test repos start from git with no host template: a host init.templatedir carries commit-msg and pre-push hooks
 (subject <= 72, remote tip known locally) that refuse the throwaway repos the tests build.
 
-Every test also gets its own empty slot pool and no real gcovr: a test must never queue behind (or hold a slot of) the
-live rig pool that the lanes build through."""
+Every test also gets its own runtime file (ABU_RUNTIME, so its slot pool is its own runtime.cache.dir) and no real
+gcovr: a test must never queue behind (or hold a slot of) the live rig pool that the lanes build through, nor read the
+host's ~/.config/abu/runtime.toml."""
 
 import atexit
 import os
@@ -21,6 +22,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(
     filter(None, [str(_HERE / "host_seam"), str(_HERE.parent / "src"), os.environ.get("PYTHONPATH")])
 )
 runpy.run_path(str(_HERE / "host_seam/sitecustomize.py"))
+import standin_runtime  # noqa: E402  (found through host_seam, which sitecustomize.py put on sys.path)
 
 _EMPTY = tempfile.mkdtemp(prefix="git-template-")
 os.environ["GIT_TEMPLATE_DIR"] = _EMPTY
@@ -48,5 +50,9 @@ def _stand_in_seat(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_rig(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    from abucache import runtime, slots
+
+    stand_in = standin_runtime.write(tmp_path)
+    monkeypatch.setenv("ABU_RUNTIME", str(stand_in))
+    monkeypatch.setattr(slots, "default", slots.Slots(runtime.load(stand_in)))
     monkeypatch.setattr(subprocess, "run", _run_without_gcovr)

@@ -160,6 +160,20 @@ class PortTests(unittest.TestCase):
         done = subprocess.run([str(out / "ci/format-check"), "--strict"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0, done.stderr)
 
+    def test_tracked_land_playbook_passes_the_format_check(self):
+        out = self.root / "landed"
+        generate(load_spec(FIXTURE), out)
+        (out / "Documentation/Playbooks").mkdir(parents=True)
+        (out / "Documentation/Playbooks/Land.md").write_text("# Land\n")
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run(["git", "init", "-q", str(out)], check=True)
+        subprocess.run([*git, "-C", str(out), "add", "-A"], check=True)
+        subprocess.run([*git, "-C", str(out), "commit", "-q", "-m", "x"], check=True)
+        for args in ([], ["--strict"]):
+            done = subprocess.run([str(out / "ci/format-check"), *args], capture_output=True, text=True)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("format: ok (format 1)", done.stdout)
+
     def test_v2_spec_is_refused_with_the_fix(self):
         old = {k: v for k, v in SPEC.items() if k not in ("format", "install")}
         path = self.root / "old.json"

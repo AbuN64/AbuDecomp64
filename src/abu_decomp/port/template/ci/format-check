@@ -19,7 +19,7 @@ grep -q '"format": *1' port.json 2>/dev/null || bad "port.json: no \"format\": 1
 # Top level: only the format's entries (plus dotfiles and the usual root files).
 for entry in $(git ls-tree --name-only HEAD); do
     case "$entry" in
-        .*|port.json|platform|src|packaging|tests|tools|cmake|ci|docs|CMakeLists.txt|CMakePresets.json|LICENSE|README.md|SOURCES.md|PROVENANCE.md) ;;
+        .*|port.json|platform|src|packaging|tests|tools|cmake|ci|docs|Documentation|CMakeLists.txt|CMakePresets.json|LICENSE|README.md|SOURCES.md|PROVENANCE.md) ;;
         *) if pending "$entry"; then
                [ "$strict" = 1 ] && bad "pending move not done: $entry ($(grep "^$entry " ci/format-pending | cut -d' ' -f2-))"
                echo "format: pending $entry ($(grep "^$entry " ci/format-pending | cut -d' ' -f2-))" >&2

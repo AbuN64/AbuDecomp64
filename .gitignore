@@ -4,8 +4,7 @@ __pycache__/
 dist/
 .venv
 .ruff_cache/
-.abu/*
-!.abu/Playbooks/
+/.abu/
 .unbake/
 unit.log
 /.abu-tests-*/

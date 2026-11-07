@@ -9,7 +9,7 @@ common, install) and one game module (the original C on the n64 shim). Vanilla s
 engine has no game facts: every game fact is in `port.json` or `platform/port/`. A second game is a new spec and new
 facts, never new engine code.
 
-## Layout (checked: each path exists; nothing else at the top level except dotfiles, LICENSE, README.md, CMake files)
+## Layout (checked: each path exists; nothing else at the top level except dotfiles, LICENSE, README.md, CMake files, Documentation/ (the Land playbook))
 
 | Path | Owner | Holds |
 |---|---|---|

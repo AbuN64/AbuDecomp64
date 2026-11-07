@@ -77,11 +77,20 @@ def make_run(root, reached=(0, 1, 2, 4), calls=None, divergences=None, census=Tr
     (run / "reach.bin").write_bytes(bitset(reached, (len(names) + 7) // 8))
     if calls is None:  # fn -> call count: two calls of row 0, one of row 1, one of row 2, one of a row not reached
         calls = {NAMES[0]: 2, NAMES[1]: 1, NAMES[2]: 1, NAMES[3]: 1}
-    lines = [json.dumps({"k": "meta", "side": "port", "mode": "calls", "first": 16})]
-    for fn, n in calls.items():
+    # every kind trace.c writes (RWE docs/CONTRACTS.md, Port calls record), with its fields
+    meta = {"k": "meta", "side": "port", "mode": "calls", "first": 16, "trace": len(names), "ring": "pow2"}
+    meta.update(window=16, ordinal="thread", totals="poll")
+    lines = [json.dumps(meta)]
+    for pair, (fn, n) in enumerate(calls.items()):
+        order = names.index(fn) + 1 if fn in names else 0
+        lines.append(json.dumps({"k": "pair", "id": pair, "thr": 1, "caller": "c", "fn": fn}))
+        lines.append(json.dumps({"k": "unframed", "order": order, "fn": fn, "pc": "0805a1c4"}))
         for o in range(n):
-            lines.append(json.dumps({"k": "call", "fn": fn, "i": o, "caller": "c", "o": o, "frame": o, "a": []}))
-            lines.append(json.dumps({"k": "ret", "fn": fn, "i": o, "caller": "c", "o": o, "r": [0]}))
+            call = {"k": "call", "order": order, "i": o, "thr": 1, "sp": "ffff4c78", "fn": fn, "frame": o}
+            lines.append(json.dumps({**call, "caller": "c", "o": o, "a": ["00000000"] * 8}))
+            ret = {"k": "ret", "order": order, "i": o, "thr": 1, "r": ["00000000", "00000001"], "st0": None}
+            lines.append(json.dumps({**ret, "fn": fn, "caller": "c", "o": o}))
+        lines.append(json.dumps({"k": "tot", "poll": 0, "d": [[pair, n]]}))
     lines.append('{"k": "call", "fn": "cut')  # a last line cut by a killed run
     (run / "lockstep" / "port" / "calls.jsonl").write_text("\n".join(lines))
     if divergences is None:

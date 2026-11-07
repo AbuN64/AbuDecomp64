@@ -101,22 +101,34 @@ CORRUPTIONS = {
         "lockstep/port/calls.jsonl line 1",
     ),
     "calls-unreadable": (calls(lambda ls: ls.insert(2, "{not json")), "lockstep/port/calls.jsonl line 3: unreadable"),
-    "calls-kind": (calls(lambda ls: ls.insert(1, '{"k": "hit"}')), "lockstep/port/calls.jsonl line 2: k 'hit'"),
+    "calls-kind": (
+        calls(lambda ls: ls.insert(1, '{"k": "hit"}')),
+        "lockstep/port/calls.jsonl line 2: k 'hit', expected one of pair, tot, call, ret, unframed",
+    ),
     "calls-unframed-pc": (
-        calls(lambda ls: ls.insert(1, '{"k": "unframed", "order": 3, "pc": "zz"}')),
-        "lockstep/port/calls.jsonl line 2: an unframed line without its integer order and 8-hex pc",
+        calls(lambda ls: ls.insert(1, '{"k": "unframed", "order": 3, "fn": "f", "pc": "zz"}')),
+        "lockstep/port/calls.jsonl line 2: an unframed line without its integer order, fn name and 8-hex pc",
+    ),
+    "calls-unframed-no-fn": (
+        calls(lambda ls: ls.insert(1, '{"k": "unframed", "order": 3, "pc": "0805a1c4"}')),
+        "lockstep/port/calls.jsonl line 2: an unframed line without its integer order, fn name and 8-hex pc",
     ),
     "calls-no-ordinal": (
         calls(lambda ls: ls.insert(1, '{"k": "ret", "fn": "f", "caller": "c", "r": []}')),
-        "lockstep/port/calls.jsonl line 2: expected fn, caller and ordinal o",
+        "lockstep/port/calls.jsonl line 2: a ret without its integer order, i, thr and ordinal o"
+        " and its fn and caller names",
     ),
     "calls-call-no-frame": (
-        calls(lambda ls: ls.insert(1, '{"k": "call", "fn": "f", "i": 9, "caller": "c", "o": 9, "a": []}')),
-        "lockstep/port/calls.jsonl line 2: a call without its poll frame",
+        calls(
+            lambda ls: ls.insert(
+                1, '{"k": "call", "order": 1, "thr": 1, "fn": "f", "i": 9, "caller": "c", "o": 9, "a": []}'
+            )
+        ),
+        "lockstep/port/calls.jsonl line 2: a call without its integer order, i, thr, poll frame and ordinal o",
     ),
     "calls-ret-no-words": (
-        calls(lambda ls: ls.insert(1, '{"k": "ret", "fn": "f", "i": 9, "caller": "c", "o": 9}')),
-        "lockstep/port/calls.jsonl line 2: a ret without its return words",
+        calls(lambda ls: ls.insert(1, '{"k": "ret", "order": 1, "thr": 1, "fn": "f", "i": 9, "caller": "c", "o": 9}')),
+        "lockstep/port/calls.jsonl line 2: a ret without its two return words r",
     ),
     "match-missing": (lambda run: (run / "lockstep/match.json").unlink(), "lockstep/match.json: "),
     "match-not-object": (write("lockstep/match.json", b"7"), "lockstep/match.json: int, expected an object"),
@@ -211,8 +223,6 @@ def test_a_whole_run_holds_field_by_field(tmp_path):
     (run / "audio.pcm.rate").write_text("32000\n")
     (run / "audio-oracle.pcm").write_bytes(b"")  # opened, no sound yet: no rate to name
     (run / "lockstep" / "replay" / "4").mkdir(parents=True)
-    # trace.c's unframed line, as the real play 20261102T083234Z-pp-1p-match writes it (its line 91 was refused)
-    calls(lambda ls: ls.insert(1, '{"k":"unframed","order":91,"pc":"0805a1c4"}'))(run)
     edit_json(run / "run.json", lambda r: r.__setitem__("oracle", {"lockstep": {"exit": 2, "error": "refused"}}))
     assert problems(run) == []
 

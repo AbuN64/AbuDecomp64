@@ -1504,6 +1504,7 @@ def play(
     sanitize: bool = False,
     supervise: bool = True,
     first_pass: bool = False,
+    through: int | None = None,
 ) -> dict[str, Any]:
     """Replay one movie at `speed` (0 = turbo), visible on the page; the result says whether its RAM was the same
     every poll as the movie's previous run on this build (`same_twice`). `port` runs another build's executable (a
@@ -1613,6 +1614,10 @@ def play(
             polls = []
         else:
             polls = movie_polls(cfg, name, start)
+            if through is not None:  # the movie's first `through` polls: a prefix shows what starts by then
+                if not 0 < through <= len(polls):
+                    raise DecompError("tas.play", f"--through is a poll 1..{len(polls)} of {name}, not {through}")
+                polls = polls[:through]
         if not retry and not human:
             own_start = start or decode(_movie(cfg, name).read_text())[0].get("start")
             started = (own_start, len(tas_points.load(cfg, own_start)["polls"])) if own_start else (None, 0)

@@ -181,6 +181,31 @@ class MovieTests(unittest.TestCase):
         user = seen["argv"][-1]
         self.assertTrue(user.endswith("/user") and Path(user).is_dir())
 
+    def test_through_replays_only_the_movie_prefix(self):
+        (self.root / "movies").mkdir()
+        sha = hashlib.sha1(b"rom").hexdigest()
+        (self.root / "movies" / "m.tas").write_text(f"# tas 1\n# rom-sha1 {sha}\nA *2\n- *3\n")
+        seen = {}
+
+        class Port:
+            def __init__(self, argv, env, stdout, **kwargs):
+                run = Path(argv[argv.index("--run-dir") + 1])
+                seen["movie"] = (run / "movie.raw").read_text()
+                write_polls(env, "8000 0 0\n8000 0 0\n0000 0 0\n")
+                self.pid, self.stdin = 1, io.StringIO()
+
+            def wait(self, timeout=None):
+                return 0
+
+        with mock.patch.object(tas.subprocess, "Popen", Port):
+            result = tas.play(self.profile, "m", now=T0, through=3)
+        self.assertEqual(seen["movie"], "8000 0 0\n8000 0 0\n0000 0 0\n")
+        self.assertEqual(result["polls"], 3)
+        for bad in (0, 6):
+            with self.assertRaises(DecompError) as caught:
+                tas.play(self.profile, "m", now=T0, through=bad)
+            self.assertIn("--through is a poll 1..5", str(caught.exception))
+
     def test_a_crash_is_a_finding_of_its_batch_and_a_clean_replay_clears_it(self):
         from abu_decomp import tas_buckets, tas_findings
 

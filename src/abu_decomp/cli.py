@@ -545,6 +545,13 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "RageWarsEnhanced shim/boot/lockstep.py match writes RUN/lockstep/match.json at the end",
     )
     play.add_argument(
+        "--through",
+        type=int,
+        metavar="P",
+        help="replay only the movie's first P polls (then tas.exit_after more, as at its end): a lockstep divergence "
+        "that starts by poll P shows at the cost of P polls, not the whole movie",
+    )
+    play.add_argument(
         "--from",
         dest="start",
         metavar="POINT",
@@ -714,6 +721,8 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
         "state_diff": not args.no_state_diff,
         "sanitize": args.sanitize,
     }
+    if args.through is not None and (args.all or args.twice):
+        raise DecompError("tas.play", "--through cuts one movie: not with --all or --twice")
     if args.all:  # every play option applies to every movie
         result, code = tas.play_all(
             profile,
@@ -732,7 +741,7 @@ def _run_tas(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict[s
     if args.twice:
         twice = tas.play_twice(profile, args.name, **options)
         return twice, int(twice.get("oracle", {}).get("verdict") == "fail"), []
-    played = tas.play(profile, args.name, **options, **inspect)
+    played = tas.play(profile, args.name, **options, **inspect, through=args.through)
     return played, int(played.get("oracle", {}).get("verdict") == "fail"), []
 
 

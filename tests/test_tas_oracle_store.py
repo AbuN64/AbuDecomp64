@@ -48,6 +48,47 @@ class StoredRecord(unittest.TestCase):
             with self.assertRaisesRegex(DecompError, "golden store refused"):
                 tas_oracle.stored_record(self.oracle, Path(folder), "on", 1, 300)
 
+    def test_a_mask_reaches_the_store_and_no_mask_adds_no_flag(self):
+        _, argv, _ = self.run_record(ANSWER)
+        self.assertNotIn("--mask", argv)
+        self.oracle = MappingProxyType({**self.oracle, "lockstep_mask": "800e9400-800ebc00"})
+        _, argv, _ = self.run_record(ANSWER)
+        self.assertEqual(argv[argv.index("--mask") + 1], "800e9400-800ebc00")
+
+
+class LockstepMask(unittest.TestCase):
+    def test_the_mask_file_becomes_one_spec_for_both_recorders(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "mask.tsv"
+            path.write_text("# comment\n\n0x800E9400-0x800EBC00\tguest stack\n0x8011f660-0x8011f664\tOSThread state\n")
+            spec = tas_oracle.mask_spec(path)
+            self.assertEqual(spec, "800e9400-800ebc00,8011f660-8011f664")
+            self.assertEqual(tas_oracle.mask_env(spec), {"N64C_LOCKSTEP_MASK": spec, "N64R_LOCKSTEP_MASK": spec})
+            self.assertEqual(tas_oracle.mask_env(""), {})
+            env = tas_oracle.lockstep_env({"lockstep": True, "lockstep_calls": 8, "lockstep_mask": spec}, Path(folder))
+            self.assertEqual(env["N64R_LOCKSTEP_MASK"], spec)
+            self.assertNotIn(
+                "N64R_LOCKSTEP_MASK", tas_oracle.lockstep_env({"lockstep": True, "lockstep_calls": 8}, Path(folder))
+            )
+            for bad in (
+                "0x800E9400-0x800EBC00\n",
+                "0x800E9401-0x800EBC00\tx\n",
+                "0x10-0x8\tx\n",
+                "800E9400-800EBC00\tx\n",
+            ):
+                path.write_text(bad)
+                with self.assertRaises(DecompError, msg=bad):
+                    tas_oracle.mask_spec(path)
+
+    def test_a_dump_replay_masks_what_its_record_masked(self):
+        with tempfile.TemporaryDirectory() as folder:
+            run = Path(folder)
+            self.assertEqual(tas_oracle.recorded_mask(run), "")
+            side = tas_oracle.lockstep_side(run, "port")
+            side.mkdir(parents=True, exist_ok=True)
+            (side / "lockstep.jsonl").write_text(json.dumps({"k": "meta", "mask": "0-4"}) + "\n{}\n")
+            self.assertEqual(tas_oracle.recorded_mask(run), "0-4")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1667,6 +1667,11 @@ def play(
             "N64C_LOCKSTEP_DIR": str(tas_oracle.lockstep_side(run, "port")),
             "N64C_CALLS": str(tas_oracle.lockstep_side(run, "port")),
             "N64C_CALLS_FIRST": tas_oracle.keep_env(original)["N64C_CALLS_FIRST"],
+            **{
+                k: v
+                for k, v in tas_oracle.mask_env(original.get("lockstep_mask", "") if original else "").items()
+                if k.startswith("N64C_")
+            },
             "N64C_TAS_HASH": str(run / HASH),
             "N64C_VIEW": str(run / VIEW),
             # Keep readbacks within the realtime frame budget, including human input and takeovers.

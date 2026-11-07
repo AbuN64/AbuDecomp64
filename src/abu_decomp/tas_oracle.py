@@ -25,6 +25,9 @@ names, and the run folder gets the same files for both sides:
   RUN/lockstep/{port,oracle}, a record of page hashes only. `tas lockstep-dump RUN` replays the same movie on both
   sides with `N64C_LOCKSTEP_DUMP` / `N64R_LOCKSTEP_DUMP` = POLL:PAGE,... (the poll and pages `lockstep.py match` names):
   each writes those pages to RUN/lockstep/<side>/dump/POLL/dump.bin at that poll and exits, then match runs again.
+  `tas.oracle.lockstep_mask` (the project's file of `0xLO-0xHI<TAB>reason` rows: state each side keeps in its own form)
+  is handed to both recorders as `N64C_LOCKSTEP_MASK` / `N64R_LOCKSTEP_MASK` and to the golden store (`--mask`); a dump
+  replay masks what its record masked (the port record's meta `mask`).
 The oracle runs headless (SDL offscreen: RT64 on a Vulkan headless surface, no display server) on the logical
 guest clock, so its guest time comes from the work done, not the host: the same movie gives the same pictures
 every time, at any speed. It always runs at full speed beside the port.
@@ -67,6 +70,7 @@ _KEYS = frozenset(
         "pins",
         "pins_repo",
         "lockstep_calls",
+        "lockstep_mask",
         "record",
     }
 )
@@ -120,6 +124,9 @@ def settings(profile: Profile) -> dict[str, Any] | None:
             "tas.oracle",
             "record is the argv of `taste` (a list of words) whose `oracle record` serves the golden store",
         )
+    mask = ""
+    if "lockstep_mask" in table:
+        mask = mask_spec(profile.path("tas.oracle.lockstep_mask", table["lockstep_mask"]))
     keys = ("pins", "lock")
     from abu_decomp import tas_health
 
@@ -136,8 +143,41 @@ def settings(profile: Profile) -> dict[str, Any] | None:
         "pictures": bool(table.get("pictures", False)),
         "timeout_seconds": int(table.get("timeout_seconds", 300)),
         "lockstep_calls": calls,
+        "lockstep_mask": mask,
         "record": record,
     }
+
+
+_MASK_ROW = re.compile(r"0x([0-9A-Fa-f]{1,8})-0x([0-9A-Fa-f]{1,8})")
+
+
+def mask_spec(path: Path) -> str:
+    """The `LO-HI,...` value both recorders read (N64C_/N64R_LOCKSTEP_MASK) from the project's mask file: one
+    `0xLO-0xHI<TAB>reason` row per range (HI exclusive, word-aligned, a reason given), `#` comments and blank lines."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise DecompError("tas.oracle", f"lockstep_mask {path}: {error}") from error
+    spans = []
+    for number, line in enumerate(lines, 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        span, _, why = line.partition("\t")
+        found = _MASK_ROW.fullmatch(span.strip())
+        if not found or not why.strip():
+            raise DecompError(
+                "tas.oracle", f"lockstep_mask {path}:{number}: expected 0xLO-0xHI<TAB>reason, got {line!r}"
+            )
+        lo, hi = int(found[1], 16), int(found[2], 16)
+        if lo % 4 or hi % 4 or hi <= lo:
+            raise DecompError("tas.oracle", f"lockstep_mask {path}:{number}: a word-aligned LO < HI, got {span}")
+        spans.append(f"{lo:08x}-{hi:08x}")
+    return ",".join(spans)
+
+
+def mask_env(mask: str) -> dict[str, str]:
+    """Both recorders' mask (lockstep.cpp and trace.c hash and dump its words as zero); nothing when there is none."""
+    return {"N64C_LOCKSTEP_MASK": mask, "N64R_LOCKSTEP_MASK": mask} if mask else {}
 
 
 def keep_env(oracle: dict[str, Any] | None) -> dict[str, str]:
@@ -257,6 +297,7 @@ def stored_record(oracle: dict[str, Any], run: Path, pak: str, pads: int, exit_a
         str(exit_after),
         "--calls",
         str(oracle["lockstep_calls"]),
+        *(["--mask", oracle["lockstep_mask"]] if oracle.get("lockstep_mask") else []),
     ]
     done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
     try:
@@ -333,9 +374,21 @@ def lockstep_env(oracle: dict[str, Any], run: Path) -> dict[str, str]:
         "N64R_LOCKSTEP_DIR": str(lockstep_side(oracle.get("lockstep_into", run), "oracle")),
         "N64R_LOCKSTEP_CALLS": keep_env(oracle)["N64R_LOCKSTEP_CALLS"],
     }
+    if oracle.get("lockstep_mask"):
+        env["N64R_LOCKSTEP_MASK"] = mask_env(oracle["lockstep_mask"])["N64R_LOCKSTEP_MASK"]
     if oracle.get("lockstep_dump"):  # the dump replay: those pages at that poll, then the host exits
         env["N64R_LOCKSTEP_DUMP"] = oracle["lockstep_dump"]
     return env
+
+
+def recorded_mask(run: Path) -> str:
+    """The mask the run's port record was made under (its meta line's `mask`): a dump replay masks the same words."""
+    try:
+        with (lockstep_side(run, "port") / "lockstep.jsonl").open() as record:
+            meta = json.loads(record.readline())
+    except (OSError, ValueError):
+        return ""
+    return str(meta.get("mask", "")) if isinstance(meta, dict) else ""
 
 
 def lockstep_request(run: Path, poll: int | None = None) -> dict[str, Any] | None:
@@ -377,7 +430,10 @@ def lockstep_dump(profile: Profile, run_id: str, poll: int | None = None) -> dic
         original["host"] = Path(host)  # the host that recorded: the same build replays the same run
     lead = (record.get("oracle") or {}).get("render_lead", effective_lead(original))
     spec = f"{at}:" + ",".join(str(page) for page in request["pages"])
-    original.update(pictures=False, render_lead=lead, lockstep=True, lockstep_into=run, lockstep_dump=spec)
+    mask = recorded_mask(run)
+    original.update(
+        pictures=False, render_lead=lead, lockstep=True, lockstep_into=run, lockstep_dump=spec, lockstep_mask=mask
+    )
     replay = folder / LOCKSTEP_REPLAY / str(at)
     shutil.rmtree(replay, ignore_errors=True)
     (replay / "user").mkdir(parents=True)
@@ -395,6 +451,7 @@ def lockstep_dump(profile: Profile, run_id: str, poll: int | None = None) -> dic
         "N64C_LOCKSTEP": "1",
         "N64C_LOCKSTEP_DIR": str(lockstep_side(run, "port")),
         "N64C_LOCKSTEP_DUMP": spec,
+        **{k: v for k, v in mask_env(mask).items() if k.startswith("N64C_")},
         "N64C_TAS_PLAY": str(run / "movie.raw"),
         "N64C_TAS_EXIT_AFTER": str(cfg["exit_after"]),
         "N64C_SPEED": "0",

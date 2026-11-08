@@ -39,12 +39,13 @@ later, so pip must not fetch it from there: the requirement and the recorded pro
 A deploy never changes a file under a running process. Each `--venv PATH` is a live path that is a symlink: the
 carried packages and the package are installed into a fresh venv beside it (`PATH.<name>`, pip run by that venv's own
 python so console script shebangs point into it), the smoke test (`decomp dependencies` for provenance and `unbake
-symbols --version V` on the project, `unbake` by name) runs against the fresh venv, the fresh tree is made
+symbols --version V` on the project, the venv's own `bin/unbake`) runs against the fresh venv, the fresh tree is made
 read-only (`chmod -R a-w`, so
 a job's pip install into the live toolkit fails loudly instead of rewriting it in place), and only then is the symlink
-swapped with rename(2). The venv keeps the unbake library (decomp imports it) but none of its commands: the install
-ends by removing the console scripts the unbake distribution declares (`retire`), so `unbake` and `unbake-run` resolve
-by name to CakeUnbake64's published commands on the job PATH, never to a carried copy.
+swapped with rename(2). The venv keeps the unbake library (decomp imports it) but none of its commands: the smoke (which
+runs the venv's own `bin/unbake`, so a host with no toolkit passes it) is followed by removing the console scripts the
+unbake distribution declares (`retire`), so `unbake` and `unbake-run` resolve by name to CakeUnbake64's published
+commands on the job PATH, never to a carried copy.
 Processes started through PATH's console scripts keep their versioned tree; superseded
 versions stay until purge removes them (policy `venv_versions`: not the live target, not the newest rollback, no
 process using it). A live path that is still a real directory is refused (a deploy only swaps symlinks), and the link
@@ -165,6 +166,16 @@ print(json.dumps(sorted(rows)))
 """
 
 
+UNBAKE_ENTRY = """\
+import importlib.metadata as metadata
+import sys
+
+sys.argv[0] = "unbake"
+entry = next(
+    e for e in metadata.distribution("unbake").entry_points if e.name == "unbake" and e.group == "console_scripts"
+)
+sys.exit(entry.load()())
+"""
 # CakeUnbake64's commands (`unbake`, `unbake-run`, ...) belong to its own toolkit, published into the one command
 # directory the job PATH holds. This venv keeps the unbake library (decomp imports it) and nothing runnable of it.
 RETIRE = """\
@@ -358,7 +369,6 @@ def install(
         ("create", [base_python or str(base / "bin" / "python"), "-m", "venv", str(venv)]),
         *([("carry", [str(python), "-m", "pip", "install", "--no-deps", *carry])] if carry else []),
         ("install", [str(python), "-m", "pip", "install", *specs], fetch),
-        ("retire", [str(python), "-c", RETIRE]),  # the venv carries no unbake command: land and the rig find it by name
     ]
     done: list[dict[str, Any]] = []
     for name, argv, *env in steps:
@@ -369,9 +379,23 @@ def install(
     return done
 
 
+def retire(venv: Path, run: Run) -> dict[str, Any]:
+    """Remove the unbake commands the venv carried (the smoke, which runs the venv's own `bin/unbake`, has passed):
+    land and the rig find unbake by name."""
+    code, output = run([str(venv / "bin" / "python"), "-c", RETIRE], None)
+    return {"step": "retire", "ok": code == 0, "tail": output[-400:] if code else ""}
+
+
+def unbake_argv(venv: Path) -> list[str]:
+    """The venv's own unbake: its `bin/unbake`, or its console entry point through its python once the commands are
+    retired. Never `unbake` from PATH, which a host with no toolkit does not have."""
+    command = venv / "bin" / "unbake"
+    return [str(command)] if command.is_file() else [str(venv / "bin" / "python"), "-c", UNBAKE_ENTRY]
+
+
 def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequence[str] = ()) -> list[dict[str, Any]]:
     """`decomp dependencies` (every installed tool from a git install), an import of every declared project package,
-    and `unbake symbols --version V` on the project (the `unbake` command found by name on PATH, CakeUnbake64's own),
+    and `unbake symbols --version V` on the project (the venv's own unbake, never one found on PATH),
     V being the first version directory of the project."""
     results = []
     code, output = run([str(venv / "bin" / "decomp"), "dependencies"], None)
@@ -389,7 +413,7 @@ def smoke(venv: Path, project: Path | None, host: Path, run: Run, packages: Sequ
         )
         return results
     argv = [
-        "unbake",
+        *unbake_argv(venv),
         "--host",
         str(host),
         "--project",
@@ -489,7 +513,7 @@ def resync(venv: Path, host: Path, project: Path, run: Run) -> list[dict[str, An
         if pids := holders(tree):
             rows.append({"tree": str(tree), "outcome": "skipped", "held_by": pids[:5]})
             continue
-        argv = ["unbake", "--host", str(host), "--project", str(tree), "sync", "--makefile"]
+        argv = [*unbake_argv(venv), "--host", str(host), "--project", str(tree), "sync", "--makefile"]
         code, output = run(argv, tree)
         rows.append(
             {"tree": str(tree), "outcome": "refused" if code else "synced", "tail": output[-300:] if code else ""}
@@ -503,6 +527,29 @@ def _land_table(profile: Profile) -> dict[str, Any]:
         return profile.section("land")
     except ConfigError:
         return {}
+
+
+def require_install_profile(profile: Profile) -> None:
+    """A first install on a host needs `tools.project`, `tools.host` and `land.remote` in the seat profile (an install
+    that guessed `origin` installed from the wrong project main): all missing keys are named in one refusal."""
+    try:
+        tools_table = profile.section("tools")
+    except ConfigError:
+        tools_table = {}
+    missing = [f"tools.{key}" for key in ("project", "host") if key not in tools_table]
+    if "remote" not in _land_table(profile):
+        missing.append("land.remote")
+    if missing:
+        raise DeployError(
+            "deploy.profile", f"{profile.source_file}: the seat profile must carry {', '.join(missing)} to install"
+        )
+
+
+def provision_runtime(venv: Path, run: Run) -> dict[str, Any]:
+    """Give the host an abucache runtime file when it has none, by the new venv's own abucache (an existing file is
+    kept; what the host cannot answer is refused once, naming each key)."""
+    code, output = run([str(venv / "bin" / "python"), "-m", "abucache.runtime", "provision"], None)
+    return {"step": "runtime", "ok": code == 0, "tail": output.strip()[-400:]}
 
 
 def name(
@@ -623,6 +670,13 @@ def deploy(
         if bad:
             shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked, so nothing uses it
             continue
+        steps.append(retire(venv, run))  # after the gate (smoke), which ran the venv's own unbake
+        if not steps[-1]["ok"]:
+            findings.append(
+                {"key": "deploy.install", "blocking": True, "message": f"{venv}: retire failed: {steps[-1]['tail']}"}
+            )
+            shutil.rmtree(venv, ignore_errors=True)
+            continue
         row["seal"] = seal(venv, run)  # after the gate (smoke), before the flip
         if not row["seal"]["ok"]:
             findings.append(
@@ -668,6 +722,7 @@ def install_toolkit(
     a source here. Each `--venv` is a symlink to make or replace; a real directory refuses. Nothing here names a
     host: run it where the toolkit is wanted (the seat profile names the project and host file)."""
     package = tools.DISTRIBUTION
+    require_install_profile(profile)
     if not venvs:
         raise DeployError("deploy.venv", "pass at least one --venv")
     for live in venvs:
@@ -708,6 +763,18 @@ def install_toolkit(
                 }
             )
             shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked
+            continue
+        steps += [retire(venv, run), provision_runtime(venv, run)]
+        failed = next((step for step in steps if not step["ok"]), None)
+        if failed:
+            findings.append(
+                {
+                    "key": "deploy.install",
+                    "blocking": True,
+                    "message": f"{venv}: {failed['step']} failed: {failed['tail']}",
+                }
+            )
+            shutil.rmtree(venv, ignore_errors=True)
             continue
         row["seal"] = seal(venv, run)
         if not row["seal"]["ok"]:

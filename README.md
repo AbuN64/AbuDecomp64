@@ -9,9 +9,14 @@ Runs the N64 decompilation dev cycle over unbake, Recipe Maker and Cake Taste, d
 Python 3.13 or newer, in its own virtual environment.
 
 ```sh
-python3.13 -m venv ~/.venvs/decomp && . ~/.venvs/decomp/bin/activate
-pip install git+https://github.com/AbuN64/abu-decomp-64 && decomp dependencies
+python3.13 -m venv ~/.venvs/decomp && ~/.venvs/decomp/bin/pip install \
+  git+https://github.com/AbuN64/cache-64 git+https://github.com/AbuN64/cake-unbake-64 \
+  git+https://github.com/AbuN64/recipe-maker-64 git+https://github.com/AbuN64/cake-taste-64 \
+  git+https://github.com/AbuN64/abu-decomp-64 && ~/.venvs/decomp/bin/decomp dependencies
 ```
+
+Every tool of ours is a git source at its landed commit (`main`'s tip), so nothing resolves from PyPI. This is the one command
+for a host with no toolkit.
 
 The toolkit on a heavy host (a rig, the shared W venv) is built by one entry point from AD64 main's `pyproject.toml` at a landed
 commit, beside the live link, with no hand pip and no copied venv:
@@ -20,7 +25,11 @@ commit, beside the live link, with no hand pip and no copied venv:
 decomp tools install --venv /path/to/venv-decomp [--sha <landed main commit>]
 ```
 
-A path, an editable tree, a working tree or a commit not on main is refused; the link is swapped only after `decomp dependencies`
+The seat profile must carry `tools.project`, `tools.host` and `land.remote` (a refusal names every missing one at once). The
+install runs the new venv's own `bin/unbake` for its smoke, needing no `unbake` on PATH, and gives the host an abucache
+runtime file when it has none (`~/.config/abu/runtime.toml`: cores, workers and every memory value are `"auto"`, derived
+from the host at each load; an existing file is never touched, and a host that cannot answer is refused naming each key to
+provide). A path, an editable tree, a working tree or a commit not on main is refused; the link is swapped only after `decomp dependencies`
 passes. Later updates use `decomp tools deploy`, which can carry a venv this entry point built. Run it on the host that wants the
 toolkit; it names no host (the seat profile names the project).
 

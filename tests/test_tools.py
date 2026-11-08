@@ -254,3 +254,38 @@ class ToolTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadmeInstallCommand(unittest.TestCase):
+    """The one install command for a host with no toolkit reaches pip with every tool of ours as a git source."""
+
+    def test_every_own_tool_reaches_pip_as_a_git_source_never_a_bare_pypi_name(self):
+        import re
+        from pathlib import Path
+
+        from abu_decomp import sources
+
+        text = (Path(__file__).parent.parent / "README.md").read_text()
+        block = re.search(r"```sh\n(python3\.13 -m venv.*?)```", text, re.DOTALL).group(1).replace("\\\n", " ")
+        self.assertEqual(block.count("pip install"), 1)
+        sources_in_command = re.findall(r"git\+(https://\S+)", block)
+        self.assertEqual(sorted(sources_in_command), sorted(sources.PACKAGES.values()))
+        for name in sources.PACKAGES:
+            self.assertNotRegex(block, rf"pip install[^&]*\s{re.escape(name)}(\s|$)")
+
+    def test_the_deploy_path_pins_each_of_them_at_its_landed_commit(self):
+        from abu_decomp import sources
+
+        heads = {url: f"{i:040x}" for i, url in enumerate(sources.PACKAGES.values(), 1)}
+
+        def run(argv, cwd=None):
+            return 0, f"{heads[argv[2]]}\tHEAD\n"
+
+        rows = sources.clean_requirements(["abucache", "unbake", "recipemaker", "cake-taste-64"], run)
+        self.assertEqual(
+            rows,
+            [
+                f"{name} @ git+{sources.PACKAGES[name]}@{heads[sources.PACKAGES[name]]}"
+                for name in ("abucache", "unbake", "recipemaker", "cake-taste-64")
+            ],
+        )

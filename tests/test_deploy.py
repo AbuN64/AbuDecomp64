@@ -47,7 +47,10 @@ class DeployTests(unittest.TestCase):
             self.make_venv(self.root / f"{name}.old")
             (self.root / name).symlink_to(self.root / f"{name}.old")
         (self.root / "host.toml").write_text("")
-        sections = {"tools": {"project": str(self.project), "host": "host.toml", "timeout_seconds": 5}}
+        sections = {
+            "tools": {"project": str(self.project), "host": "host.toml", "timeout_seconds": 5},
+            "land": {"remote": "origin", "branch": "main"},
+        }
         (self.root / "seat.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
         self.profile = load_profile(self.root / "seat.json")
         self.commands = []
@@ -67,6 +70,7 @@ class DeployTests(unittest.TestCase):
     def make_venv(path):
         (path / "bin").mkdir(parents=True)
         (path / "bin" / "python").write_text("")
+        (path / "bin" / "unbake").write_text("")
 
     def pin_file(self, **versions):
         rows = [
@@ -117,9 +121,9 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(
             sum(c[0].endswith("decomp") and c[1] == "dependencies" for c in self.commands), 4
         )  # per venv: fresh, then via the link
-        symbols = [c for c in self.commands if c[0].endswith("unbake")]
-        self.assertEqual(len(symbols), 4)
-        self.assertEqual({c[0] for c in symbols}, {"unbake"})  # by name on PATH, never the venv's carried script
+        symbols = [c for c in self.commands if c[0].endswith("bin/unbake") and "symbols" in c]
+        self.assertEqual(len(symbols), 4)  # the venv's own bin/unbake, never one found by name on PATH
+        self.assertTrue(all(c[0].startswith(str(self.root)) for c in symbols))
         retire = [c for c in self.commands if deploy.RETIRE in c]
         self.assertEqual(len(retire), 2)  # per venv: the carried unbake commands are removed after the install
         self.assertTrue(all(c[0].endswith("bin/python") for c in retire))
@@ -360,8 +364,8 @@ class DeployTests(unittest.TestCase):
                 requirements_of=self.requirements_of,
             )
         self.assertEqual((code, findings), (0, []))  # a refused or held tree never fails the deploy
-        self.assertEqual(  # `unbake` by name (CakeUnbake64's own), never a venv path
-            [(argv[0], argv[-2:], cwd) for argv, cwd in calls],
+        self.assertEqual(  # the new venv's own unbake
+            [(Path(argv[0]).name, argv[-2:], cwd) for argv, cwd in calls],
             [("unbake", ["sync", "--makefile"], trees[0]), ("unbake", ["sync", "--makefile"], trees[2])],
         )
         self.assertEqual(
@@ -710,6 +714,72 @@ class CarryTests(DeployTests):
         self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
         self.assertFalse((self.root / "fresh").exists())
         self.assertFalse([p for p in self.root.iterdir() if p.name.startswith("fresh.")])
+
+
+class FirstInstallTests(DeployTests):
+    """The first install on a host with no toolkit (card gmQI47wwQqXn)."""
+
+    def install(self, profile=None, venvs=("fresh",)):
+        return deploy.install_toolkit(
+            profile or self.profile,
+            [self.root / v for v in venvs],
+            run=self.runner,
+            requirements_of=self.requirements_of,
+            python="/usr/bin/python3.13",
+        )
+
+    def test_the_smoke_runs_the_new_venvs_own_unbake_with_none_on_path(self):
+        venv = self.root / "fresh"
+        self.make_venv(venv)
+        calls = []
+
+        def run(argv, cwd=None, env=None):
+            calls.append((list(argv), os.environ.get("PATH")))
+            return 0, "symbols"
+
+        with mock.patch.dict(os.environ, {"PATH": str(self.root / "empty")}):
+            checks = deploy.smoke(venv, self.project, self.root / "host.toml", run)
+        self.assertTrue(all(c["ok"] for c in checks))
+        symbols = next(argv for argv, _ in calls if "symbols" in argv)
+        self.assertEqual(symbols[0], str(venv / "bin" / "unbake"))
+
+    def test_a_retired_venv_is_asked_through_its_own_python_entry_point(self):
+        venv = self.root / "retired"
+        self.make_venv(venv)
+        (venv / "bin" / "unbake").unlink()
+        self.assertEqual(deploy.unbake_argv(venv), [str(venv / "bin" / "python"), "-c", deploy.UNBAKE_ENTRY])
+        self.assertNotEqual(deploy.unbake_argv(venv)[0], "unbake")
+
+    def test_an_empty_profile_is_refused_once_naming_tools_project_host_and_land_remote(self):
+        (self.root / "empty.json").write_text(json.dumps({"schema_version": 1, "name": "empty"}))
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.install(load_profile(self.root / "empty.json"))
+        self.assertEqual(caught.exception.key, "deploy.profile")
+        self.assertIn("tools.project, tools.host, land.remote", str(caught.exception))
+        self.assertEqual(self.commands, [])  # refused before anything ran
+
+    def test_a_profile_missing_only_land_remote_names_just_it(self):
+        sections = {"tools": {"project": str(self.project), "host": "host.toml", "timeout_seconds": 5}}
+        (self.root / "noland.json").write_text(json.dumps({"schema_version": 1, "name": "seat", **sections}))
+        with self.assertRaises(deploy.DeployError) as caught:
+            self.install(load_profile(self.root / "noland.json"))
+        self.assertTrue(str(caught.exception).endswith("must carry land.remote to install"))
+
+    def test_the_install_gives_the_host_a_runtime_file_by_the_new_venvs_abucache_before_the_swap(self):
+        result, code, findings = self.install()
+        self.assertEqual((code, findings), (0, []))
+        steps = [step["step"] for step in result["venvs"][0]["steps"]]
+        self.assertEqual(steps, ["create", "install", "retire", "runtime"])
+        provision = next(c for c in self.commands if "abucache.runtime" in c)
+        self.assertEqual(provision[1:], ["-m", "abucache.runtime", "provision"])
+        self.assertEqual(provision[0], str(Path(result["venvs"][0]["versioned"]) / "bin" / "python"))
+
+    def test_a_runtime_the_host_cannot_derive_fails_the_install_with_the_keys_and_links_nothing(self):
+        self.fail_on = "abucache.runtime"
+        _, code, findings = self.install()
+        self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
+        self.assertIn("runtime failed", findings[0]["message"])
+        self.assertFalse((self.root / "fresh").exists())
 
 
 class NameTests(DeployTests):

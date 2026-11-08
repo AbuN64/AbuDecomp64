@@ -349,7 +349,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
     monkey.add_argument("--hold", type=int, default=24, help="longest run of equal polls (default 24)")
     monkey.add_argument("--prefix", help="a saved movie that reaches the start point; the random input follows it")
     monkey.add_argument("--port", type=Path, help="the sanitizer build's executable (default tas.sanitizer.port)")
-    monkey.add_argument("--jobs", type=int, default=2, help="parallel runs (default 2)")
+    monkey.add_argument("--jobs", type=int, default=0, help="parallel runs (default 0: the admitted JOBS)")
     monkey.add_argument("--keep", choices=("findings", "all"), default="findings", help="which movies stay saved")
     findings = actions.add_parser("findings", help="the sanitizer findings, grouped by file:line")
     findings.add_argument("--limit", type=int, default=50, help="groups to list (default 50)")
@@ -398,7 +398,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "the HTML page and line totals stay the last full build's",
     )
     coverage.add_argument(
-        "--jobs", type=int, default=0, help="parallel oracle replays (default 0: the host slot pool capacity)"
+        "--jobs", type=int, default=0, help="parallel oracle replays, at most the admitted JOBS (default 0: JOBS)"
     )
     coverage.add_argument(
         "--rebaseline",
@@ -453,7 +453,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         "gate", help="replay every entry at turbo and judge it against its baseline; exit 1 on a fail"
     )
     gate.add_argument("--port", type=Path, help="gate this build's executable (a lane's own; baselines never move)")
-    gate.add_argument("--jobs", type=int, default=0, help="parallel replays (default 0: the host slot pool capacity)")
+    gate.add_argument("--jobs", type=int, default=0, help="parallel replays, at most the admitted JOBS (default: JOBS)")
     gate.add_argument(
         "--no-oracle", action="store_true", help="do not replay the original for entries without a reference"
     )
@@ -486,7 +486,7 @@ def _tas_arguments(parser: argparse.ArgumentParser) -> None:
         help="replay every saved movie in parallel; exit 1 if any is worse (the other options apply to each movie)",
     )
     play.add_argument(
-        "--jobs", type=int, default=0, help="parallel replays with --all (default 0: the host's slot pool capacity)"
+        "--jobs", type=int, default=0, help="parallel replays with --all, at most the admitted JOBS (default 0: JOBS)"
     )
     play.add_argument(
         "--changed",

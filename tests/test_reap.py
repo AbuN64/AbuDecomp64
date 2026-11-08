@@ -157,6 +157,8 @@ class ScheduleTests(unittest.TestCase):
             self.assertEqual((document["enabled"], document["every_minutes"], code), ("decomp-reap.timer", 30, 0))
             self.assertIn("enable", ctl.call_args.args)
             self.assertIn("worktree --tree /rig/tree reap", (folder / "decomp-reap.service").read_text())
+            # a service declares its width: abucache and unbake refuse a process with no JOBS
+            self.assertIn("\nEnvironment=JOBS=1\n", (folder / "decomp-reap.service").read_text())
             self.assertIn("OnUnitActiveSec=30min", (folder / "decomp-reap.timer").read_text())
             reap.disable(folder)
         self.assertEqual(list(folder.iterdir()), [])

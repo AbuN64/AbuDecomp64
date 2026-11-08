@@ -22,6 +22,7 @@ from abu_decomp import DecompError, worktree
 from abu_decomp.config import Profile
 
 UNIT = "decomp-reap"
+UNIT_JOBS = 1  # the unit's declared width (JOBS): reap runs nothing in parallel, and no width may be absent
 TERM_GRACE = 5.0  # seconds between SIGTERM and SIGKILL of a reaped tree
 KEYS = (
     "worktree_idle_hours",
@@ -246,7 +247,7 @@ def enable(
     minutes = int(cfg["interval_minutes"])
     (folder / f"{UNIT}.service").write_text(
         f"[Unit]\nDescription=decomp reap: idle chromium and ended lanes' worktrees\n\n"
-        f"[Service]\nType=oneshot\nNice=10\nExecStart={command}\n"
+        f"[Service]\nType=oneshot\nNice=10\nEnvironment=JOBS={UNIT_JOBS}\nExecStart={command}\n"
     )
     (folder / f"{UNIT}.timer").write_text(
         f"[Unit]\nDescription=decomp reap every {minutes} min\n\n"

@@ -38,10 +38,18 @@ overrun_percent = 150
 """
 
 
-def write(directory: Path) -> Path:
-    """`directory/stand-in-runtime.toml`: one worker per CPU this process may use, each given its share of the
-    stand-in memory (no memory figure of its own), and a cache and feed inside `directory`."""
+def width() -> int:
+    """The CPUs this process may use, at most the admitted JOBS when one is set (sitecustomize stands JOBS in)."""
     cpus = len(os.sched_getaffinity(0))
+    jobs = os.environ.get("JOBS", "")
+    return min(cpus, int(jobs)) if jobs.isdigit() and int(jobs) > 0 else cpus
+
+
+def write(directory: Path) -> Path:
+    """`directory/stand-in-runtime.toml`: one worker per slot of the width this process may use (its CPUs, at most the
+    admitted JOBS, the cap abucache's runtime.load applies), each given its share of the stand-in memory (no memory
+    figure of its own), and a cache and feed inside `directory`."""
+    cpus = width()
     cache = directory / "cache"
     cache.mkdir(parents=True, exist_ok=True)
     path = directory / NAME

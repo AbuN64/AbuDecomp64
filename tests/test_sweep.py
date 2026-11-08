@@ -511,3 +511,74 @@ class UnlessTypeTests(unittest.TestCase):
     def test_unless_type_without_a_var_group_names_the_rule(self):
         with self.assertRaisesRegex(DecompError, "bare.*var"):
             rules(BARE_HOOK.replace("(?P<var>fn|end)", "(?:fn|end)").replace('"bare-hook"', '"bare"'))
+
+
+RAW = """
+[[rule]]
+id = "raw"
+kind = "raw-buffer"
+why = "w"
+paths = ["**/*.c", "**/*.h"]
+fill = ['\\bread_rom\\s*\\(\\s*(?P<buf>[^,]+),']
+carriers = ["pixels"]
+unless = 'bswap'
+defines = ["__BYTE_ORDER__=1234", "__ORDER_LITTLE_ENDIAN__=1234"]
+"""
+
+
+class RawBufferTests(unittest.TestCase):
+    FILES: ClassVar[dict[str, str]] = {
+        "types.h": (
+            "typedef unsigned short u16;\ntypedef unsigned char u8;\nstruct Image { u8 *bytes; void *pixels; };\n"
+        ),
+        "load.c": (
+            "void *g_colors;\n"
+            "struct Image g_image;\n"
+            "static void keep(void *colors) {\n"
+            "    g_colors = colors;\n"
+            "}\n"
+            "int load(int n) {\n"
+            "    u16 *palette;\n"
+            "    u8 *bytes;\n"
+            "    read_rom(palette, n);\n"
+            "    read_rom(bytes, n);\n"
+            "    keep(palette + 2);\n"
+            "    if (palette[0] & 1) return 1;\n"
+            "    return bytes[0] + __builtin_bswap16(palette[1]);\n"
+            "}\n"
+            "int use(int i) {\n"
+            "    return ((u16 *)g_colors)[i] + ((u8 *)g_colors)[i] + ((int *)g_image.pixels)[i];\n"
+            "}\n"
+            "int other(u16 *table, int i) {\n"
+            "    u16 *local;\n"
+            "    local = table;\n"
+            "    return local[i];\n"
+            "}\n"
+            "int ordered(int i) {\n"
+            "#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__\n"
+            "    return __builtin_bswap16(((u16 *)g_colors)[i]);\n"
+            "#else\n"
+            "    return ((u16 *)g_colors)[i];\n"
+            "#endif\n"
+            "}\n"
+        ),
+    }
+
+    def hits(self):
+        return Tree(self.FILES).sweep(RAW)["hits"]
+
+    def test_a_filled_buffer_read_wide_is_a_hit_through_calls_globals_and_carriers(self):
+        found = [(h["line"], h["datum"], h["origin"]) for h in self.hits()]
+        self.assertEqual(
+            found,
+            [(12, "palette", "load.c:9"), (16, "g_colors", "load.c:9"), (16, "pixels", "carrier pixels")],
+        )
+
+    def test_byte_access_unless_lines_and_the_other_byte_order_are_not_hits(self):
+        lines = {h["line"] for h in self.hits()}
+        self.assertNotIn(13, lines)  # bytes[0] is a byte, palette[1] is swapped
+        self.assertFalse(lines & {21, 25, 27})  # never filled; the swapped branch; the big-endian branch
+
+    def test_a_fill_without_a_buf_group_names_the_rule(self):
+        with self.assertRaisesRegex(DecompError, "raw.*buf"):
+            rules(RAW.replace("(?P<buf>[^,]+)", "([^,]+)"))

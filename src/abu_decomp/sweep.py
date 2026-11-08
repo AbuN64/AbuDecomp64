@@ -35,6 +35,17 @@ The engine is generic and names no project: the rules are project facts, TOML fi
                          byte or halfword extern): a narrow extern whose address lies inside a word array. Big-endian
                          reads the low bytes of a word at +1..+3, a little-endian host reads other bytes. `defines`
                          lists the macros that count as set when the units' #if lines are evaluated
+              raw-buffer `fill` (a regex or a list of them, each with a named group `buf`: the destination argument
+                         of a call that copies guest bytes into memory unchanged, in cartridge byte order) seeds the
+                         buffers; the buffer flows through assignments (a local, a file-scope variable, a struct member
+                         by name), pointer arithmetic and call arguments (into the callee's parameter) across every
+                         selected file; a 16- or 32-bit access of a flowed buffer is a hit: a cast to a pointer of a
+                         `wide` type (regex of type names, typedefs expanded), or an index or dereference of a name
+                         declared as such a pointer. A big-endian host reads those bytes as the cartridge does, a
+                         little-endian one swaps them. `origin` names the fill the buffer came from; a fill of a range
+                         the loader types (a header, a swapped table) makes a hit that is false by its origin.
+                         `carriers` lists member and variable names known to hold such buffers whatever view of the
+                         record names them (the decomp gives one record several struct views): they seed it too
     why       one sentence: the failure this finds and where it was first seen
     severity  "report" (default) or "block"; only a new block hit fails the exit status
     trees     tree labels the rule reads (default every tree); paths / skip: globs relative to a tree root
@@ -65,7 +76,7 @@ from abucache import stages as cache_stages
 
 from abu_decomp import DecompError
 
-KINDS = ("pattern", "decl-use", "call-arity", "return-spelling", "word-alias")
+KINDS = ("pattern", "decl-use", "call-arity", "return-spelling", "word-alias", "raw-buffer")
 SEVERITIES = ("report", "block")
 _KEYS = frozenset(
     {
@@ -91,6 +102,9 @@ _KEYS = frozenset(
         "array",
         "narrow",
         "defines",
+        "fill",
+        "wide",
+        "carriers",
     }
 )
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
@@ -199,6 +213,52 @@ def _kept_lines(text: str, defines: set[str]) -> list[str]:
     return ["\n".join(kept)]
 
 
+def _masked_text(text: str, defines: set[str]) -> str:
+    """`text` with every line a preprocessor drops blanked (newlines kept, so line numbers hold). `defines` entries are
+    NAME or NAME=VALUE; a #if expression is evaluated with those values (an unset name is 0)."""
+    values: dict[str, str] = {}
+    for d in defines:
+        name, _, value = d.partition("=")
+        values[name] = value or "1"
+    stack: list[list[bool]] = []
+    out: list[str] = []
+
+    def value(expr: str) -> bool:
+        e = re.sub(r"defined\s*\(\s*(\w+)\s*\)", lambda m: "1" if m[1] in values else "0", expr)
+        e = re.sub(r"defined\s+(\w+)", lambda m: "1" if m[1] in values else "0", e)
+        e = re.sub(r"\b[A-Za-z_]\w*\b", lambda m: values.get(m[0], "0"), e)
+        e = e.replace("&&", " and ").replace("||", " or ")
+        e = re.sub(r"!(?!=)", " not ", e)
+        try:
+            return bool(eval(e, {"__builtins__": {}}))
+        except Exception:
+            return True
+
+    for line in text.split("\n"):
+        t = line.strip()
+        directive = True
+        if t.startswith("#ifdef"):
+            v = t.split()[1] in values if len(t.split()) > 1 else True
+            stack.append([v, v])
+        elif t.startswith("#ifndef"):
+            v = t.split()[1] not in values if len(t.split()) > 1 else True
+            stack.append([v, v])
+        elif t.startswith("#if"):
+            v = value(t[3:])
+            stack.append([v, v])
+        elif t.startswith("#elif") and stack:
+            v = (not stack[-1][0]) and value(t[5:])
+            stack[-1] = [stack[-1][0] or v, v]
+        elif t.startswith("#else") and stack:
+            stack[-1] = [True, not stack[-1][0]]
+        elif t.startswith("#endif") and stack:
+            stack.pop()
+        else:
+            directive = False
+        out.append(line if not directive and all(x[1] for x in stack) else "")
+    return "\n".join(out)
+
+
 def _glob(pattern: str) -> re.Pattern[str]:
     out, i = "", 0
     while i < len(pattern):
@@ -242,9 +302,10 @@ class Rule:
             "call-arity": (),
             "return-spelling": (),
             "word-alias": ("symbols", "array", "narrow"),
+            "raw-buffer": ("fill",),
         }[self.kind]
         for key in needs:
-            if not isinstance(table.get(key), str):
+            if not (isinstance(table.get(key), str) or (key == "fill" and _listed(table.get(key)))):
                 raise DecompError("sweep.rule", f"{origin}: rule {self.id} ({self.kind}) needs `{key}`")
         try:
             flags = re.S | re.M if self.multiline else 0
@@ -260,6 +321,9 @@ class Rule:
             self.narrow = re.compile(table["narrow"], re.M) if "narrow" in table else None
             self.symbols = str(table.get("symbols", ""))
             self.defines = {str(d) for d in table.get("defines", [])}
+            self.fill = [re.compile(str(f)) for f in _listed(table.get("fill", []))]
+            self.wide = re.compile(str(table.get("wide", _WIDE)))
+            self.carriers = _listed(table.get("carriers", []))
         except re.error as error:
             raise DecompError("sweep.rule", f"{origin}: rule {self.id}: {error}") from error
         if self.kind == "decl-use":
@@ -270,6 +334,10 @@ class Rule:
             for name, rx in (("array", self.array), ("narrow", self.narrow)):
                 if rx is not None and "datum" not in rx.groupindex:
                     raise DecompError("sweep.rule", f"{origin}: rule {self.id}: `{name}` needs a (?P<datum>...) group")
+        if self.kind == "raw-buffer":
+            for rx in self.fill:
+                if "buf" not in rx.groupindex:
+                    raise DecompError("sweep.rule", f"{origin}: rule {self.id}: each `fill` needs a (?P<buf>...) group")
         if self.unless_type is not None and (self.match is None or "var" not in self.match.groupindex):
             raise DecompError(
                 "sweep.rule", f"{origin}: rule {self.id}: `unless_type` needs a (?P<var>...) group in `match`"
@@ -603,6 +671,8 @@ class Sweep:
             return self._return_spelling(rule)
         if rule.kind == "word-alias":
             return self._word_alias(rule)
+        if rule.kind == "raw-buffer":
+            return _RawBuffer(self, rule).hits()
         return self._call_arity(rule)
 
     def _pattern(self, rule: Rule) -> list[dict[str, Any]]:
@@ -878,6 +948,281 @@ class Sweep:
                         )
                     )
         return hits
+
+
+_WIDE = (
+    r"(?:[us]16|[us]32|[us]64|f32|f64|short|int|long|float|double|unsigned|signed"
+    r"|(?:unsigned|signed)\s+(?:short|int|long))"
+)
+_ASSIGN = re.compile(r"(?<![=!<>+\-*/%&|^])=(?!=)")
+_CAST = re.compile(
+    r"\(\s*(?:(?:const|volatile|unsigned|signed|struct)\s+)*(?P<t>\w+(?:\s+(?:int|long|short))?)\s*\*\s*\)\s*"
+    r"(?P<e>\(*\s*&?\s*[A-Za-z_][\w.]*(?:\s*(?:->|\.)\s*\w+|\s*\[[^\]]*\])*)"
+)
+_ACCESS = re.compile(r"(?P<deref>\*\s*)?(?P<e>[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*)\s*(?P<index>\[)?")
+
+
+def _listed(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return list(value)
+    return []
+
+
+def _strip_cast(expr: str) -> str:
+    """`expr` without outer parentheses, casts, address-of and the offset of pointer arithmetic: the buffer it names."""
+    e = expr.strip()
+    while True:
+        before = e
+        e = re.sub(r"^\(\s*(?:(?:const|volatile|unsigned|signed|struct|union)\s+)*\w+(?:\s+\w+)?\s*\**\s*\)\s*", "", e)
+        e = e.lstrip("&").strip()
+        if e.startswith("(") and _close_paren(e) == len(e) - 1:
+            e = e[1:-1].strip()
+        parts = _split_top_ops(e)
+        e = parts.strip()
+        if e == before:
+            return e
+
+
+def _close_paren(text: str) -> int | None:
+    depth = 0
+    for i, c in enumerate(text):
+        depth += c == "("
+        depth -= c == ")"
+        if depth == 0:
+            return i
+    return None
+
+
+def _split_top_ops(e: str) -> str:
+    """The first operand of a top-level + or - (pointer arithmetic keeps the buffer)."""
+    depth = 0
+    for i, c in enumerate(e):
+        if c in "([":
+            depth += 1
+        elif c in ")]":
+            depth -= 1
+        elif depth == 0 and c in "+-" and i > 0 and e[i - 1] not in "-+e" and not e[i:].startswith("->"):
+            if e[i - 1] == "-" or (i + 1 < len(e) and e[i + 1] in ">"):
+                continue
+            return e[:i]
+    return e
+
+
+def _ref(expr: str) -> tuple[str, str] | None:
+    """('m', member) for `x->m`, `x.m`, `x->m[i]`; ('v', name) for `name` or `name[i]`; None otherwise."""
+    e = _strip_cast(expr)
+    e = re.sub(r"(\s*\[[^\]]*\])+$", "", e).strip()
+    m = re.search(r"(?:->|\.)\s*([A-Za-z_]\w*)$", e)
+    if m:
+        return ("m", m[1])
+    if re.fullmatch(r"[A-Za-z_]\w*", e):
+        return ("v", e)
+    return None
+
+
+def _pointer_ref(expr: str) -> tuple[str, str] | None:
+    """`_ref` of an expression that is the buffer's address itself (`buf`, `buf + k`, `&buf[i]`, `(T *)x->buf`), None
+    for a value read out of it (`buf[i]`, `*buf`, `x->buf->m` is the member m, not the buffer)."""
+    e = re.sub(
+        r"^\(\s*(?:(?:const|volatile|unsigned|signed|struct|union)\s+)*\w+(?:\s+\w+)?\s*\**\s*\)\s*", "", expr.strip()
+    )
+    e = _split_top_ops(e).strip()
+    while e.startswith("(") and _close_paren(e) == len(e) - 1:
+        e = _split_top_ops(e[1:-1].strip()).strip()
+        e = re.sub(r"^\(\s*(?:(?:const|volatile|unsigned|signed|struct|union)\s+)*\w+(?:\s+\w+)?\s*\**\s*\)\s*", "", e)
+    if e.startswith("&"):
+        return _ref(re.sub(r"(\s*\[[^\]]*\])+$", "", e[1:].strip()))
+    if e.startswith("*") or re.search(r"\]\s*$", e):
+        return None
+    return _ref(e)
+
+
+class _Function:
+    def __init__(self, src: Source, text: str, name: str, params: str, start: int, end: int) -> None:
+        self.src, self.text, self.name, self.start, self.end = src, text, name, start, end
+        self.body = text[start:end]
+        self.params = []
+        self.pointer_params: set[str] = set()
+        for item in _split_top(params):
+            words = re.findall(r"[A-Za-z_]\w*", item.split("[")[0])
+            name = words[-1] if words and item.strip() not in ("void", "...") else ""
+            self.params.append(name)
+            if name and ("*" in item or "[" in item or len(words) == 1):
+                self.pointer_params.add(name)
+
+    def line_of(self, at: int) -> int:
+        """The line of body offset `at` (the masked text keeps every newline, not every character)."""
+        return self.text.count("\n", 0, self.start + at) + 1
+
+    def declares(self, name: str) -> bool:
+        return name in self.params or bool(_declared_type(self.body, name))
+
+
+class _RawBuffer:
+    """Buffers filled with guest bytes, followed to every 16/32-bit access (rule kind raw-buffer)."""
+
+    def __init__(self, sweep_: Sweep, rule: Rule) -> None:
+        self.sweep, self.rule = sweep_, rule
+        self.sources = sweep_.selected(rule)
+        self.index = TypeIndex(self.sources)
+        self.functions: list[_Function] = []
+        self.by_name: dict[str, list[_Function]] = {}
+        for src in self.sources:
+            text = _masked_text(src.text, rule.defines) if rule.defines else src.text
+            for m in _DEF.finditer(text):
+                if m["name"] in _NOT_FUNCTIONS or m["head"].split()[:1] in (["return"], ["else"]):
+                    continue
+                brace = text.index("{", m.end("params"))
+                end = _close_brace(text, brace)
+                if end is None:
+                    continue
+                fn = _Function(src, text, m["name"], m["params"], brace, end + 1)
+                self.functions.append(fn)
+                self.by_name.setdefault(fn.name, []).append(fn)
+        # taint: (fn id, local) / global name / member name -> origin "file:line"
+        self.local: dict[tuple[int, str], str] = {}
+        self.globals: dict[str, str] = {}
+        self.members: dict[str, str] = {}
+
+    def _where(self, fn: _Function, at: int) -> str:
+        return f"{fn.src.rel}:{fn.line_of(at)}"
+
+    def _taint(self, fn: _Function, ref: tuple[str, str] | None, origin: str) -> bool:
+        if ref is None:
+            return False
+        kind, name = ref
+        if kind == "m":
+            if name in self.members:
+                return False
+            self.members[name] = origin
+            return True
+        if fn.declares(name):
+            key = (id(fn), name)
+            if key in self.local:
+                return False
+            self.local[key] = origin
+            return True
+        if name in self.globals or name in self.by_name:
+            return False
+        self.globals[name] = origin
+        return True
+
+    def _origin(self, fn: _Function, ref: tuple[str, str] | None) -> str | None:
+        if ref is None:
+            return None
+        kind, name = ref
+        if kind == "m":
+            return self.members.get(name)
+        if fn.declares(name):
+            return self.local.get((id(fn), name))
+        return self.globals.get(name)
+
+    def _seed(self) -> None:
+        for name in self.rule.carriers:
+            self.members.setdefault(name, f"carrier {name}")
+            self.globals.setdefault(name, f"carrier {name}")
+        for fn in self.functions:
+            for rx in self.rule.fill:
+                for m in rx.finditer(fn.body):
+                    self._taint(fn, _ref(m["buf"]), self._where(fn, m.start()))
+
+    def _flow(self) -> bool:
+        changed = False
+        for fn in self.functions:
+            for statement in re.split(r"[;{}]", fn.body):
+                parts = _ASSIGN.split(statement, maxsplit=1)
+                if len(parts) == 2:
+                    lhs, rhs = parts
+                    tail = re.search(r"([A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*)\s*$", lhs)
+                    lhs = tail[1] if tail else lhs  # `if (c) x`, `TYPE *x`, `else x`: the lvalue is the tail
+                    origin = self._origin(fn, _pointer_ref(rhs))
+                    if origin and not re.search(r"\]\s*$", lhs.strip()) and not lhs.strip().startswith("*"):
+                        changed |= self._taint(fn, _ref(lhs), origin)
+            for m in _IDENT_CALL.finditer(fn.body):
+                callees = self.by_name.get(m[1])
+                if not callees or m[1] in _CALL_KEYWORDS:
+                    continue
+                args = _call_args(fn.body, m.end() - 1)
+                if args is None:
+                    continue
+                items = _split_top(fn.body[m.end() : args[1]])
+                for k, item in enumerate(items):
+                    origin = self._origin(fn, _pointer_ref(item))
+                    if not origin:
+                        continue
+                    for callee in callees:
+                        if k < len(callee.params) and callee.params[k] in callee.pointer_params:
+                            changed |= self._taint(callee, ("v", callee.params[k]), origin)
+        return changed
+
+    def _wide(self, type_text: str | None) -> bool:
+        if not type_text or "*" not in type_text:
+            return False
+        base = type_text.replace("*", " ").split()
+        base = [w for w in base if w not in ("const", "volatile", "struct", "union")]
+        if not base:
+            return False
+        spelled = " ".join(base)
+        return any(
+            self.rule.wide.fullmatch(" ".join(t.replace("*", " ").split())) for t in self.index.spellings(spelled)
+        )
+
+    def _declared(self, fn: _Function, at: int, expr: str) -> str | None:
+        ref = _ref(expr)
+        if ref is None:
+            return None
+        kind, name = ref
+        if kind == "m":
+            for body_name in self.index.bodies:
+                found = self.index.member(body_name, name)
+                if found:
+                    return found
+            return None
+        return _declared_type(fn.text[: fn.start + at], name) or self.index.variable(name)
+
+    def hits(self) -> list[dict[str, Any]]:
+        self._seed()
+        for _ in range(32):
+            if not self._flow():
+                break
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, str]] = set()
+        for fn in self.functions:
+            body = fn.body
+            found: list[tuple[int, str, str, str]] = []
+            for m in _CAST.finditer(body):
+                if not self.rule.wide.fullmatch(" ".join(m["t"].split())):
+                    continue
+                origin = self._origin(fn, _ref(m["e"]))
+                if origin:
+                    found.append((m.start(), _ref(m["e"])[1], origin, f"cast to {m['t']} *"))
+            for m in _ACCESS.finditer(body):
+                if not (m["deref"] or m["index"]):
+                    continue
+                if m["deref"] and not m["index"]:
+                    lead = body[: m.start()].rstrip()
+                    if lead and (lead[-1].isalnum() or lead[-1] in "_)]"):
+                        continue  # `TYPE *name` declares, `a * b` multiplies
+                if m["index"] and m.start() > 0 and (body[m.start() - 1].isalnum() or body[m.start() - 1] in "_>."):
+                    continue  # the tail of a longer name or member path, matched on its own
+                expr = m["e"]
+                origin = self._origin(fn, _ref(expr))
+                if not origin:
+                    continue
+                declared = self._declared(fn, m.start(), expr)
+                if self._wide(declared):
+                    found.append((m.start(), _ref(expr)[1], origin, f"access through {' '.join(declared.split())}"))
+            for at, datum, origin, how in found:
+                line = fn.line_of(at)
+                if (fn.src.rel, line, datum) in seen:
+                    continue
+                if self.rule.unless and self.rule.unless.search(fn.src.raw_lines[line - 1]):
+                    continue
+                seen.add((fn.src.rel, line, datum))
+                out.append(self.sweep.hit(self.rule, fn.src, line, datum=datum, origin=origin, access=how))
+        return out
 
 
 def _group(m: re.Match[str], name: str) -> str | None:

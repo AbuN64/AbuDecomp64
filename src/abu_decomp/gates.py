@@ -46,7 +46,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import cleanup, layout
+from abu_decomp import admission, cleanup, layout
 from abu_decomp.config import ConfigError
 
 RECORD = re.compile(r"\b(?:struct|union|enum)\s+(\w+)\s*\{")
@@ -378,7 +378,7 @@ def run(root: Path, rev: str, section: Mapping[str, Any], profile: Any = None) -
         )
         gates = list(section["gates"])
         try:
-            with ThreadPoolExecutor(max_workers=int(section.get("workers", 8))) as pool:
+            with ThreadPoolExecutor(max_workers=admission.width(int(section.get("workers", 8)))) as pool:
                 futures = {
                     i: pool.submit(measure, book, g) for i, g in enumerate(gates) if g["measure"]["kind"] == "roms"
                 }

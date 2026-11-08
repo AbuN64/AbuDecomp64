@@ -31,7 +31,7 @@ from typing import Any
 from abucache import stages as cache_stages
 from unbake import api
 
-from abu_decomp import DecompError, layout, meter, worktree
+from abu_decomp import DecompError, admission, layout, meter, worktree
 from abu_decomp.data import check as check_mod
 from abu_decomp.data import gate as gate_mod
 from abu_decomp.data import stamp as stamp_mod
@@ -210,7 +210,7 @@ def sync_all(names: list[str], shared: Path, tree: Path) -> list[bool]:
     other) overlap instead of queueing."""
     if len(names) < 2:
         return [sync_one(n, shared, tree) for n in names]
-    with ThreadPoolExecutor(min(len(names), SYNC_WORKERS)) as pool:
+    with ThreadPoolExecutor(min(len(names), admission.width(SYNC_WORKERS))) as pool:
         return list(pool.map(lambda n: sync_one(n, shared, tree), names))
 
 

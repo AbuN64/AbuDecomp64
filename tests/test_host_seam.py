@@ -70,7 +70,8 @@ class HostSeam(unittest.TestCase):
 
     def test_the_stand_in_runtime_file_is_complete_and_derives_its_memory_from_the_seam(self) -> None:
         loaded = runtime.load(self.runtime_file)
-        self.assertEqual(loaded.workers, len(os.sched_getaffinity(0)))
+        self.assertEqual(loaded.workers, min(len(os.sched_getaffinity(0)), int(os.environ["JOBS"])))
+        self.assertEqual(loaded.cores, standin_runtime.width())
         stand_in = int(standin_runtime.STAND_IN_GIB * 2**30)
         self.assertEqual(loaded.worker_memory, stand_in // loaded.cores)
 

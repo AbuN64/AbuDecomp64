@@ -48,7 +48,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import DecompError, tas, tas_coverage, tas_health, tas_oracle
+from abu_decomp import DecompError, admission, tas, tas_coverage, tas_health, tas_oracle
 from abu_decomp.admission import slots
 from abu_decomp.behave import prototype
 from abu_decomp.config import Profile
@@ -479,7 +479,7 @@ def seed(profile: Profile, jobs: int = 0) -> dict[str, Any]:
         with contextlib.suppress(DecompError):
             tas.play(profile, name, label=SPOT_LABEL, health=health)
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
+    with ThreadPoolExecutor(max_workers=admission.width(jobs or slots.capacity())) as pool:
         list(pool.map(replay, missing))
     with locked(cfg):
         data = load(cfg)
@@ -718,7 +718,7 @@ def _gate(
             row = compare(cfg, {**entry, "oracle": reference}, _run(cfg, entry.get("baseline")), run, judged)
             return {"movie": movie, "oracle": reference, **row}
 
-        with ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
+        with ThreadPoolExecutor(max_workers=admission.width(jobs or slots.capacity())) as pool:
             rows = list(pool.map(one, sorted(data["entries"])))
         counts: dict[str, int] = {}
         for row in rows:

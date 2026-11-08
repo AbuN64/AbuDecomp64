@@ -23,7 +23,7 @@ from typing import Any
 
 from abucache import stages as cache_stages
 
-from abu_decomp import DecompError, evidence, meter, owes, tools
+from abu_decomp import DecompError, admission, evidence, meter, owes, tools
 from abu_decomp.behave import candidate as build_candidate
 from abu_decomp.behave import run as behave_run
 from abu_decomp.config import Profile
@@ -115,7 +115,7 @@ def run(
                 return {"function": name, "status": "deferred", "message": f"the planning spent {cpu_budget:.0f} CPU s"}
             return plan_one(profile, base, name)
 
-        with ThreadPoolExecutor(max_workers=WIDTH) as pool:
+        with ThreadPoolExecutor(max_workers=admission.width(WIDTH)) as pool:
             planned = list(pool.map(plan, names))
         plan_seconds = started.seconds
         with cache_stages.timed("abu_decomp.behave.precapture.run.mark") as mark:

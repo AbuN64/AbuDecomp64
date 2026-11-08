@@ -75,6 +75,7 @@ from abucache import stages as cache_stages
 
 from abu_decomp import (
     DecompError,
+    admission,
     inotify,
     procguard,
     tas_coverage,
@@ -2089,7 +2090,7 @@ def all_jobs() -> int:
         wanted = int(os.environ.get("ABU_TAS_JOBS", ""))
     except ValueError:
         wanted = ALL_JOBS
-    return max(1, min(slots.capacity(), wanted if wanted > 0 else ALL_JOBS))
+    return max(1, min(slots.capacity(), admission.width(wanted if wanted > 0 else ALL_JOBS)))
 
 
 def _lower_priority(level: int = ALL_NICE) -> None:
@@ -2156,7 +2157,7 @@ def play_all(
             names_to_run, skipped, why_skipped = tas_select.plan(profile, cfg, names, newest)
     else:
         names_to_run = names
-    jobs = jobs or all_jobs()
+    jobs = admission.width(jobs) if jobs else all_jobs()
     _lower_priority(nice or ALL_NICE)
     options.setdefault("slot_class", "background")
     options.setdefault("batch", _stamp(now) + "-all")  # the findings of this run share one batch id

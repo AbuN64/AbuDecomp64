@@ -53,7 +53,7 @@ from abucache import memo
 from abucache import stages as cache_stages
 from unbake import api
 
-from abu_decomp import DecompError, layout, remap, tas_oracle, tas_symbolize
+from abu_decomp import DecompError, admission, layout, remap, tas_oracle, tas_symbolize
 from abu_decomp.admission import slots
 from abu_decomp.behave import abi, percall, prototype, replay
 from abu_decomp.config import Profile, check_keys
@@ -925,7 +925,7 @@ def _build(
             else str(record.get("build") or "unknown"),
         }
 
-    with stage("runs-wall"), ThreadPoolExecutor(max_workers=max(1, jobs or slots.capacity())) as pool:
+    with stage("runs-wall"), ThreadPoolExecutor(max_workers=admission.width(jobs or slots.capacity())) as pool:
         collected = list(pool.map(one, sorted(runs.items())))
     build_tree = build_dir(cfg)
     changed: dict[str, set[str]] = {}

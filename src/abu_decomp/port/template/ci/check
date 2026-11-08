@@ -4,5 +4,6 @@ set -eu
 cd "$(dirname "$0")/.."
 ci/format-check
 cmake --preset debug >/dev/null
-nice cmake --build --preset debug -j4
+: "${JOBS:?JOBS is unset: run under Terminal admission (it sets JOBS), the width this build takes}"
+nice cmake --build --preset debug -j"$JOBS"
 ctest --preset debug

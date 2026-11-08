@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from abu_decomp import DecompError, tas_findings
+from abu_decomp import DecompError, admission, tas_findings
 
 FILE, DIR = "findings.jsonl", "sanitizer"
 SCHEMA = 1
@@ -408,7 +408,7 @@ def monkey(
     hold: int = 24,
     prefix: str | None = None,
     port: Path | str | None = None,
-    jobs: int = 2,
+    jobs: int = 0,
     keep: str = "findings",
     speed: int = 0,
     label: str | None = None,
@@ -470,6 +470,6 @@ def monkey(
             "cpu_seconds": played.get("cpu_seconds"),
         }
 
-    with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(seeds) or 1))) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(admission.width(jobs), len(seeds) or 1))) as pool:
         rows = list(pool.map(one, seeds))
     return {"movies": rows, "findings": sum(r["findings"] for r in rows), "summary": grouped(read(cfg))[:20]}

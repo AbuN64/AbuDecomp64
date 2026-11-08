@@ -46,6 +46,16 @@ The engine is generic and names no project: the rules are project facts, TOML fi
                          the loader types (a header, a swapped table) makes a hit that is false by its origin.
                          `carriers` lists member and variable names known to hold such buffers whatever view of the
                          record names them (the decomp gives one record several struct views): they seed it too
+              byte-alias a byte or halfword access inside a field the code types wider (u32/s32/f32/a pointer), the
+                         form one value takes on a big-endian cartridge and another on a little-endian host: a cast to
+                         a narrow pointer (u8/s8/u16/s16/char) of the address of a wide scalar (`((u8 *)&w)[2]`), a
+                         cast of a byte offset into a struct (`*(T *)((char *)&rec + N)`, `(T *)((u8 *)p + N)` with p
+                         a struct pointer) whose T is narrower or wider than the field at N in the struct's MIPS o32
+                         layout (computed from the bodies; a body it cannot lay out gives no hit), a union whose
+                         members put a narrow and a wide scalar at offset 0, and with `copies` (regex, group `bytes`)
+                         a copy call whose literal length is not a whole number of words (a typed word split into
+                         bytes). Hits carry `access` (the narrow or wide view), `declared` (the field's type) and
+                         `offset`
     why       one sentence: the failure this finds and where it was first seen
     severity  "report" (default) or "block"; only a new block hit fails the exit status
     trees     tree labels the rule reads (default every tree); paths / skip: globs relative to a tree root
@@ -76,7 +86,7 @@ from abucache import stages as cache_stages
 
 from abu_decomp import DecompError
 
-KINDS = ("pattern", "decl-use", "call-arity", "return-spelling", "word-alias", "raw-buffer")
+KINDS = ("pattern", "decl-use", "call-arity", "return-spelling", "word-alias", "raw-buffer", "byte-alias")
 SEVERITIES = ("report", "block")
 _KEYS = frozenset(
     {
@@ -105,6 +115,7 @@ _KEYS = frozenset(
         "fill",
         "wide",
         "carriers",
+        "copies",
     }
 )
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
@@ -303,6 +314,7 @@ class Rule:
             "return-spelling": (),
             "word-alias": ("symbols", "array", "narrow"),
             "raw-buffer": ("fill",),
+            "byte-alias": (),
         }[self.kind]
         for key in needs:
             if not (isinstance(table.get(key), str) or (key == "fill" and _listed(table.get(key)))):
@@ -324,6 +336,7 @@ class Rule:
             self.fill = [re.compile(str(f)) for f in _listed(table.get("fill", []))]
             self.wide = re.compile(str(table.get("wide", _WIDE)))
             self.carriers = _listed(table.get("carriers", []))
+            self.copies = re.compile(str(table["copies"])) if "copies" in table else None
         except re.error as error:
             raise DecompError("sweep.rule", f"{origin}: rule {self.id}: {error}") from error
         if self.kind == "decl-use":
@@ -338,6 +351,8 @@ class Rule:
             for rx in self.fill:
                 if "buf" not in rx.groupindex:
                     raise DecompError("sweep.rule", f"{origin}: rule {self.id}: each `fill` needs a (?P<buf>...) group")
+        if self.kind == "byte-alias" and self.copies is not None and "bytes" not in self.copies.groupindex:
+            raise DecompError("sweep.rule", f"{origin}: rule {self.id}: `copies` needs a (?P<bytes>...) group")
         if self.unless_type is not None and (self.match is None or "var" not in self.match.groupindex):
             raise DecompError(
                 "sweep.rule", f"{origin}: rule {self.id}: `unless_type` needs a (?P<var>...) group in `match`"
@@ -673,6 +688,8 @@ class Sweep:
             return self._word_alias(rule)
         if rule.kind == "raw-buffer":
             return _RawBuffer(self, rule).hits()
+        if rule.kind == "byte-alias":
+            return _ByteAlias(self, rule).hits()
         return self._call_arity(rule)
 
     def _pattern(self, rule: Rule) -> list[dict[str, Any]]:
@@ -1222,6 +1239,271 @@ class _RawBuffer:
                     continue
                 seen.add((fn.src.rel, line, datum))
                 out.append(self.sweep.hit(self.rule, fn.src, line, datum=datum, origin=origin, access=how))
+        return out
+
+
+_NARROW_T = r"(?:u8|s8|u16|s16|char|short|unsigned\s+char|signed\s+char|unsigned\s+short)"
+_SCALAR_SIZE = {
+    "char": 1,
+    "u8": 1,
+    "s8": 1,
+    "unsigned char": 1,
+    "signed char": 1,
+    "bool": 1,
+    "short": 2,
+    "u16": 2,
+    "s16": 2,
+    "unsigned short": 2,
+    "signed short": 2,
+    "int": 4,
+    "long": 4,
+    "u32": 4,
+    "s32": 4,
+    "f32": 4,
+    "float": 4,
+    "unsigned": 4,
+    "signed": 4,
+    "unsigned int": 4,
+    "signed int": 4,
+    "unsigned long": 4,
+    "size_t": 4,
+    "u64": 8,
+    "s64": 8,
+    "f64": 8,
+    "double": 8,
+    "long long": 8,
+    "unsigned long long": 8,
+}
+_LVALUE = r"[A-Za-z_]\w*(?:\s*(?:\[[^\]\[]*\]|\.\s*[A-Za-z_]\w*|->\s*[A-Za-z_]\w*))*"
+_NARROW_VIEW = re.compile(  # an access through the view: `*(u8 *)&w` or `((u8 *)&w)[k]` (not an address computation)
+    rf"(?:(?P<deref>\*)\s*|(?P<paren>\()\s*)\(\s*(?:(?:const|volatile)\s+)*(?P<t>{_NARROW_T})\s*\*\s*\)\s*&\s*"
+    rf"(?P<lv>{_LVALUE})(?P<after>\s*\)\s*\[)?(?!\s*(?:\[|\.|->|\(|[+-]))"
+)
+_OFFSET_VIEW = re.compile(
+    rf"\(\s*(?:(?:const|volatile|struct)\s+)*(?P<t>\w+(?:\s+(?:char|short|int|long))?)\s*\*\s*\)\s*\(\s*\(\s*"
+    rf"(?:const\s+)?(?:u8|s8|char|unsigned\s+char)\s*\*\s*\)\s*(?P<amp>&\s*)?(?P<lv>{_LVALUE})\s*\+\s*"
+    r"(?P<n>0x[0-9A-Fa-f]+|\d+)\s*\)"
+)
+_UNION = re.compile(r"\bunion\s*\w*\s*\{")
+
+
+class _ByteAlias:
+    """The byte-alias kind (see the module text): narrow views of wide scalars, offset views against the o32 layout,
+    mixed-width unions, partial-word copies."""
+
+    def __init__(self, sweep: Sweep, rule: Rule) -> None:
+        self.sweep, self.rule = sweep, rule
+        self.index = sweep.types(rule)
+        self._layouts: dict[str, list[tuple[int, int, str]] | None] = {}
+        self.unions: set[str] = set()  # union tags and typedef names: their members overlap, no layout is laid out
+        for src in sweep.selected(rule, rule.declare_paths):
+            for m in _UNION.finditer(src.text):
+                tag = re.match(r"union\s*(\w*)", m[0])
+                if tag and tag[1]:
+                    self.unions.add(tag[1])
+                end = _close_brace(src.text, m.end() - 1)
+                tail = re.match(r"\s*(\w+)\s*;", src.text[end + 1 :]) if end is not None else None
+                if tail and re.search(r"typedef\s+$", src.text[max(0, m.start() - 12) : m.start()]):
+                    self.unions.add(tail[1])
+
+    def _base(self, type_text: str) -> str:
+        return " ".join(re.sub(r"\b(?:const|volatile|struct|union|extern|static)\b", " ", type_text).split())
+
+    def _resolve(self, type_text: str) -> str:
+        """typedefs expanded until a scalar, a pointer, or a struct body name."""
+        current, seen = self._base(type_text), set()
+        while current not in seen:
+            seen.add(current)
+            if "*" in current or current in _SCALAR_SIZE or current in self.index.bodies:
+                return current
+            if current not in self.index.aliases:
+                return current
+            current = self._base(self.index.aliases[current])
+        return current
+
+    def _size(self, type_text: str) -> tuple[int, int] | None:
+        """(size, alignment) in the o32 ABI, or None."""
+        t = self._resolve(type_text)
+        if "*" in t or t in self.index.function_types:
+            return 4, 4
+        if t in _SCALAR_SIZE:
+            n = _SCALAR_SIZE[t]
+            return n, n
+        lay = self.layout(t)
+        if not lay:
+            return None
+        size, align = lay[-1][0], max([1] + [a for _, a, _ in lay[:-1]])
+        return size, align
+
+    def layout(self, name: str) -> list[tuple[int, int, str]] | None:
+        """[(offset, size, type)] of the scalar fields of struct `name` flattened (arrays as their elements), then a
+        last (size, 0, "") row; None when a member cannot be laid out (bitfields, unknown types, nested bodies)."""
+        if name in self._layouts:
+            return self._layouts[name]
+        self._layouts[name] = None  # recursion guard
+        body = None if name in self.unions else self.index.bodies.get(name)
+        if body is None or "{" in body or ":" in body:
+            return None
+        rows: list[tuple[int, int, str]] = []
+        off, align = 0, 1
+        for stmt in body.split(";"):
+            stmt = " ".join(stmt.split())
+            if not stmt:
+                continue
+            ty = ""
+            for item in _split_top(stmt):
+                m = re.fullmatch(r"(?P<ty>(?:.*?[\s*])?)(?P<n>[A-Za-z_]\w*)\s*(?P<dims>(?:\[[^\]]*\])*)", item.strip())
+                if not m:
+                    return None
+                if not ty:
+                    ty = m["ty"].replace("*", " ").strip()
+                    if not ty:
+                        return None
+                stars = m["ty"].count("*")
+                count = 1
+                for d in re.findall(r"\[([^\]]*)\]", m["dims"]):
+                    if not re.fullmatch(r"[\dxXa-fA-F\s+\-*()]+", d):
+                        return None
+                    try:
+                        count *= int(eval(d, {"__builtins__": {}}, {}))
+                    except Exception:
+                        return None
+                el = "void *" if stars else ty
+                sz = self._size(el)
+                if sz is None:
+                    return None
+                size, a = sz
+                off = (off + a - 1) // a * a
+                sub = None if stars or self._resolve(el) in _SCALAR_SIZE else self.layout(self._resolve(el))
+                for k in range(count):
+                    if sub:
+                        rows += [(off + k * size + o, s, ft) for o, s, ft in sub[:-1]]
+                    else:
+                        rows.append((off + k * size, size, "pointer" if stars else self._resolve(el)))
+                off += size * count
+                align = max(align, a)
+        off = (off + align - 1) // align * align
+        rows.append((off, 0, ""))
+        self._layouts[name] = rows
+        return rows
+
+    def _lvalue_type(self, src: Source, at: int, lv: str) -> str | None:
+        parts = re.findall(r"\[[^\]\[]*\]|\.\s*[A-Za-z_]\w*|->\s*[A-Za-z_]\w*|^[A-Za-z_]\w*", lv.replace(" ", ""))
+        if not parts:
+            return None
+        declared = _declared_type(src.text[:at], parts[0]) or self.index.variable(parts[0])
+        if declared is None:
+            return None
+        current = self._resolve(declared)
+        for part in parts[1:]:
+            if part.startswith("["):
+                if "*" in current:
+                    current = self._resolve(current.replace("*", "", 1))
+                continue  # an array element: _declares already dropped the brackets
+            member = part.lstrip(".->")
+            base = self._resolve(current.replace("*", "")) if part.startswith("->") else current
+            found = self.index.member(base.split()[-1] if base else "", member)
+            if found is None:
+                return None
+            current = self._resolve(found)
+        return current
+
+    def hits(self) -> list[dict[str, Any]]:
+        out = []
+        rule, sweep = self.rule, self.sweep
+        for src in sweep.selected(rule):
+            text = src.text
+            for m in _NARROW_VIEW.finditer(text):
+                if not m["deref"] and not (m["paren"] and m["after"]):
+                    continue
+                ty = self._lvalue_type(src, m.start(), m["lv"])
+                if ty is None:
+                    continue
+                size = 4 if "*" in ty else _SCALAR_SIZE.get(ty)
+                view = _SCALAR_SIZE.get(" ".join(m["t"].split()), 1)
+                if size and size > view:
+                    out.append(
+                        sweep.hit(
+                            rule,
+                            src,
+                            src.line_of(m.start()),
+                            datum=" ".join(m["lv"].split()),
+                            access=f"{' '.join(m['t'].split())} view",
+                            declared=ty,
+                        )
+                    )
+            for m in _OFFSET_VIEW.finditer(text):
+                ty = self._lvalue_type(src, m.start(), m["lv"])
+                if ty is None:
+                    continue
+                if m["amp"]:
+                    struct = ty
+                elif "*" in ty:
+                    struct = self._resolve(ty.replace("*", "", 1))
+                else:
+                    continue
+                lay = self.layout(struct) if "*" not in struct and struct not in _SCALAR_SIZE else None
+                view = self._size(m["t"])
+                if not lay or view is None or m["t"] in ("void",):
+                    continue
+                n, width = int(m["n"], 0), view[0]
+                fields = [(o, s, ft) for o, s, ft in lay[:-1] if o < n + width and n < o + s]
+                exact = len(fields) == 1 and fields[0][0] == n and fields[0][1] == width
+                # byte fields (chars, pads) read or copied a word at a time are raw bytes: the raw-buffer kind's
+                if fields and not exact and not all(s == 1 for _, s, _ in fields):
+                    out.append(
+                        sweep.hit(
+                            rule,
+                            src,
+                            src.line_of(m.start()),
+                            datum=f"{struct}+{n:#x}",
+                            access=f"{m['t']} at +{n:#x}",
+                            declared=" ".join(f"{ft}@{o:#x}" for o, _, ft in fields) or "padding",
+                            offset=n,
+                        )
+                    )
+            for m in _UNION.finditer(text):
+                end = _close_brace(text, m.end() - 1)
+                if end is None:
+                    continue
+                sizes = set()
+                members = text[m.end() : end]
+                while re.search(r"\{[^{}]*\}", members):  # nested bodies: a struct member is a view, not a scalar
+                    members = re.sub(r"\{[^{}]*\}", " ", members)
+                for stmt in members.split(";"):
+                    words = stmt.replace("*", " * ").split()
+                    if not words:
+                        continue
+                    ty = (
+                        "pointer"
+                        if "*" in words
+                        else self._resolve(" ".join(w for w in words[:-1] if not w.startswith("[")))
+                    )
+                    first = 4 if ty == "pointer" else _SCALAR_SIZE.get(ty)  # scalar members only: a struct is a view
+                    if first:
+                        sizes.add(first)
+                if sizes and min(sizes) < 4 <= max(sizes):
+                    out.append(
+                        sweep.hit(
+                            rule,
+                            src,
+                            src.line_of(m.start()),
+                            access="union",
+                            declared=f"members at +0 of {sorted(sizes)} bytes",
+                        )
+                    )
+            if rule.copies is not None:
+                for m in rule.copies.finditer(text):
+                    try:
+                        n = int(m["bytes"], 0)
+                    except ValueError:
+                        continue
+                    if n % 4:
+                        out.append(
+                            sweep.hit(
+                                rule, src, src.line_of(m.start()), access=f"copy of {n} bytes", datum=_group(m, "datum")
+                            )
+                        )
         return out
 
 

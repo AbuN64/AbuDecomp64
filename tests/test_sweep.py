@@ -582,3 +582,73 @@ class RawBufferTests(unittest.TestCase):
     def test_a_fill_without_a_buf_group_names_the_rule(self):
         with self.assertRaisesRegex(DecompError, "raw.*buf"):
             rules(RAW.replace("(?P<buf>[^,]+)", "([^,]+)"))
+
+
+BYTE_ALIAS = """
+[[rule]]
+id = "bytes"
+kind = "byte-alias"
+why = "w"
+paths = ["**/*.c", "**/*.h"]
+copies = '\\bmemcpy\\s*\\((?P<datum>[^;]*?),\\s*(?P<bytes>0x[0-9A-Fa-f]+|\\d+)\\s*\\)'
+"""
+
+
+class ByteAliasTests(unittest.TestCase):
+    """Wave-5 byte-alias class: the actionReady slot byte, the navigation flags halfword view, partial-word copies."""
+
+    def hits(self, files):
+        return Tree(files).sweep(BYTE_ALIAS)["hits"]
+
+    HEADER = (
+        "typedef struct Actor { u16 model; u8 pad[2]; s32 actionReady; f32 speed; char name[8]; } Actor;\n"
+        "typedef struct Pair { Actor actor; u16 halves[2]; } Pair;\n"
+    )
+
+    def test_a_byte_view_of_a_wide_member_is_a_hit_and_an_address_is_not(self):
+        hits = self.hits(
+            {
+                "a.h": self.HEADER,
+                "use.c": "void f(Actor *actor, Pair p) {\n"
+                "  ((u8 *)&actor->actionReady)[2] = 1;\n"
+                "  *(u16 *)&p.actor.speed = 2;\n"
+                "  g((u8 *)&actor->actionReady + 2);\n"
+                "  ((u8 *)&actor->model)[1] = 3;\n"
+                "  ((u8 *)&actor->name)[1] = 4;\n"
+                "}\n",
+            }
+        )
+        self.assertEqual(
+            [(h["line"], h["access"], h["declared"]) for h in hits],
+            [(2, "u8 view", "s32"), (3, "u16 view", "f32"), (5, "u8 view", "u16")],
+        )
+
+    def test_an_offset_view_is_judged_against_the_o32_layout(self):
+        hits = self.hits(
+            {
+                "a.h": self.HEADER,
+                "use.c": "void f(Actor *a, Pair *p) {\n"
+                "  *(u16 *)((u8 *)a + 6) = 1;\n"  # inside actionReady (s32 at 4)
+                "  *(s32 *)((u8 *)a + 4) = 1;\n"  # actionReady itself
+                "  *(u32 *)((char *)&p->actor + 0x10) = 1;\n"  # four bytes of name: chars, no hit
+                "  *(u32 *)((u8 *)p + 0x14) = 1;\n"  # the two halves read as one word
+                "  *(u8 *)((u8 *)a + 1) = 1;\n"  # a byte of model
+                "}\n",
+            }
+        )
+        self.assertEqual([(h["line"], h["offset"]) for h in hits], [(2, 6), (5, 0x14), (6, 1)])
+        self.assertIn("s32@0x4", hits[0]["declared"])
+
+    def test_a_union_of_a_narrow_and_a_wide_scalar_is_a_hit_and_a_view_union_is_not(self):
+        hits = self.hits(
+            {
+                "a.h": "union Flags { u32 v0; u16 v1; };\n"
+                "union Views { struct { s16 type; void *state; } msg; Actor actor; u8 bytes[8]; };\n"
+                "union Same { f32 f; u32 w; };\n",
+            }
+        )
+        self.assertEqual([(h["file"], h["line"]) for h in hits], [("a.h", 1)])
+
+    def test_a_copy_of_a_part_of_a_word_is_a_hit(self):
+        hits = self.hits({"use.c": "void f(void) {\n  memcpy(dst, src, 3);\n  memcpy(dst, src, 8);\n}\n"})
+        self.assertEqual([(h["line"], h["access"]) for h in hits], [(2, "copy of 3 bytes")])

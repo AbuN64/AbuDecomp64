@@ -11,7 +11,7 @@ license = {file = "LICENSE"}
 classifiers = ["License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)"]
 requires-python = ">=3.13"
 # Our own tools are bare names: each installs itself into the toolkit at its landed commit, and a clean install (bin/test
-# makes .venv from this list) resolves each name to the commit its source repository has landed at (abu_decomp.sources.PACKAGES).
+# makes .venv from this list) prefers sibling checkouts, otherwise landed commits (abu_decomp.sources.PACKAGES).
 dependencies = [
   "abucache",
   "textual==8.2.8",

@@ -19,7 +19,7 @@ from abu_decomp.admission import slots
 
 PROBE = (
     "from abu_decomp.admission import slots; slots.configure({'disk_gib': 40}); "
-    "slots.acquire('batch', 1, 'probe').release()"
+    "slots.acquire('batch', 1, 'probe', output_dir=__import__('pathlib').Path.cwd()).release()"
 )
 SEES = (
     "import os; from abucache import runtime; from abu_decomp.admission import slots; "
@@ -45,13 +45,13 @@ class HostSeam(unittest.TestCase):
 
     def test_the_free_space_reads_are_stand_ins_not_the_host(self) -> None:
         with self.starved_host() as statvfs:
-            self.assertGreater(slots.disk_free_gib(), 40)
+            self.assertGreater(slots.disk_free_gib(output_dir=Path.cwd()), 40)
             self.assertGreater(slots._mem_gib("MemAvailable"), 40)
         statvfs.assert_not_called()
 
     def test_a_job_needing_more_than_the_host_has_free_still_runs_here(self) -> None:
         with self.starved_host(), mock.patch.object(slots.policy, "disk_gib", 40.0):
-            slots.acquire("batch", 1, "seam").release()
+            slots.acquire("batch", 1, "seam", output_dir=Path.cwd()).release()
 
     def test_a_python_the_test_starts_gets_the_same_stand_in(self) -> None:
         self.assertIn("host_seam", os.environ["PYTHONPATH"])
@@ -80,4 +80,4 @@ class HostSeam(unittest.TestCase):
             mock.patch.object(slots, "disk_free_gib", return_value=1.0),
             self.assertRaises(AdmissionError),
         ):
-            slots.acquire("batch", 1, "starved")
+            slots.acquire("batch", 1, "starved", output_dir=Path.cwd())

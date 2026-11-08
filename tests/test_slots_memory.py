@@ -2,6 +2,7 @@
 
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from unittest import mock
 
 from abucache.slots import Admission, Policy
@@ -27,6 +28,7 @@ class StampMemoryTest(unittest.TestCase):
         @contextmanager
         def hold(klass, **kwargs):
             self.assertEqual((klass, kwargs["weight"], kwargs["mem_gib"]), ("batch", 2, 5))
+            self.assertEqual(kwargs["output_dir"], Path("stamp-tree"))
             events.append("grant")
             try:
                 yield mock.Mock(weight=2, waited=0)
@@ -34,6 +36,7 @@ class StampMemoryTest(unittest.TestCase):
                 events.append("release")
 
         builder = object.__new__(Builder)
+        builder.tree = Path("stamp-tree")
         with (
             mock.patch.object(slots, "policy", Policy(2, 4, 40, 0.75, 5, 2)),
             mock.patch.object(slots, "stamp_weight", return_value=2),

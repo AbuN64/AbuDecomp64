@@ -5,6 +5,7 @@ import tempfile
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("ensure_venv", Path(__file__).parent.parent / "ci" / "ensure_venv.py")
 ensure_venv = importlib.util.module_from_spec(spec)
@@ -21,6 +22,79 @@ dependencies = ["unbake", "gcovr==8.3"]
 [project.optional-dependencies]
 dev = ["ruff==0.16.9", "pytest==9.1.1"]
 """
+
+
+class SiblingTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.workspace = Path(self.dir.name)
+        self.root = self.workspace / "consumer"
+        self.root.mkdir()
+        (self.root / "pyproject.toml").write_text(PYPROJECT)
+
+    def checkout(self, name):
+        path = self.workspace / name
+        path.mkdir()
+        (path / ".git").write_text("gitdir: worktree")
+        (path / "pyproject.toml").write_text(f'[project]\nname = "{name}"\n')
+        return path
+
+    def test_every_tool_uses_sibling_when_present_and_landed_when_absent(self):
+        lookup = mock.Mock(return_value=(0, f"{'a' * 40}\tHEAD\n"))
+        for name, url in sources.PACKAGES.items():
+            with self.subTest(package=name):
+                self.assertEqual(
+                    sources.clean_requirements([name], lookup, root=self.root), [f"{name} @ git+{url}@{'a' * 40}"]
+                )
+                path = self.checkout(name)
+                lookup.reset_mock()
+                self.assertEqual(sources.clean_requirements([name], lookup, root=self.root), [str(path)])
+                lookup.assert_not_called()
+
+    def test_duplicate_checkouts_refuse(self):
+        self.checkout("abucache")
+        other = self.workspace / "duplicate"
+        other.mkdir()
+        (other / ".git").mkdir()
+        (other / "pyproject.toml").write_text('[project]\nname = "abucache"\n')
+        with self.assertRaisesRegex(sources.SourceError, "multiple sibling checkouts"):
+            sources.sibling_checkouts(self.root)
+
+    def test_stamp_tracks_commit_dirty_content_untracked_content_and_deletion(self):
+        path = self.checkout("abucache")
+        head, diff, untracked = "a" * 40, "", ""
+
+        def git(argv, cwd):
+            self.assertEqual(cwd, path)
+            return 0, {"rev-parse": head, "diff": diff, "ls-files": untracked}[argv[1]]
+
+        def key():
+            return ensure_venv.key(self.root, [str(path)], git)
+
+        before = key()
+        self.assertEqual(before, key())
+        head = "b" * 40
+        committed = key()
+        self.assertNotEqual(before, committed)
+        diff = "first dirty content"
+        dirty = key()
+        self.assertNotEqual(committed, dirty)
+        diff = "second dirty content"
+        self.assertNotEqual(dirty, key())
+        untracked = "new.py\0"
+        (path / "new.py").write_text("first")
+        first = key()
+        (path / "new.py").write_text("second")
+        self.assertNotEqual(first, key())
+        (path / "new.py").unlink()
+        untracked = ""
+        self.assertNotEqual(first, key())
+
+    def test_checkout_git_failure_refuses(self):
+        path = self.checkout("abucache")
+        with self.assertRaisesRegex(sources.SourceError, "git rev-parse failed"):
+            sources.checkout_key(path, mock.Mock(return_value=(1, "broken checkout")))
 
 
 class EnsureTests(unittest.TestCase):
@@ -107,7 +181,9 @@ spec = importlib.util.spec_from_file_location('bootstrap', root / 'ci/ensure_ven
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 rows = module.requirements(root, lambda argv, cwd: (0, 'a' * 40 + '\tHEAD\n'))
-assert any(row.startswith('abucache @ git+') for row in rows)
+from abu_decomp import sources
+checkout = sources.sibling_checkouts(root).get('abucache')
+assert str(checkout) in rows if checkout else any(row.startswith('abucache @ git+') for row in rows)
 assert 'abucache' not in sys.modules
 assert 'abu_decomp.deploy' not in sys.modules
 assert 'abu_decomp.tools' not in sys.modules

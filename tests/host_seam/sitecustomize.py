@@ -20,5 +20,5 @@ try:
 except ImportError:  # a python that does not import the checkout has no pool to protect
     pass
 else:
-    slots.disk_free_gib = lambda: STAND_IN_GIB
+    slots.disk_free_gib = lambda output_dir: STAND_IN_GIB
     slots._mem_gib = lambda field: STAND_IN_GIB

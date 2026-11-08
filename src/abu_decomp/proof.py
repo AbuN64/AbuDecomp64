@@ -57,7 +57,11 @@ def run(
             # takes the tree lock
             with (
                 slots.hold(
-                    "batch", slots.stamp_weight(), "decomp make", mem_gib=slots.policy.stamp_gib or None
+                    "batch",
+                    slots.stamp_weight(),
+                    "decomp make",
+                    mem_gib=slots.policy.stamp_gib or None,
+                    output_dir=chosen.project,
                 ) as grant,
                 treelock.hold(chosen.project, exclusive=True, who="make"),
             ):

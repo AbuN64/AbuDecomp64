@@ -153,7 +153,7 @@ def oracle_host(profile: Profile, options: Options) -> dict[str, Any]:
     return oracle
 
 
-@slots.admitted("batch")
+@slots.admitted("batch", output_dir=lambda profile, cfg, oracle, name, options: cfg["runs"])
 def record_movie(
     profile: Profile, cfg: dict[str, Any], oracle: dict[str, Any], name: str, options: Options
 ) -> dict[str, Any]:
@@ -627,7 +627,7 @@ def _source(profile: Profile, options: Options) -> Path:
     return Path(profile.section("tools")["project"])
 
 
-@slots.admitted("batch")
+@slots.admitted("batch", output_dir=lambda cfg, port, run, pak, cases: run)
 def run_port(
     cfg: dict[str, Any], port: Path, run: Path, pak: str, cases: list[Case]
 ) -> tuple[dict[str, Outcome], dict[str, Any]]:

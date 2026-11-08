@@ -79,7 +79,9 @@ class Builder:
             yield int(Builder.make_jobs or 1)
             return
         want = slots.stamp_weight(klass)  # the class decides the grant, not the idle-core probe
-        with slots.hold(klass, weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant:
+        with slots.hold(
+            klass, weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None, output_dir=self.tree
+        ) as grant:
             print(f"stamp slots: held {want} after waiting {getattr(grant, 'waited', 0):.0f}s", flush=True)
             # the slots held here are the stamp's: every make beneath (the check's, the ROM link) takes them through the
             # UNBAKE_CORES protocol and does not queue in unbake's pool again (S9: the link spent 580 s at ~0% CPU)
@@ -101,7 +103,9 @@ class Builder:
             return self.run(argv, **kw)
         want = self.width()
         with (
-            slots.hold("batch", weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None) as grant,
+            slots.hold(
+                "batch", weight=want, label="stamp build", mem_gib=slots.policy.stamp_gib or None, output_dir=self.tree
+            ) as grant,
             cache_stages.timed("abu_decomp.data.trial.run_held.began") as began,
         ):
             used = meter.cpu()

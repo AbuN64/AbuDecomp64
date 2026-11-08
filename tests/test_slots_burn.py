@@ -1,6 +1,7 @@
 """The captured weight-2 TAS regression uses the shared affinity boundary."""
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from abucache.slots import Grant
@@ -20,7 +21,7 @@ class BurnTest(unittest.TestCase):
             mock.patch("os.sched_setaffinity") as pin,
             mock.patch.dict("os.environ", {"UNBAKE_CORES": ""}),
         ):
-            with slots.hold("background", 2, "play tas"):
+            with slots.hold("background", 2, "play tas", output_dir=Path.cwd()):
                 assigned = pin.call_args.args[1]
                 self.assertEqual(assigned, {1, 2})
                 self.assertEqual(min(sum(demands), len(assigned)), 2)

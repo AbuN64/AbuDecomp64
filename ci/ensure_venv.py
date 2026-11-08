@@ -1,9 +1,6 @@
-"""The repo-local virtual environment: made from pyproject.toml's dependencies (and the dev extra), keyed on what it
-installs: a hash of pyproject.toml and of the commit each of our tools has landed at. pyproject.toml names our tools
-bare (unbake, recipemaker, cake-taste-64) and pins no commit; abu_decomp.sources.clean_requirements turns each name into
-the `name @ git+URL@commit` pip can fetch, the same read `landed_tools` makes. An unchanged tree whose tools
-have not moved reuses the environment with no install. Standard library only, so any python3 of the required version
-can run it. Prints the environment's interpreter path on stdout (installer output goes to stderr)."""
+"""Build the repo-local venv from declared requirements. Sibling tool checkouts take precedence over landed
+commits. Its stamp includes pyproject, resolved requirements, and each checkout's HEAD and dirty contents.
+Installer output goes to stderr; stdout names the interpreter. Standard library only for clean bootstrap."""
 
 import hashlib
 import re
@@ -17,19 +14,29 @@ STAMP = ".pyproject.sha256"
 
 
 def requirements(root: Path, run=None) -> list[str]:
-    """pyproject.toml's dependencies and dev extra with each of our tools resolved to its landed commit."""
+    """Resolve declared dependencies and dev extras to sibling checkouts or landed commits."""
     sys.path.insert(0, str(root / "src"))
     try:
         from abu_decomp import sources
     finally:
         sys.path.pop(0)
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
-    dependencies = sources.clean_requirements(project["dependencies"], run or sources.run_command)
-    return [*dependencies, *project.get("optional-dependencies", {}).get("dev", [])]
+    dependencies = sources.clean_requirements(
+        [*project["dependencies"], *project.get("optional-dependencies", {}).get("dev", [])],
+        run or sources.run_command,
+        root=root,
+    )
+    return dependencies
 
 
-def key(root: Path, rows: list[str]) -> str:
-    return hashlib.sha256((root / "pyproject.toml").read_bytes() + "\n".join(rows).encode()).hexdigest()
+def key(root: Path, rows: list[str], run=None) -> str:
+    from abu_decomp import sources
+
+    digest = hashlib.sha256((root / "pyproject.toml").read_bytes() + "\n".join(rows).encode())
+    for row in rows:
+        if Path(row).is_absolute():
+            digest.update(sources.checkout_key(Path(row), run or sources.run_command).encode())
+    return digest.hexdigest()
 
 
 def need_python(root: Path, version: tuple[int, int]) -> None:
@@ -46,7 +53,7 @@ def ensure(root: Path, run=subprocess.run, version: tuple[int, int] = sys.versio
     python = venv / "bin" / "python"
     stamp = venv / STAMP
     rows = requirements(root, lookup)
-    digest = key(root, rows)
+    digest = key(root, rows, lookup)
     if python.exists() and stamp.exists() and stamp.read_text() == digest:
         return python
     need_python(root, version)

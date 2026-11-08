@@ -489,8 +489,8 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
     held = []
 
     class Hold:
-        def __init__(self, klass, weight=1, label="", mem_gib=None):
-            held.append((klass, weight, label, mem_gib))
+        def __init__(self, klass, weight=1, label="", mem_gib=None, *, output_dir):
+            held.append((klass, weight, label, mem_gib, output_dir))
 
         def __enter__(self):
             return None
@@ -506,7 +506,7 @@ def test_a_stamp_build_holds_its_jobs_in_the_slot_pool_behind_the_train(tmp_path
     run = lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")  # noqa: E731
     cfg = replace(CFG, make=("make",), jobs=())
     trial.Builder(cfg, tmp_path, run=run).build("us", "u")
-    assert held == [("batch", 1, "stamp build", 5.0)] and ran[0][:3] == ["nice", "-n", "10"]
+    assert held == [("batch", 1, "stamp build", 5.0, tmp_path)] and ran[0][:3] == ["nice", "-n", "10"]
 
 
 def test_a_failed_link_keeps_its_log_and_names_the_missing_objects(tmp_path):
@@ -795,7 +795,7 @@ def test_a_builder_queues_for_the_slots_once_for_all_its_makes(tmp_path, monkeyp
     held = []
 
     class Hold:
-        def __init__(self, klass, weight=1, label="", mem_gib=None):
+        def __init__(self, klass, weight=1, label="", mem_gib=None, *, output_dir):
             held.append(weight)
 
         def __enter__(self):
@@ -883,7 +883,7 @@ def test_a_stamp_queues_for_the_slots_once_from_the_settle_to_the_link(tmp_path,
     held, depth = [], []
 
     class Hold:  # re-entrant like the real one: a block inside a held block queues nothing
-        def __init__(self, klass, weight=1, label="", mem_gib=None):
+        def __init__(self, klass, weight=1, label="", mem_gib=None, *, output_dir):
             self.outer = not depth
             if self.outer:
                 held.append(weight)

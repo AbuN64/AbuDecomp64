@@ -336,7 +336,7 @@ class Server:
         (page-port.py's landings.jsonl beside the runs folder)."""
         from abu_decomp.admission import slots
 
-        out = slots.status()
+        out = slots.status(output_dir=self.cfg["runs"])
         rows = []
         try:
             lines = (Path(self.cfg["runs"]).parent / "landings.jsonl").read_text().splitlines()[-20:]

@@ -1,6 +1,7 @@
 """The caller declares the disk floor; the shared API refuses before workload entry."""
 
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from abucache.slots import Admission, AdmissionError
@@ -15,9 +16,9 @@ class DiskFloorTest(unittest.TestCase):
 
     def test_disk_need_scales_with_work(self):
         with mock.patch.object(slots, "disk_free_gib", return_value=70):
-            slots.check_disk("batch", 1)
+            slots.check_disk("batch", 1, output_dir=Path.cwd())
             with self.assertRaises(AdmissionError):
-                slots.check_disk("batch", 2)
+                slots.check_disk("batch", 2, output_dir=Path.cwd())
 
     def test_no_work_starts_on_refusal(self):
         work = mock.Mock()
@@ -25,7 +26,7 @@ class DiskFloorTest(unittest.TestCase):
             mock.patch.object(slots, "disk_free_gib", return_value=1),
             mock.patch.object(slots, "pool_dir") as pool,
             self.assertRaises(AdmissionError),
-            slots.hold("batch", label="stamp build"),
+            slots.hold("batch", label="stamp build", output_dir=Path.cwd()),
         ):
             work()
         work.assert_not_called()
@@ -33,4 +34,4 @@ class DiskFloorTest(unittest.TestCase):
 
     def test_owner_has_the_caller_declared_exemption(self):
         with mock.patch.object(slots, "disk_free_gib", return_value=1):
-            slots.check_disk("owner", 8)
+            slots.check_disk("owner", 8, output_dir=Path.cwd())

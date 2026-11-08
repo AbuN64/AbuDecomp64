@@ -1,7 +1,9 @@
 """Source requirements, usable before any toolkit dependency is installed."""
 
+import hashlib
 import re
 import subprocess
+import tomllib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -38,15 +40,51 @@ def landed_commit(url: str, run: Run = run_command) -> str:
     return found[1]
 
 
-def clean_requirements(dependencies: Sequence[str], run: Run = run_command) -> list[str]:
-    """`dependencies` for a clean install: each bare name of our tools becomes `name @ git+URL@landed commit`, so pip
-    can fetch it; every other row stays as written. The repository pins no tool by commit (a pin drifts each time a
-    tool lands and strands the next deploy), so a tool is only ever named."""
+def sibling_checkouts(root: Path) -> dict[str, Path]:
+    """Find tool checkouts by their declared distribution name, independent of directory spelling."""
+    found: dict[str, Path] = {}
+    for sibling in sorted(root.resolve().parent.iterdir()):
+        project = sibling / "pyproject.toml"
+        if sibling == root.resolve() or not (sibling / ".git").exists() or not project.is_file():
+            continue
+        name = tomllib.loads(project.read_text()).get("project", {}).get("name")
+        if name in PACKAGES:
+            if name in found:
+                raise SourceError("sources.duplicate", f"{name}: multiple sibling checkouts: {found[name]}, {sibling}")
+            found[name] = sibling
+    return found
+
+
+def checkout_key(root: Path, run: Run = run_command) -> str:
+    """Hash HEAD and the complete dirty contents, including staged and untracked changes."""
+    digest = hashlib.sha256()
+    for args in (
+        ["rev-parse", "HEAD"],
+        ["diff", "--binary", "HEAD", "--"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        code, output = run(["git", *args], root)
+        if code:
+            raise SourceError("sources.checkout", f"{root}: git {args[0]} failed: {output.strip()}")
+        digest.update(output.encode())
+        if args[0] == "ls-files":
+            for name in output.split("\0"):
+                if name:
+                    path = root / name
+                    digest.update(path.readlink().as_posix().encode() if path.is_symlink() else path.read_bytes())
+    return digest.hexdigest()
+
+
+def clean_requirements(dependencies: Sequence[str], run: Run = run_command, *, root: Path | None = None) -> list[str]:
+    """Resolve tools from sibling checkouts when a workspace is supplied, otherwise from landed HEAD."""
+    checkouts = sibling_checkouts(root) if root is not None else {}
     rows: list[str] = []
     landed: dict[str, str] = {}
     for row in dependencies:
         name = row.strip()
-        if name in PACKAGES:
+        if name in checkouts:
+            row = str(checkouts[name])
+        elif name in PACKAGES:
             if name not in landed:
                 landed[name] = landed_commit(PACKAGES[name], run)
             row = f"{name} @ git+{PACKAGES[name]}@{landed[name]}"

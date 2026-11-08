@@ -249,7 +249,7 @@ def mixed_builds(by_build: dict[str, dict[str, str]]) -> list[dict[str, Any]]:
     return out
 
 
-@slots.admitted("background")
+@slots.admitted("background", output_dir=lambda args, cwd, timeout=600: cwd)
 def gcovr(args: list[str], cwd: Path, timeout: float = 600) -> None:
     """Run gcovr (the decomp venv's own pinned copy); a failure is a DecompError carrying its last lines.
 
@@ -373,7 +373,7 @@ def cached_behaviour(
     return judged
 
 
-@slots.admitted("background")
+@slots.admitted("background", output_dir=lambda profile, cfg, run, record: run)
 def run_oracle(profile: Profile, cfg: dict[str, Any], run: Path, record: dict[str, Any]) -> bool:
     """Replay the run's movie in the original game (the `tas.oracle` host, as `tas play --oracle` does) with the host's
     golden dir on, so it writes RUN/oracle-golden/trace-final.tsv: every function it entered, first VI and count.

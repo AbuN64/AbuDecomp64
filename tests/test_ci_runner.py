@@ -40,7 +40,7 @@ class Scratch(unittest.TestCase):
                 mock.patch.object(slots, "disk_free_gib", return_value=29.3),
                 self.assertRaises(AdmissionError),
             ):
-                slots.check_disk("batch", 2)
+                slots.check_disk("batch", 2, output_dir=Path.cwd())
 
 
 class SourceFirst(unittest.TestCase):

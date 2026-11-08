@@ -34,7 +34,8 @@ class Consumers(unittest.TestCase):
                 events = []
 
                 @contextmanager
-                def hold(given, count, label, klass=klass, weight=weight, events=events):
+                def hold(given, count, label, *, output_dir, klass=klass, weight=weight, events=events):
+                    self.assertEqual(output_dir, Path("runs"))
                     self.assertEqual((given, count), (klass, weight))
                     events.append("grant")
                     yield
@@ -43,6 +44,7 @@ class Consumers(unittest.TestCase):
                 work = mock.Mock(side_effect=lambda *a, events=events, **k: events.append("work"))
                 with (
                     mock.patch.object(slots, "hold", side_effect=hold),
+                    mock.patch.object(tas, "settings", return_value={"runs": Path("runs")}),
                     mock.patch("abu_decomp.tas_bake.movie_hook"),
                 ):
                     tas._admitted(work)(object(), name, **kwargs)
@@ -55,7 +57,7 @@ class Consumers(unittest.TestCase):
             self.assertRaises(AdmissionError),
         ):
             replay.run_port({}, Path("port"), Path("run"), "on", [])
-        hold.assert_called_once_with("batch", 1, "run_port")
+        hold.assert_called_once_with("batch", 1, "run_port", output_dir=Path("run"))
         popen.assert_not_called()
 
     def test_proof_passes_stamp_policy_before_starting_make(self):
@@ -70,5 +72,5 @@ class Consumers(unittest.TestCase):
             self.assertRaises(AdmissionError),
         ):
             proof.run(mock.Mock(), ["check"])
-        hold.assert_called_once_with("batch", 2, "decomp make", mem_gib=5)
+        hold.assert_called_once_with("batch", 2, "decomp make", mem_gib=5, output_dir=Path("tree"))
         popen.assert_not_called()

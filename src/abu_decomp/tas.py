@@ -1462,7 +1462,12 @@ def _admitted(fn):
         weight = 2 if kwargs.get("oracle") else 1  # the port and the oracle: one core each, enforced by the hold
         what = name or kwargs.get("start") or "human"
         watched = bool(kwargs.get("speed", 0))
-        with slots.hold(klass or ("interactive" if watched else "background"), weight, f"play {what}"):
+        with slots.hold(
+            klass or ("interactive" if watched else "background"),
+            weight,
+            f"play {what}",
+            output_dir=settings(profile)["runs"],
+        ):
             result = fn(profile, name, *args, **kwargs)
         if name is not None:  # outside the hold: the bake takes its own batch slot
             from abu_decomp import tas_bake

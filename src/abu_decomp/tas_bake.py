@@ -810,7 +810,7 @@ def bake(
     if movie and what and what != {"movie"}:
         raise DecompError("tas.bake", "--movie bakes one movie: use it with --what movie")
     with cache_stages.timed("abu_decomp.tas_bake.bake.started") as started:
-        with slots.hold("batch", 1, "tas bake"):
+        with slots.hold("batch", 1, "tas bake", output_dir=tas.settings(profile)["runs"]):
             inputs = Inputs(profile, union)
             with locked(inputs.runs):
                 result = _bake(inputs, what, movie)

@@ -240,6 +240,17 @@ def _run_event(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
 def _tools_arguments(parser: argparse.ArgumentParser) -> None:
     actions = parser.add_subparsers(dest="action", required=True, parser_class=_Parser)
     deploy = actions.add_parser("deploy", help="install ONE named package at one commit into venvs, carrying the rest")
+    install = actions.add_parser(
+        "install",
+        help="bootstrap: build the toolkit venv on this host from AD64 main's pyproject.toml at a landed commit",
+    )
+    install.add_argument(
+        "--venv", type=Path, required=True, nargs="+", help="live venv symlink paths to make or replace"
+    )
+    install.add_argument(
+        "--sha", help="a landed AD64 main commit (40 hex; default: main's head); no path or editable source"
+    )
+    install.add_argument("--project-sha", help="the project commit whose requirements.txt is installed (default: main)")
     name = actions.add_parser("name", help="the build name a deploy would give (all packages), building nothing")
     for sub in (deploy, name):
         sub.add_argument("--package", required=True, help="the distribution to install (abu-decomp-64, unbake, ...)")
@@ -262,6 +273,10 @@ def _run_tools(args: argparse.Namespace) -> tuple[dict[str, Any], int, list[dict
     from abu_decomp import deploy
 
     profile = _profile(args.profile)
+    if args.action == "install":
+        return deploy.install_toolkit(
+            profile, [Path(os.path.abspath(path)) for path in args.venv], sha=args.sha, project_sha=args.project_sha
+        )
     if args.action == "name":
         return deploy.name(
             profile, args.package, args.sha, Path(os.path.abspath(args.carry_from)), project_sha=args.project_sha

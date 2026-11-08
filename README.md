@@ -13,6 +13,17 @@ python3.13 -m venv ~/.venvs/decomp && . ~/.venvs/decomp/bin/activate
 pip install git+https://github.com/AbuN64/abu-decomp-64 && decomp dependencies
 ```
 
+The toolkit on a heavy host (a rig, the shared W venv) is built by one entry point from AD64 main's `pyproject.toml` at a landed
+commit, beside the live link, with no hand pip and no copied venv:
+
+```sh
+decomp tools install --venv /path/to/venv-decomp [--sha <landed main commit>]
+```
+
+A path, an editable tree, a working tree or a commit not on main is refused; the link is swapped only after `decomp dependencies`
+passes. Later updates use `decomp tools deploy`, which can carry a venv this entry point built. Run it on the host that wants the
+toolkit; it names no host (the seat profile names the project).
+
 `decomp dependencies` checks that unbake, Recipe Maker and Cake Taste are installed from git, each at the commit it landed at.
 
 ## Usage

@@ -665,6 +665,52 @@ class CarryTests(DeployTests):
         wanted, findings = deploy.checkout_steps(self.profile, "unbake", U2)
         self.assertEqual((wanted, findings), ({}, []))  # the seat names no checkout
 
+    def install(self, venvs=("fresh",), **extra):
+        return deploy.install_toolkit(
+            self.profile,
+            [self.root / v for v in venvs],
+            run=self.runner,
+            requirements_of=self.requirements_of,
+            python="/usr/bin/python3.13",
+            **extra,
+        )
+
+    def test_install_bootstraps_a_fresh_link_from_main_with_the_declared_dependencies(self):
+        result, code, findings = self.install()
+        self.assertEqual((code, findings), (0, []))
+        create = next(c for c in self.commands if "venv" in c and "-m" in c)
+        self.assertEqual(create[0], "/usr/bin/python3.13")  # the invoking interpreter: no host path in code
+        installs = [c for c in self.commands if "install" in c]
+        self.assertEqual(len(installs), 1)  # pip resolves pyproject.toml's pins: no carry, no hand pip
+        self.assertEqual(
+            installs[0][-len(MOVED) - 1 :], [f"abu-decomp-64[dev] @ git+{sources.DECOMP_URL}@{D1}", *MOVED]
+        )
+        link = self.root / "fresh"
+        self.assertTrue(link.is_symlink() and result["venvs"][0]["swap"]["readback"])
+
+    def test_install_replaces_an_existing_link_and_refuses_a_real_directory(self):
+        _, code, _ = self.install(venvs=("venv-a",))
+        self.assertEqual(code, 0)
+        (self.root / "real").mkdir()
+        with self.assertRaises(deploy.DeployError):
+            self.install(venvs=("real",))
+
+    def test_install_refuses_a_commit_that_is_not_on_main_and_a_short_sha(self):
+        self.fail_on = "merge-base"
+        with self.assertRaises(deploy.DeployError):
+            self.install(sha=D1)
+        self.fail_on = None
+        with self.assertRaises(deploy.DeployError):
+            self.install(sha="abc123")
+        self.assertFalse([c for c in self.commands if "install" in c])
+
+    def test_install_removes_a_failed_build_and_never_links_it(self):
+        self.fail_on = "pip"
+        _, code, findings = self.install()
+        self.assertEqual((code, findings[0]["key"]), (1, "deploy.install"))
+        self.assertFalse((self.root / "fresh").exists())
+        self.assertFalse([p for p in self.root.iterdir() if p.name.startswith("fresh.")])
+
 
 class NameTests(DeployTests):
     """The build name identifies every package the build holds: the 10-31 collision of two deploys into one toolkit."""

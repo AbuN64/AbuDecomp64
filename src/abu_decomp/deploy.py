@@ -65,6 +65,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -345,14 +346,16 @@ def install(
     carry: Sequence[str],
     run: Run,
     fetch: Mapping[str, str] | None = None,
+    base_python: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Create `venv` with the python of `base` (the venv it replaces), then pip install with the new venv's python:
+    """Create `venv` with `base_python` (a fresh install) or the python of `base` (the venv it replaces), then pip
+    install with the new venv's python:
     the carried requirements exactly as they are (`--no-deps`: they are already a resolved set), then `specs` (the
     package at its commit, the tools of ours at their landed commits and the project's pinned packages) with their
     dependencies. `fetch` is the environment of that last pip run (`tree_fetch`)."""
     python = venv / "bin" / "python"
     steps = [
-        ("create", [str(base / "bin" / "python"), "-m", "venv", str(venv)]),
+        ("create", [base_python or str(base / "bin" / "python"), "-m", "venv", str(venv)]),
         *([("carry", [str(python), "-m", "pip", "install", "--no-deps", *carry])] if carry else []),
         ("install", [str(python), "-m", "pip", "install", *specs], fetch),
         ("retire", [str(python), "-c", RETIRE]),  # the venv carries no unbake command: land and the rig find it by name
@@ -644,4 +647,77 @@ def deploy(
             )
             continue
         row["resync"] = resync(live, tools.host_file(profile), project, run)
+    return result, int(bool(findings)), findings
+
+
+def install_toolkit(
+    profile: Profile,
+    venvs: Sequence[Path],
+    *,
+    sha: str | None = None,
+    project_sha: str | None = None,
+    run: Run = run_command,
+    requirements_of: Requirements = requirements_at,
+    python: str | None = None,
+) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+    """`decomp tools install`: the bootstrap that builds a toolkit venv on this host from AD64 main, beside the live
+    link (`PATH.<name>`, then the same smoke, seal and atomic swap as `deploy`). The package is
+    `abu-decomp-64[dev] @ git+URL@SHA` with the dependencies its `pyproject.toml` declares at that commit (our own
+    tools at their landed commits), so a later `tools deploy` can carry the venv. `sha` defaults to the commit the
+    source repository has landed at and must be an ancestor of it; a path, an editable tree or a working tree is not
+    a source here. Each `--venv` is a symlink to make or replace; a real directory refuses. Nothing here names a
+    host: run it where the toolkit is wanted (the seat profile names the project and host file)."""
+    package = tools.DISTRIBUTION
+    if not venvs:
+        raise DeployError("deploy.venv", "pass at least one --venv")
+    for live in venvs:
+        if live.exists() and not live.is_symlink():
+            raise DeployError(
+                "deploy.venv", f"{live} is a real directory, not a symlink (a venv is never installed over)"
+            )
+    url = sources.PACKAGES[package]
+    sha = check_sha("--sha", sha) if sha else sources.landed_commit(url, run)
+    if not on_main(url, sha, run):
+        raise DeployError("deploy.landed", f"{sha} is not on {url} main: only a landed commit is installed")
+    if project_sha:
+        check_sha("--project-sha", project_sha)
+    project = tools.project_dir(profile)
+    land = _land_table(profile)
+    remote, branch = str(land.get("remote", "origin")), str(land.get("branch", "main"))
+    revision, text = requirements_of(project, remote, branch, project_sha)
+    packages = project_requirements(text, f"{project} requirements.txt at {revision[:12]}")
+    wanted = [requirement(package, sha), *landed_carry([], package, run)[0], *packages]
+    build = content_name(wanted, [])
+    result: dict[str, Any] = {"package": package, "sha": sha, "name": build, "project_revision": revision, "venvs": []}
+    findings: list[dict[str, Any]] = []
+    for live in venvs:
+        venv = versioned_path(live, build)
+        steps = install(venv, venv, wanted, [], run, None, base_python=python or sys.executable)
+        row: dict[str, Any] = {"venv": str(live), "versioned": str(venv), "steps": steps}
+        result["venvs"].append(row)
+        bad = [step for step in steps if not step["ok"]]
+        if not bad:
+            row["smoke"] = smoke(venv, project, tools.host_file(profile), run, packages)
+            bad = [check for check in row["smoke"] if not check["ok"]]
+        if bad:
+            findings.append(
+                {
+                    "key": "deploy.install",
+                    "blocking": True,
+                    "message": f"{venv}: {bad[0].get('step') or bad[0].get('check')} failed: {bad[0]['tail']}",
+                }
+            )
+            shutil.rmtree(venv, ignore_errors=True)  # our own half-built venv, never linked
+            continue
+        row["seal"] = seal(venv, run)
+        if not row["seal"]["ok"]:
+            findings.append({"key": "deploy.seal", "blocking": True, "message": f"{venv}: {row['seal']['tail']}"})
+            unseal(venv)
+            continue
+        row["swap"] = point(live, venv)
+        row["swap"]["readback_smoke"] = smoke(live, project, tools.host_file(profile), run, packages)
+        if not row["swap"]["readback"] or not all(c["ok"] for c in row["swap"]["readback_smoke"]):
+            findings.append(
+                {"key": "deploy.readback", "blocking": True, "message": f"{live} does not read back to {venv}"}
+            )
     return result, int(bool(findings)), findings

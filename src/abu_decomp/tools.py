@@ -55,7 +55,14 @@ def _normal(name: str) -> str:
 
 
 def _requirements(distribution: metadata.Distribution) -> list[str]:
-    return ["".join(row.split(";")[0].split()) for row in distribution.requires or []]
+    """Return base requirements, excluding dependencies declared only for extras."""
+    requirements = []
+    for row in distribution.requires or []:
+        requirement, _, marker = row.partition(";")
+        if re.search(r"\bextra\s*==", marker):
+            continue
+        requirements.append("".join(requirement.split()))
+    return requirements
 
 
 def installed_commit(distribution: str) -> str:

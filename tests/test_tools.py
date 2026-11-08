@@ -88,9 +88,39 @@ class ToolTests(unittest.TestCase):
             self.assertEqual(tools.commits(), {"unbake": "a" * 40, "recipe": "b" * 40, "taste": "c" * 40})
 
     def test_cake_taste_must_be_standalone(self):
-        bad = Distribution("https://github.com/AbuN64/cake-taste-64", "c" * 40, [UNBAKE])
-        with installed(**{"cake-taste-64": bad}), self.assertRaisesRegex(tools.DependencyError, "standalone"):
+        bad = Distribution("https://github.com/AbuN64/cake-taste-64", "c" * 40, ["abucache", UNBAKE])
+        with (
+            installed(**{"cake-taste-64": bad}),
+            self.assertRaisesRegex(tools.DependencyError, "standalone") as caught,
+        ):
             tools.verify_dependencies()
+        self.assertEqual(caught.exception.key, "dependency.compatibility")
+
+    def test_cake_taste_optional_oracle_is_standalone(self):
+        taste = Distribution(
+            "https://github.com/AbuN64/cake-taste-64",
+            "c" * 40,
+            [
+                "abucache",
+                'ruff==0.16.9; extra == "dev"',
+                'jsonschema==4.26.0; extra == "dev"',
+                'unbake; extra == "oracle"',
+            ],
+        )
+        with installed(**{"cake-taste-64": taste}):
+            self.assertEqual(tools.verify_dependencies()["taste"]["commit"], "c" * 40)
+
+    def test_requirements_filter_extras_before_removing_markers(self):
+        distribution = Distribution(
+            requires=[
+                " abucache ",
+                "unbake;extra=='oracle'",
+                'recipemaker; python_version >= "3.13" and extra == "dev"',
+                'textual >= 8; python_version >= "3.13"',
+            ]
+        )
+        self.assertEqual(tools._requirements(distribution), ["abucache", "textual>=8"])
+        self.assertEqual(tools._requirements(Distribution()), [])
 
     def test_passthrough_runs_public_main_isolated_with_profile_context(self):
         envelope = {"ok": True, "result": {}, "findings": [], "stages": [], "invocation": "x"}

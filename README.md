@@ -84,7 +84,7 @@ tree reuses the environment; a changed source rebuilds it. Deploys still use lan
 
 - `bin/test` runs the full check (lint, format, every test).
 - `bin/test tests/test_x.py tests/test_y.py` runs just those test files (or modules, `test_x`).
-- The n64 shim is owned by RageWarsEnhanced (`shim/`): this repository holds no copy and reads the one found beside it (`abu_decomp.enhanced`, the parent of the git common directory plus `RageWarsEnhanced`). A missing sibling is refused naming the path to clone.
+- The n64 shim is owned by RageWarsEnhanced (`shim/`): this repository holds no copy and reads the one found beside it (`abu_decomp.enhanced`: `RageWarsEnhanced` beside this repository's own top level, `git rev-parse --show-toplevel`, so a worktree finds the one laid beside it and never the registered checkout's; refused as `enhanced.missing` when it is not there). A missing sibling is refused naming the path to clone.
 - `bin/test --changed` lints the changed files and runs only the tests that import the changed modules (under a second to
   seconds); run the full `bin/test` before a push that touches `ci/`.
 
